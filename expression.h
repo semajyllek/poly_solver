@@ -42,7 +42,7 @@ typedef struct Expr {
 } Expr;
 
 // constructors
-Expr* create_const_rat(Rational value);
+Expr* create_const_rat(const Rational* value);
 Expr* create_const(double value);
 Expr* create_var(const char* name);
 Expr* create_add(Expr* left, Expr* right);

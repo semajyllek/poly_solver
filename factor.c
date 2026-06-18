@@ -3,97 +3,117 @@
 #include <stdlib.h>
 #include <string.h>
 
-// GCD of all coefficients in the polynomial
 // gcd(a/b, c/d) = gcd(a,c) / lcm(b,d)
 Rational poly_content(const Polynomial* poly) {
-    if (poly->head == NULL) return rat_zero();
-    Rational content = rat_abs(poly->head->coeff);
+    if (poly->head == NULL) return rat_zero_val();
+    Rational content;
+    rat_init(&content);
+    rat_abs(&content, &poly->head->coeff);
     Term* t = poly->head->next;
     while (t) {
-        Rational abs_c = rat_abs(t->coeff);
-        rat_int_t num_gcd = gcd_int(content.num, abs_c.num);
-        rat_int_t den_lcm = content.den / gcd_int(content.den, abs_c.den) * abs_c.den;
-        content = rat_create(num_gcd, den_lcm);
+        Rational abs_c;
+        rat_init(&abs_c);
+        rat_abs(&abs_c, &t->coeff);
+        // gcd of two rationals via GMP integer operations
+        mpz_t num_gcd, den_lcm, g;
+        mpz_init(num_gcd); mpz_init(den_lcm); mpz_init(g);
+        mpz_gcd(num_gcd, mpq_numref(content.val), mpq_numref(abs_c.val));
+        mpz_gcd(g, mpq_denref(content.val), mpq_denref(abs_c.val));
+        mpz_divexact(den_lcm, mpq_denref(content.val), g);
+        mpz_mul(den_lcm, den_lcm, mpq_denref(abs_c.val));
+        mpq_set_num(content.val, num_gcd);
+        mpq_set_den(content.val, den_lcm);
+        mpq_canonicalize(content.val);
+        mpz_clear(num_gcd); mpz_clear(den_lcm); mpz_clear(g);
+        rat_clear(&abs_c);
         t = t->next;
     }
     return content;
 }
 
-// divide all coefficients by content, yielding a primitive polynomial
 Polynomial* poly_primitive_part(const Polynomial* poly) {
     Rational c = poly_content(poly);
-    if (rat_is_zero(c)) return poly_copy(poly);
+    if (rat_is_zero(&c)) { rat_clear(&c); return poly_copy(poly); }
     Polynomial* result = create_polynomial();
     Term* t = poly->head;
     while (t) {
-        add_term(result, rat_div(t->coeff, c), t->exponent);
+        Rational div_r;
+        rat_init(&div_r);
+        rat_div(&div_r, &t->coeff, &c);
+        add_term(result, &div_r, t->exponent);
+        rat_clear(&div_r);
         t = t->next;
     }
+    rat_clear(&c);
     return result;
 }
 
-// divide poly by (x - root) using synthetic division
-Polynomial* synthetic_divide(const Polynomial* poly, Rational root) {
+Polynomial* synthetic_divide(const Polynomial* poly, const Rational* root) {
     int deg = polynomial_degree(poly);
     if (deg <= 0) return create_polynomial();
 
-    // convert sparse linked list to dense coefficient array (descending)
-    Rational* coeffs = calloc(deg + 1, sizeof(Rational));
-    for (int i = 0; i <= deg; i++)
-        coeffs[i] = rat_zero();
+    // dense coefficient array (descending order)
+    Rational* coeffs = malloc((deg + 1) * sizeof(Rational));
+    for (int i = 0; i <= deg; i++) coeffs[i] = rat_zero_val();
     Term* t = poly->head;
     while (t) {
-        coeffs[deg - t->exponent] = t->coeff;
+        rat_set(&coeffs[deg - t->exponent], &t->coeff);
         t = t->next;
     }
 
-    // synthetic division
-    Rational* result = calloc(deg, sizeof(Rational));
-    result[0] = coeffs[0];
-    for (int i = 1; i < deg; i++)
-        result[i] = rat_add(coeffs[i], rat_mul(result[i - 1], root));
+    Rational* res = malloc(deg * sizeof(Rational));
+    rat_init_set(&res[0], &coeffs[0]);
+    for (int i = 1; i < deg; i++) {
+        rat_init(&res[i]);
+        Rational tmp;
+        rat_init(&tmp);
+        rat_mul(&tmp, &res[i - 1], root);
+        rat_add(&res[i], &coeffs[i], &tmp);
+        rat_clear(&tmp);
+    }
 
     Polynomial* quotient = create_polynomial();
     for (int i = 0; i < deg; i++) {
-        if (!rat_is_zero(result[i]))
-            add_term(quotient, result[i], deg - 1 - i);
+        if (!rat_is_zero(&res[i]))
+            add_term(quotient, &res[i], deg - 1 - i);
     }
 
+    for (int i = 0; i <= deg; i++) rat_clear(&coeffs[i]);
+    for (int i = 0; i < deg; i++) rat_clear(&res[i]);
     free(coeffs);
-    free(result);
+    free(res);
     return quotient;
 }
 
 // evaluate polynomial at a rational point (exact)
-static Rational poly_eval_rational(const Polynomial* poly, Rational x) {
-    if (poly->head == NULL) return rat_zero();
+static void poly_eval_rational(Rational* result, const Polynomial* poly, const Rational* x) {
+    if (poly->head == NULL) { mpq_set_si(result->val, 0, 1); return; }
     Term* t = poly->head;
-    Rational result = t->coeff;
+    rat_set(result, &t->coeff);
     int prev_exp = t->exponent;
     t = t->next;
     while (t) {
         int gap = prev_exp - t->exponent;
         for (int i = 0; i < gap; i++)
-            result = rat_mul(result, x);
-        result = rat_add(result, t->coeff);
+            rat_mul(result, result, x);
+        rat_add(result, result, &t->coeff);
         prev_exp = t->exponent;
         t = t->next;
     }
     for (int i = 0; i < prev_exp; i++)
-        result = rat_mul(result, x);
-    return result;
+        rat_mul(result, result, x);
 }
 
-// collect all integer divisors of |n| (including 1 and |n|)
-static rat_int_t* divisors(rat_int_t n, int* count) {
+// collect all positive integer divisors of |n|
+static long* divisors_long(long n, int* count) {
     if (n < 0) n = -n;
     if (n == 0) { *count = 0; return NULL; }
     int cap = 16;
-    rat_int_t* divs = malloc(cap * sizeof(rat_int_t));
+    long* divs = malloc(cap * sizeof(long));
     *count = 0;
-    for (rat_int_t i = 1; i * i <= n; i++) {
+    for (long i = 1; i * i <= n; i++) {
         if (n % i == 0) {
-            if (*count + 2 > cap) { cap *= 2; divs = realloc(divs, cap * sizeof(rat_int_t)); }
+            if (*count + 2 > cap) { cap *= 2; divs = realloc(divs, cap * sizeof(long)); }
             divs[(*count)++] = i;
             if (i != n / i)
                 divs[(*count)++] = n / i;
@@ -102,57 +122,69 @@ static rat_int_t* divisors(rat_int_t n, int* count) {
     return divs;
 }
 
-// clear denominators: multiply poly so all coefficients are integers
-// returns the cleared polynomial (caller frees) and sets *lcm_den
-static Polynomial* clear_denominators(const Polynomial* poly, rat_int_t* lcm_den) {
-    *lcm_den = 1;
+// clear denominators to get integer coefficients; returns lcm of denominators
+static Polynomial* clear_denominators(const Polynomial* poly, mpz_t lcm_den) {
+    mpz_set_si(lcm_den, 1);
     Term* t = poly->head;
+    mpz_t g;
+    mpz_init(g);
     while (t) {
-        rat_int_t g = gcd_int(*lcm_den, t->coeff.den);
-        *lcm_den = (*lcm_den / g) * t->coeff.den;
+        mpz_gcd(g, lcm_den, mpq_denref(t->coeff.val));
+        mpz_divexact(lcm_den, lcm_den, g);
+        mpz_mul(lcm_den, lcm_den, mpq_denref(t->coeff.val));
         t = t->next;
     }
     Polynomial* result = create_polynomial();
     t = poly->head;
+    mpz_t new_num, d;
+    mpz_init(new_num);
+    mpz_init(d);
     while (t) {
-        rat_int_t new_num = t->coeff.num * (*lcm_den / t->coeff.den);
-        add_term(result, rat_from_int(new_num), t->exponent);
+        mpz_divexact(d, lcm_den, mpq_denref(t->coeff.val));
+        mpz_mul(new_num, mpq_numref(t->coeff.val), d);
+        Rational r;
+        rat_init(&r);
+        mpq_set_z(r.val, new_num);
+        add_term(result, &r, t->exponent);
+        rat_clear(&r);
         t = t->next;
     }
+    mpz_clear(new_num);
+    mpz_clear(d);
+    mpz_clear(g);
     return result;
 }
 
-// find all rational roots using the rational root theorem
 static Rational* find_rational_roots(const Polynomial* poly, int* num_roots) {
     *num_roots = 0;
     if (poly->head == NULL) return NULL;
 
-    // clear denominators to get integer coefficients
-    rat_int_t lcm_den;
-    Polynomial* int_poly = clear_denominators(poly, &lcm_den);
+    mpz_t lcm_den;
+    mpz_init(lcm_den);
+    Polynomial* int_poly = clear_denominators(poly, lcm_den);
+    mpz_clear(lcm_den);
 
-    // find leading and trailing coefficients
-    rat_int_t leading = int_poly->head->coeff.num;
-    // find constant term
-    rat_int_t constant = 0;
+    long leading = rat_num_si(&int_poly->head->coeff);
+    long constant = 0;
     Term* t = int_poly->head;
     while (t) {
-        if (t->exponent == 0) { constant = t->coeff.num; break; }
+        if (t->exponent == 0) { constant = rat_num_si(&t->coeff); break; }
         t = t->next;
     }
 
     if (constant == 0) {
-        // x = 0 is a root
         int cap = 8;
         Rational* roots = malloc(cap * sizeof(Rational));
-        roots[(*num_roots)++] = rat_zero();
-        // divide out x and find more roots
-        Polynomial* reduced = synthetic_divide(int_poly, rat_zero());
+        roots[(*num_roots)++] = rat_zero_val();
+        Rational zero_r = rat_zero_val();
+        Polynomial* reduced = synthetic_divide(int_poly, &zero_r);
+        rat_clear(&zero_r);
         int more_count;
         Rational* more_roots = find_rational_roots(reduced, &more_count);
         for (int i = 0; i < more_count; i++) {
             if (*num_roots >= cap) { cap *= 2; roots = realloc(roots, cap * sizeof(Rational)); }
-            roots[(*num_roots)++] = more_roots[i];
+            roots[*num_roots] = more_roots[i]; // transfer ownership
+            (*num_roots)++;
         }
         free(more_roots);
         free_polynomial(reduced);
@@ -161,33 +193,35 @@ static Rational* find_rational_roots(const Polynomial* poly, int* num_roots) {
     }
 
     int num_p, num_q;
-    rat_int_t* p_divs = divisors(constant, &num_p);
-    rat_int_t* q_divs = divisors(leading, &num_q);
+    long* p_divs = divisors_long(constant, &num_p);
+    long* q_divs = divisors_long(leading, &num_q);
 
     int cap = 16;
     Rational* roots = malloc(cap * sizeof(Rational));
     Polynomial* current = poly_copy(int_poly);
 
-    // test all p/q and -p/q candidates
     for (int i = 0; i < num_p && !poly_is_zero(current); i++) {
         for (int j = 0; j < num_q && !poly_is_zero(current); j++) {
-            Rational candidates[2] = {
-                rat_create(p_divs[i], q_divs[j]),
-                rat_create(-p_divs[i], q_divs[j])
-            };
+            Rational candidates[2];
+            candidates[0] = rat_from_si(p_divs[i], q_divs[j]);
+            candidates[1] = rat_from_si(-p_divs[i], q_divs[j]);
             for (int c = 0; c < 2 && !poly_is_zero(current); c++) {
-                Rational val = poly_eval_rational(current, candidates[c]);
-                if (rat_is_zero(val)) {
+                Rational val;
+                rat_init(&val);
+                poly_eval_rational(&val, current, &candidates[c]);
+                if (rat_is_zero(&val)) {
                     if (*num_roots >= cap) { cap *= 2; roots = realloc(roots, cap * sizeof(Rational)); }
-                    roots[(*num_roots)++] = candidates[c];
-                    // divide out the root and check for repeated roots
-                    Polynomial* reduced = synthetic_divide(current, candidates[c]);
+                    rat_init_set(&roots[*num_roots], &candidates[c]);
+                    (*num_roots)++;
+                    Polynomial* reduced = synthetic_divide(current, &candidates[c]);
                     free_polynomial(current);
                     current = reduced;
-                    // check if same root appears again
                     c--;
                 }
+                rat_clear(&val);
             }
+            rat_clear(&candidates[0]);
+            rat_clear(&candidates[1]);
         }
     }
 
@@ -203,30 +237,34 @@ Factorization* factorize(const Polynomial* poly) {
     f->factors = NULL;
     f->multiplicities = NULL;
     f->count = 0;
-    f->content = rat_one();
+    f->content = rat_one_val();
 
     if (poly->head == NULL) {
-        f->content = rat_zero();
+        rat_clear(&f->content);
+        f->content = rat_zero_val();
         return f;
     }
 
-    // extract content
+    rat_clear(&f->content);
     f->content = poly_content(poly);
-    if (rat_is_negative(poly->head->coeff))
-        f->content = rat_neg(f->content);
+    if (rat_is_negative(&poly->head->coeff)) {
+        rat_neg(&f->content, &f->content);
+    }
 
     Polynomial* primitive = create_polynomial();
     Term* t = poly->head;
     while (t) {
-        add_term(primitive, rat_div(t->coeff, f->content), t->exponent);
+        Rational div_r;
+        rat_init(&div_r);
+        rat_div(&div_r, &t->coeff, &f->content);
+        add_term(primitive, &div_r, t->exponent);
+        rat_clear(&div_r);
         t = t->next;
     }
 
-    // find rational roots
     int num_roots;
     Rational* roots = find_rational_roots(primitive, &num_roots);
 
-    // build factor list
     int cap = 8;
     f->factors = malloc(cap * sizeof(Polynomial*));
     f->multiplicities = malloc(cap * sizeof(int));
@@ -234,16 +272,19 @@ Factorization* factorize(const Polynomial* poly) {
     Polynomial* remainder = poly_copy(primitive);
 
     for (int i = 0; i < num_roots; i++) {
-        // check if this root is already in the factor list
         bool found = false;
         for (int j = 0; j < f->count; j++) {
-            // compare: factor is (x - root), which is degree 1 with coeff 1 and constant -root
             Term* ft = f->factors[j]->head;
-            if (ft && ft->exponent == 1 && ft->next &&
-                rat_eq(ft->next->coeff, rat_neg(roots[i]))) {
-                f->multiplicities[j]++;
-                found = true;
-                break;
+            if (ft && ft->exponent == 1 && ft->next) {
+                Rational neg_root;
+                rat_init(&neg_root);
+                rat_neg(&neg_root, &roots[i]);
+                if (rat_eq(&ft->next->coeff, &neg_root)) {
+                    f->multiplicities[j]++;
+                    found = true;
+                }
+                rat_clear(&neg_root);
+                if (found) break;
             }
         }
         if (!found) {
@@ -252,21 +293,25 @@ Factorization* factorize(const Polynomial* poly) {
                 f->factors = realloc(f->factors, cap * sizeof(Polynomial*));
                 f->multiplicities = realloc(f->multiplicities, cap * sizeof(int));
             }
-            // create factor (x - root)
             Polynomial* factor = create_polynomial();
-            add_term(factor, rat_one(), 1);
-            add_term(factor, rat_neg(roots[i]), 0);
+            Rational one_r = rat_one_val();
+            add_term(factor, &one_r, 1);
+            rat_clear(&one_r);
+            Rational neg_root;
+            rat_init(&neg_root);
+            rat_neg(&neg_root, &roots[i]);
+            add_term(factor, &neg_root, 0);
+            rat_clear(&neg_root);
             f->factors[f->count] = factor;
             f->multiplicities[f->count] = 1;
             f->count++;
         }
 
-        Polynomial* reduced = synthetic_divide(remainder, roots[i]);
+        Polynomial* reduced = synthetic_divide(remainder, &roots[i]);
         free_polynomial(remainder);
         remainder = reduced;
     }
 
-    // if remainder has degree > 0, add it as an irreducible factor
     if (!poly_is_zero(remainder) && polynomial_degree(remainder) > 0) {
         if (f->count >= cap) {
             cap *= 2;
@@ -278,6 +323,7 @@ Factorization* factorize(const Polynomial* poly) {
         f->count++;
     }
 
+    for (int i = 0; i < num_roots; i++) rat_clear(&roots[i]);
     free(roots);
     free_polynomial(remainder);
     free_polynomial(primitive);
@@ -290,6 +336,7 @@ void free_factorization(Factorization* f) {
         free_polynomial(f->factors[i]);
     free(f->factors);
     free(f->multiplicities);
+    rat_clear(&f->content);
     free(f);
 }
 
@@ -298,21 +345,22 @@ char* factorization_to_string(const Factorization* f) {
     char* buf = malloc(cap);
     buf[0] = '\0';
 
-    // content prefix
-    if (!rat_is_one(f->content) && !rat_eq(f->content, rat_from_int(-1))) {
-        char* cs = rat_to_string(f->content);
+    Rational neg_one = rat_from_int(-1);
+    if (!rat_is_one(&f->content) && !rat_eq(&f->content, &neg_one)) {
+        char* cs = rat_to_string(&f->content);
         while (len + strlen(cs) + 2 > cap) { cap *= 2; buf = realloc(buf, cap); }
         strcat(buf, cs);
         len += strlen(cs);
         free(cs);
-    } else if (rat_eq(f->content, rat_from_int(-1))) {
+    } else if (rat_eq(&f->content, &neg_one)) {
         strcat(buf, "-");
         len += 1;
     }
+    rat_clear(&neg_one);
 
     if (f->count == 0) {
         if (len == 0) {
-            char* cs = rat_to_string(f->content);
+            char* cs = rat_to_string(&f->content);
             while (len + strlen(cs) + 1 > cap) { cap *= 2; buf = realloc(buf, cap); }
             strcat(buf, cs);
             free(cs);
@@ -328,7 +376,6 @@ char* factorization_to_string(const Factorization* f) {
         else
             snprintf(factor_buf, sizeof(factor_buf), "(%s)", ps);
         free(ps);
-
         size_t flen = strlen(factor_buf);
         while (len + flen + 1 > cap) { cap *= 2; buf = realloc(buf, cap); }
         strcat(buf, factor_buf);
@@ -340,5 +387,5 @@ char* factorization_to_string(const Factorization* f) {
 
 Expr* factorization_to_expr(const Factorization* f) {
     (void)f;
-    return NULL; // will be used by CLI
+    return NULL;
 }

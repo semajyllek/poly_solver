@@ -41,7 +41,7 @@ void    vector_free(Vector* v);
 // core operations
 Matrix* matrix_rref(const Matrix* m);
 int     matrix_rank(const Matrix* m);
-Rational matrix_det(const Matrix* m);
+void matrix_det(Rational* result, const Matrix* m);
 Matrix* matrix_inverse(const Matrix* m);
 LinSysResult* linsys_solve(const Matrix* A, const Vector* b);
 

@@ -1,6 +1,6 @@
 CC = gcc
-CFLAGS = -Wall -Wextra -g
-LDFLAGS = -lm
+CFLAGS = -Wall -Wextra -g -I/opt/homebrew/include
+LDFLAGS = -L/opt/homebrew/lib -lgmp -lm
 
 # Test binary
 TEST_SRCS = rational_num.c polynomial.c expression.c factor.c solver.c matrix.c partial_frac.c token.c parser.c test_symbolic_solver.c

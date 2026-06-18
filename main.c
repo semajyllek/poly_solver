@@ -37,10 +37,13 @@ static int handle_matrix_action(const char* action, const char* input) {
             matrix_free(m);
             return 1;
         }
-        Rational d = matrix_det(m);
-        char* s = rat_to_string(d);
+        Rational d;
+        rat_init(&d);
+        matrix_det(&d, m);
+        char* s = rat_to_string(&d);
         printf("%s\n", s);
         free(s);
+        rat_clear(&d);
     } else if (strcmp(action, "inverse") == 0) {
         if (m->rows != m->cols) {
             fprintf(stderr, "Error: inverse requires a square matrix.\n");

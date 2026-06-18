@@ -8,20 +8,25 @@
 
 // --- constructors ---
 
-Expr* create_const_rat(Rational value) {
+Expr* create_const_rat(const Rational* value) {
     Expr* e = malloc(sizeof(Expr));
     e->type = EXPR_CONST;
-    e->constant = value;
+    rat_init_set(&e->constant, value);
     return e;
 }
 
 Expr* create_const(double value) {
-    // convert double to rational: handle integers exactly, fractions approximately
-    long long int_val = (long long)value;
-    if ((double)int_val == value)
-        return create_const_rat(rat_from_int(int_val));
-    // fallback: use large denominator for non-integer doubles
-    return create_const_rat(rat_create((long long)(value * 1000000), 1000000));
+    long int_val = (long)value;
+    if ((double)int_val == value) {
+        Rational r = rat_from_int(int_val);
+        Expr* e = create_const_rat(&r);
+        rat_clear(&r);
+        return e;
+    }
+    Rational r = rat_from_si((long)(value * 1000000), 1000000);
+    Expr* e = create_const_rat(&r);
+    rat_clear(&r);
+    return e;
 }
 
 Expr* create_var(const char* name) {
@@ -101,6 +106,7 @@ void free_expr(Expr* expr) {
             free_expr(expr->ln_arg);
             break;
         case EXPR_CONST:
+            rat_clear(&expr->constant);
             break;
     }
     free(expr);
@@ -108,7 +114,6 @@ void free_expr(Expr* expr) {
 
 // --- output ---
 
-// helper: append to a dynamically-growing string buffer
 typedef struct { char* buf; size_t len; size_t cap; } StrBuf;
 
 static StrBuf strbuf_new(void) {
@@ -132,7 +137,7 @@ static void expr_to_string_impl(const Expr* expr, StrBuf* sb) {
 
     switch (expr->type) {
         case EXPR_CONST: {
-            char* s = rat_to_string(expr->constant);
+            char* s = rat_to_string(&expr->constant);
             strbuf_append(sb, s);
             free(s);
             break;
@@ -199,22 +204,17 @@ void print_expr(const Expr* expr) {
 }
 
 // --- canonicalization ---
-// converts an expression tree into EXPR_POLY or EXPR_RATIONAL_FN
 
-// helper: wrap a polynomial in an Expr (takes ownership of poly)
 static Expr* wrap_poly(Polynomial* poly) {
     return create_poly_expr(poly);
 }
 
-// helper: wrap a rational function, simplifying if denominator is 1
 static Expr* wrap_ratfn(Polynomial* num, Polynomial* den) {
-    // if denominator is a nonzero constant with value 1, return just the numerator
     if (den->head != NULL && den->head->next == NULL &&
-        den->head->exponent == 0 && rat_is_one(den->head->coeff)) {
+        den->head->exponent == 0 && rat_is_one(&den->head->coeff)) {
         free_polynomial(den);
         return wrap_poly(num);
     }
-    // reduce by GCD
     Polynomial* g = poly_gcd(num, den);
     if (!poly_is_zero(g) && polynomial_degree(g) > 0) {
         Polynomial* rn = poly_divide(num, g);
@@ -227,53 +227,50 @@ static Expr* wrap_ratfn(Polynomial* num, Polynomial* den) {
     } else {
         free_polynomial(g);
     }
-    // if denominator is now constant 1
     if (den->head != NULL && den->head->next == NULL &&
-        den->head->exponent == 0 && rat_is_one(den->head->coeff)) {
+        den->head->exponent == 0 && rat_is_one(&den->head->coeff)) {
         free_polynomial(den);
         return wrap_poly(num);
     }
     return create_rational_fn(num, den);
 }
 
-// canonicalize a polynomial expr with a polynomial expr via binary op
 static Expr* canon_poly_op(BinOp op, Polynomial* lp, Polynomial* rp) {
     switch (op) {
         case OP_ADD: {
             Polynomial* result = poly_add(lp, rp);
-            free_polynomial(lp);
-            free_polynomial(rp);
+            free_polynomial(lp); free_polynomial(rp);
             return wrap_poly(result);
         }
         case OP_SUB: {
             Polynomial* result = poly_subtract(lp, rp);
-            free_polynomial(lp);
-            free_polynomial(rp);
+            free_polynomial(lp); free_polynomial(rp);
             return wrap_poly(result);
         }
         case OP_MUL: {
             Polynomial* result = poly_multiply(lp, rp);
-            free_polynomial(lp);
-            free_polynomial(rp);
+            free_polynomial(lp); free_polynomial(rp);
             return wrap_poly(result);
         }
         case OP_DIV:
             return wrap_ratfn(lp, rp);
         case OP_POW: {
-            // only support integer exponent
             if (rp->head && rp->head->exponent == 0 && rp->head->next == NULL) {
-                int exp = (int)rat_to_double(rp->head->coeff);
+                int exp = (int)rat_to_double(&rp->head->coeff);
                 free_polynomial(rp);
                 if (exp == 0) {
                     free_polynomial(lp);
                     Polynomial* one = create_polynomial();
-                    add_term(one, rat_one(), 0);
+                    Rational one_r = rat_one_val();
+                    add_term(one, &one_r, 0);
+                    rat_clear(&one_r);
                     return wrap_poly(one);
                 }
                 if (exp < 0) {
-                    // 1 / poly^|exp|
                     Polynomial* num = create_polynomial();
-                    add_term(num, rat_one(), 0);
+                    Rational one_r = rat_one_val();
+                    add_term(num, &one_r, 0);
+                    rat_clear(&one_r);
                     Polynomial* den = poly_copy(lp);
                     for (int i = 1; i < -exp; i++) {
                         Polynomial* tmp = poly_multiply(den, lp);
@@ -292,34 +289,31 @@ static Expr* canon_poly_op(BinOp op, Polynomial* lp, Polynomial* rp) {
                 free_polynomial(lp);
                 return wrap_poly(result);
             }
-            // non-constant exponent: can't canonicalize
-            free_polynomial(lp);
-            free_polynomial(rp);
+            free_polynomial(lp); free_polynomial(rp);
             return NULL;
         }
     }
-    free_polynomial(lp);
-    free_polynomial(rp);
+    free_polynomial(lp); free_polynomial(rp);
     return NULL;
 }
 
-// extract polynomial from canonical expr, caller must free the returned poly
 static Polynomial* extract_poly(Expr* e) {
     if (e->type == EXPR_POLY) {
         Polynomial* p = e->poly;
-        e->poly = NULL; // transfer ownership
+        e->poly = NULL;
         return p;
     }
     return NULL;
 }
 
-// extract num/den from canonical expr
 static bool extract_ratfn(Expr* e, Polynomial** num, Polynomial** den) {
     if (e->type == EXPR_POLY) {
         *num = e->poly;
         e->poly = NULL;
         *den = create_polynomial();
-        add_term(*den, rat_one(), 0);
+        Rational one_r = rat_one_val();
+        add_term(*den, &one_r, 0);
+        rat_clear(&one_r);
         return true;
     }
     if (e->type == EXPR_RATIONAL_FN) {
@@ -338,23 +332,28 @@ Expr* canonicalize(Expr* expr) {
     switch (expr->type) {
         case EXPR_CONST: {
             Polynomial* p = create_polynomial();
-            add_term(p, expr->constant, 0);
+            add_term(p, &expr->constant, 0);
             return wrap_poly(p);
         }
         case EXPR_VAR: {
             Polynomial* p = create_polynomial();
-            add_term(p, rat_one(), 1);
+            Rational one_r = rat_one_val();
+            add_term(p, &one_r, 1);
+            rat_clear(&one_r);
             return wrap_poly(p);
         }
         case EXPR_NEG: {
             Expr* inner = canonicalize(expr->operand);
             if (!inner) return NULL;
             if (inner->type == EXPR_POLY) {
-                // negate all coefficients
                 Polynomial* neg = create_polynomial();
                 Term* t = inner->poly->head;
                 while (t) {
-                    add_term(neg, rat_neg(t->coeff), t->exponent);
+                    Rational neg_c;
+                    rat_init(&neg_c);
+                    rat_neg(&neg_c, &t->coeff);
+                    add_term(neg, &neg_c, t->exponent);
+                    rat_clear(&neg_c);
                     t = t->next;
                 }
                 free_expr(inner);
@@ -364,7 +363,11 @@ Expr* canonicalize(Expr* expr) {
                 Polynomial* neg_num = create_polynomial();
                 Term* t = inner->ratfn.num->head;
                 while (t) {
-                    add_term(neg_num, rat_neg(t->coeff), t->exponent);
+                    Rational neg_c;
+                    rat_init(&neg_c);
+                    rat_neg(&neg_c, &t->coeff);
+                    add_term(neg_num, &neg_c, t->exponent);
+                    rat_clear(&neg_c);
                     t = t->next;
                 }
                 Polynomial* den = poly_copy(inner->ratfn.den);
@@ -378,70 +381,51 @@ Expr* canonicalize(Expr* expr) {
             Expr* left = canonicalize(expr->binop.left);
             Expr* right = canonicalize(expr->binop.right);
             if (!left || !right) {
-                free_expr(left);
-                free_expr(right);
+                free_expr(left); free_expr(right);
                 return NULL;
             }
-
-            // if both are polynomials, operate directly
             if (left->type == EXPR_POLY && right->type == EXPR_POLY) {
                 Polynomial* lp = extract_poly(left);
                 Polynomial* rp = extract_poly(right);
-                free(left);
-                free(right);
+                free(left); free(right);
                 return canon_poly_op(expr->binop.op, lp, rp);
             }
-
-            // lift to rational functions
             Polynomial *ln, *ld, *rn, *rd;
             if (!extract_ratfn(left, &ln, &ld) || !extract_ratfn(right, &rn, &rd)) {
-                free_expr(left);
-                free_expr(right);
+                free_expr(left); free_expr(right);
                 return NULL;
             }
-            free(left);
-            free(right);
+            free(left); free(right);
 
             switch (expr->binop.op) {
                 case OP_ADD: case OP_SUB: {
-                    // a/b +- c/d = (a*d +- c*b) / (b*d)
                     Polynomial* ad = poly_multiply(ln, rd);
                     Polynomial* cb = poly_multiply(rn, ld);
                     Polynomial* num = (expr->binop.op == OP_ADD) ?
                         poly_add(ad, cb) : poly_subtract(ad, cb);
                     Polynomial* den = poly_multiply(ld, rd);
-                    free_polynomial(ad);
-                    free_polynomial(cb);
-                    free_polynomial(ln);
-                    free_polynomial(ld);
-                    free_polynomial(rn);
-                    free_polynomial(rd);
+                    free_polynomial(ad); free_polynomial(cb);
+                    free_polynomial(ln); free_polynomial(ld);
+                    free_polynomial(rn); free_polynomial(rd);
                     return wrap_ratfn(num, den);
                 }
                 case OP_MUL: {
                     Polynomial* num = poly_multiply(ln, rn);
                     Polynomial* den = poly_multiply(ld, rd);
-                    free_polynomial(ln);
-                    free_polynomial(ld);
-                    free_polynomial(rn);
-                    free_polynomial(rd);
+                    free_polynomial(ln); free_polynomial(ld);
+                    free_polynomial(rn); free_polynomial(rd);
                     return wrap_ratfn(num, den);
                 }
                 case OP_DIV: {
                     Polynomial* num = poly_multiply(ln, rd);
                     Polynomial* den = poly_multiply(ld, rn);
-                    free_polynomial(ln);
-                    free_polynomial(ld);
-                    free_polynomial(rn);
-                    free_polynomial(rd);
+                    free_polynomial(ln); free_polynomial(ld);
+                    free_polynomial(rn); free_polynomial(rd);
                     return wrap_ratfn(num, den);
                 }
                 case OP_POW: {
-                    // only if right is a constant integer
                     free_polynomial(rd);
                     Polynomial* result_num = canon_poly_op(OP_POW, ln, rn) ? NULL : NULL;
-                    // simplified: handle pow of rational function
-                    // for now, only support polynomial base
                     (void)result_num;
                     free_polynomial(ld);
                     return NULL;
@@ -454,7 +438,7 @@ Expr* canonicalize(Expr* expr) {
         case EXPR_RATIONAL_FN:
             return wrap_ratfn(poly_copy(expr->ratfn.num), poly_copy(expr->ratfn.den));
         case EXPR_LN:
-            return NULL; // transcendental — cannot canonicalize to polynomial
+            return NULL;
     }
     return NULL;
 }
@@ -462,8 +446,6 @@ Expr* canonicalize(Expr* expr) {
 Expr* simplify(Expr* expr) {
     return canonicalize(expr);
 }
-
-// --- stubs for later phases ---
 
 Expr* factor(Expr* expr) {
     if (!expr) return NULL;
@@ -475,30 +457,32 @@ Expr* factor(Expr* expr) {
 
     Factorization* f = factorize(canonical->poly);
     free_expr(canonical);
-
     if (!f) return NULL;
 
-    // build expression: content * factor1^m1 * factor2^m2 * ...
     Expr* result = NULL;
 
     if (f->count == 0) {
-        result = create_const_rat(f->content);
+        result = create_const_rat(&f->content);
         free_factorization(f);
         return result;
     }
 
     for (int i = 0; i < f->count; i++) {
         Expr* factor_expr = create_poly_expr(poly_copy(f->factors[i]));
-        if (f->multiplicities[i] > 1)
-            factor_expr = create_pow(factor_expr, create_const_rat(rat_from_int(f->multiplicities[i])));
+        if (f->multiplicities[i] > 1) {
+            Rational mi = rat_from_int(f->multiplicities[i]);
+            factor_expr = create_pow(factor_expr, create_const_rat(&mi));
+            rat_clear(&mi);
+        }
         if (result == NULL)
             result = factor_expr;
         else
             result = create_mul(result, factor_expr);
     }
 
-    if (!rat_is_one(f->content))
-        result = create_mul(create_const_rat(f->content), result);
+    if (!rat_is_one(&f->content)) {
+        result = create_mul(create_const_rat(&f->content), result);
+    }
 
     free_factorization(f);
     return result;
@@ -506,7 +490,7 @@ Expr* factor(Expr* expr) {
 
 Expr* differentiate(Expr* expr, const char* variable) {
     if (!expr) return NULL;
-    (void)variable; // only single-variable x for now
+    (void)variable;
 
     Expr* canonical = canonicalize(expr);
     if (!canonical) return NULL;
@@ -518,7 +502,6 @@ Expr* differentiate(Expr* expr, const char* variable) {
     }
 
     if (canonical->type == EXPR_RATIONAL_FN) {
-        // quotient rule: (f'g - fg') / g^2
         Polynomial* f = canonical->ratfn.num;
         Polynomial* g = canonical->ratfn.den;
         Polynomial* fp = poly_derivative(f);
@@ -527,10 +510,8 @@ Expr* differentiate(Expr* expr, const char* variable) {
         Polynomial* f_gp = poly_multiply(f, gp);
         Polynomial* num = poly_subtract(fp_g, f_gp);
         Polynomial* den = poly_multiply(g, g);
-        free_polynomial(fp);
-        free_polynomial(gp);
-        free_polynomial(fp_g);
-        free_polynomial(f_gp);
+        free_polynomial(fp); free_polynomial(gp);
+        free_polynomial(fp_g); free_polynomial(f_gp);
         free_expr(canonical);
         return wrap_ratfn(num, den);
     }
@@ -539,50 +520,57 @@ Expr* differentiate(Expr* expr, const char* variable) {
     return NULL;
 }
 
-// helper: build expression for (x - r) where r is rational
-static Expr* make_linear_expr(Rational root) {
-    // x - r
+static Expr* make_linear_expr(const Rational* root) {
     Polynomial* p = create_polynomial();
-    add_term(p, rat_one(), 1);
-    add_term(p, rat_neg(root), 0);
+    Rational one_r = rat_one_val();
+    add_term(p, &one_r, 1);
+    rat_clear(&one_r);
+    Rational neg_root;
+    rat_init(&neg_root);
+    rat_neg(&neg_root, root);
+    add_term(p, &neg_root, 0);
+    rat_clear(&neg_root);
     return create_poly_expr(p);
 }
 
-// integrate a single partial fraction term
 static Expr* integrate_pf_term(PFTerm* t) {
-    if (t->is_quadratic) return NULL; // arctan not yet supported
+    if (t->is_quadratic) return NULL;
 
-    // linear factor (x - r)
-    Rational root = rat_neg(t->factor->head->next->coeff); // constant term negated
+    // linear factor (x - r): constant term negated gives root
+    Rational root;
+    rat_init(&root);
+    rat_neg(&root, &t->factor->head->next->coeff);
 
     Expr* result = NULL;
 
     for (int k = 0; k < t->power; k++) {
-        Rational coeff = t->coeffs[k];
-        if (rat_is_zero(coeff)) continue;
+        if (rat_is_zero(&t->coeffs[k])) continue;
 
-        int power = k + 1; // denominator power
+        int power = k + 1;
         Expr* term;
 
         if (power == 1) {
-            // A/(x-r) → A * ln|x - r|
-            term = create_mul(create_const_rat(coeff), create_ln(make_linear_expr(root)));
+            term = create_mul(create_const_rat(&t->coeffs[k]),
+                              create_ln(make_linear_expr(&root)));
         } else {
-            // A/(x-r)^k → A * (x-r)^(1-k) / (1-k)
             Rational new_exp = rat_from_int(1 - power);
             Rational divisor = rat_from_int(1 - power);
-            Rational new_coeff = rat_div(coeff, divisor);
+            Rational new_coeff;
+            rat_init(&new_coeff);
+            rat_div(&new_coeff, &t->coeffs[k], &divisor);
             term = create_mul(
-                create_const_rat(new_coeff),
-                create_pow(make_linear_expr(root), create_const_rat(new_exp)));
+                create_const_rat(&new_coeff),
+                create_pow(make_linear_expr(&root), create_const_rat(&new_exp)));
+            rat_clear(&new_coeff);
+            rat_clear(&new_exp);
+            rat_clear(&divisor);
         }
 
-        if (result == NULL)
-            result = term;
-        else
-            result = create_add(result, term);
+        if (result == NULL) result = term;
+        else result = create_add(result, term);
     }
 
+    rat_clear(&root);
     return result;
 }
 
@@ -607,20 +595,16 @@ Expr* integrate(Expr* expr, const char* variable) {
 
         Expr* result = NULL;
 
-        // integrate polynomial part
         if (pf->poly_part && !poly_is_zero(pf->poly_part)) {
             Polynomial* poly_int = poly_integral(pf->poly_part);
             result = wrap_poly(poly_int);
         }
 
-        // integrate each partial fraction term
         for (int i = 0; i < pf->num_terms; i++) {
             Expr* term_integral = integrate_pf_term(&pf->terms[i]);
             if (!term_integral) continue;
-            if (result == NULL)
-                result = term_integral;
-            else
-                result = create_add(result, term_integral);
+            if (result == NULL) result = term_integral;
+            else result = create_add(result, term_integral);
         }
 
         free_pf_decomp(pf);

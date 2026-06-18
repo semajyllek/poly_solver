@@ -22,8 +22,8 @@ typedef struct {
 
 // construction
 Polynomial* create_polynomial(void);
-Term* create_term(Rational coeff, int exponent);
-void add_term(Polynomial* poly, Rational coeff, int exponent);
+Term* create_term(const Rational* coeff, int exponent);
+void add_term(Polynomial* poly, const Rational* coeff, int exponent);
 
 // copy / query
 Polynomial* poly_copy(const Polynomial* poly);

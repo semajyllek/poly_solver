@@ -3,9 +3,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-Term* create_term(Rational coeff, int exponent) {
+Term* create_term(const Rational* coeff, int exponent) {
     Term* term = malloc(sizeof(Term));
-    term->coeff = coeff;
+    rat_init_set(&term->coeff, coeff);
     term->exponent = exponent;
     term->var_id = 0;
     term->next = NULL;
@@ -18,7 +18,7 @@ Polynomial* create_polynomial(void) {
     return poly;
 }
 
-void add_term(Polynomial* poly, Rational coeff, int exponent) {
+void add_term(Polynomial* poly, const Rational* coeff, int exponent) {
     if (rat_is_zero(coeff)) return;
 
     Term* new_term = create_term(coeff, exponent);
@@ -30,21 +30,21 @@ void add_term(Polynomial* poly, Rational coeff, int exponent) {
     Term* current = poly->head;
     Term* previous = NULL;
 
-    // find correct position (descending exponent order)
     while (current != NULL && current->exponent > exponent) {
         previous = current;
         current = current->next;
     }
 
     if (current != NULL && current->exponent == exponent) {
-        // combine like terms
-        current->coeff = rat_add(current->coeff, coeff);
+        rat_add(&current->coeff, &current->coeff, coeff);
+        rat_clear(&new_term->coeff);
         free(new_term);
-        if (rat_is_zero(current->coeff)) {
+        if (rat_is_zero(&current->coeff)) {
             if (previous == NULL)
                 poly->head = current->next;
             else
                 previous->next = current->next;
+            rat_clear(&current->coeff);
             free(current);
         }
     } else {
@@ -60,7 +60,7 @@ Polynomial* poly_copy(const Polynomial* poly) {
     Polynomial* copy = create_polynomial();
     Term* current = poly->head;
     while (current != NULL) {
-        add_term(copy, current->coeff, current->exponent);
+        add_term(copy, &current->coeff, current->exponent);
         current = current->next;
     }
     return copy;
@@ -79,12 +79,12 @@ Polynomial* poly_add(const Polynomial* poly1, const Polynomial* poly2) {
     Polynomial* result = create_polynomial();
     Term* current = poly1->head;
     while (current != NULL) {
-        add_term(result, current->coeff, current->exponent);
+        add_term(result, &current->coeff, current->exponent);
         current = current->next;
     }
     current = poly2->head;
     while (current != NULL) {
-        add_term(result, current->coeff, current->exponent);
+        add_term(result, &current->coeff, current->exponent);
         current = current->next;
     }
     return result;
@@ -94,12 +94,16 @@ Polynomial* poly_subtract(const Polynomial* poly1, const Polynomial* poly2) {
     Polynomial* result = create_polynomial();
     Term* current = poly1->head;
     while (current != NULL) {
-        add_term(result, current->coeff, current->exponent);
+        add_term(result, &current->coeff, current->exponent);
         current = current->next;
     }
     current = poly2->head;
     while (current != NULL) {
-        add_term(result, rat_neg(current->coeff), current->exponent);
+        Rational neg;
+        rat_init(&neg);
+        rat_neg(&neg, &current->coeff);
+        add_term(result, &neg, current->exponent);
+        rat_clear(&neg);
         current = current->next;
     }
     return result;
@@ -111,7 +115,11 @@ Polynomial* poly_multiply(const Polynomial* poly1, const Polynomial* poly2) {
     while (t1 != NULL) {
         Term* t2 = poly2->head;
         while (t2 != NULL) {
-            add_term(result, rat_mul(t1->coeff, t2->coeff), t1->exponent + t2->exponent);
+            Rational prod;
+            rat_init(&prod);
+            rat_mul(&prod, &t1->coeff, &t2->coeff);
+            add_term(result, &prod, t1->exponent + t2->exponent);
+            rat_clear(&prod);
             t2 = t2->next;
         }
         t1 = t1->next;
@@ -132,20 +140,22 @@ PolyDivResult poly_divmod(const Polynomial* dividend, const Polynomial* divisor)
 
     while (!poly_is_zero(remainder) &&
            remainder->head->exponent >= divisor->head->exponent) {
-        Rational coeff = rat_div(remainder->head->coeff, divisor->head->coeff);
+        Rational coeff;
+        rat_init(&coeff);
+        rat_div(&coeff, &remainder->head->coeff, &divisor->head->coeff);
         int exp = remainder->head->exponent - divisor->head->exponent;
 
-        add_term(result.quotient, coeff, exp);
+        add_term(result.quotient, &coeff, exp);
 
-        // subtract coeff * x^exp * divisor from remainder
         Polynomial* term_poly = create_polynomial();
-        add_term(term_poly, coeff, exp);
+        add_term(term_poly, &coeff, exp);
         Polynomial* product = poly_multiply(term_poly, divisor);
         Polynomial* new_remainder = poly_subtract(remainder, product);
 
         free_polynomial(remainder);
         free_polynomial(product);
         free_polynomial(term_poly);
+        rat_clear(&coeff);
         remainder = new_remainder;
     }
 
@@ -167,13 +177,19 @@ Polynomial* poly_mod(const Polynomial* dividend, const Polynomial* divisor) {
 
 void poly_make_monic(Polynomial* poly) {
     if (poly->head == NULL) return;
-    Rational lc = poly->head->coeff;
-    if (rat_is_one(lc)) return;
+    if (rat_is_one(&poly->head->coeff)) return;
+    Rational lc;
+    rat_init_set(&lc, &poly->head->coeff);
     Term* current = poly->head;
     while (current != NULL) {
-        current->coeff = rat_div(current->coeff, lc);
+        Rational tmp;
+        rat_init(&tmp);
+        rat_div(&tmp, &current->coeff, &lc);
+        rat_set(&current->coeff, &tmp);
+        rat_clear(&tmp);
         current = current->next;
     }
+    rat_clear(&lc);
 }
 
 Polynomial* poly_gcd(const Polynomial* poly1, const Polynomial* poly2) {
@@ -201,26 +217,23 @@ Polynomial* poly_lcm(const Polynomial* poly1, const Polynomial* poly2) {
     return lcm;
 }
 
-// Horner's method for evaluation
 double poly_evaluate(const Polynomial* poly, double x) {
     if (poly->head == NULL) return 0.0;
 
     Term* current = poly->head;
-    double result = rat_to_double(current->coeff);
+    double result = rat_to_double(&current->coeff);
     int prev_exp = current->exponent;
     current = current->next;
 
     while (current != NULL) {
-        // multiply by x for each degree gap
         int gap = prev_exp - current->exponent;
         for (int i = 0; i < gap; i++)
             result *= x;
-        result += rat_to_double(current->coeff);
+        result += rat_to_double(&current->coeff);
         prev_exp = current->exponent;
         current = current->next;
     }
 
-    // multiply by x for remaining degrees down to 0
     for (int i = 0; i < prev_exp; i++)
         result *= x;
 
@@ -232,8 +245,13 @@ Polynomial* poly_derivative(const Polynomial* poly) {
     Term* current = poly->head;
     while (current != NULL) {
         if (current->exponent > 0) {
-            Rational new_coeff = rat_mul(current->coeff, rat_from_int(current->exponent));
-            add_term(derivative, new_coeff, current->exponent - 1);
+            Rational exp_rat = rat_from_int(current->exponent);
+            Rational new_coeff;
+            rat_init(&new_coeff);
+            rat_mul(&new_coeff, &current->coeff, &exp_rat);
+            add_term(derivative, &new_coeff, current->exponent - 1);
+            rat_clear(&new_coeff);
+            rat_clear(&exp_rat);
         }
         current = current->next;
     }
@@ -244,8 +262,13 @@ Polynomial* poly_integral(const Polynomial* poly) {
     Polynomial* integral = create_polynomial();
     Term* current = poly->head;
     while (current != NULL) {
-        Rational new_coeff = rat_div(current->coeff, rat_from_int(current->exponent + 1));
-        add_term(integral, new_coeff, current->exponent + 1);
+        Rational divisor = rat_from_int(current->exponent + 1);
+        Rational new_coeff;
+        rat_init(&new_coeff);
+        rat_div(&new_coeff, &current->coeff, &divisor);
+        add_term(integral, &new_coeff, current->exponent + 1);
+        rat_clear(&new_coeff);
+        rat_clear(&divisor);
         current = current->next;
     }
     return integral;
@@ -264,6 +287,7 @@ void free_polynomial(Polynomial* poly) {
     while (current != NULL) {
         Term* temp = current;
         current = current->next;
+        rat_clear(&temp->coeff);
         free(temp);
     }
     free(poly);
@@ -282,7 +306,6 @@ char* poly_to_string(const Polynomial* poly) {
         return s;
     }
 
-    // build string incrementally
     size_t cap = 128, len = 0;
     char* buf = malloc(cap);
     buf[0] = '\0';
@@ -292,29 +315,30 @@ char* poly_to_string(const Polynomial* poly) {
 
     while (current != NULL) {
         char term_buf[128];
-        Rational c = current->coeff;
+        // work with a copy for sign manipulation
+        Rational c;
+        rat_init_set(&c, &current->coeff);
         int e = current->exponent;
 
         if (!first) {
-            if (rat_is_negative(c)) {
+            if (rat_is_negative(&c)) {
                 strcat(buf, " - ");
                 len += 3;
-                c = rat_neg(c);
+                rat_neg(&c, &c);
             } else {
                 strcat(buf, " + ");
                 len += 3;
             }
-        } else if (rat_is_negative(c)) {
+        } else if (rat_is_negative(&c)) {
             strcat(buf, "-");
             len += 1;
-            c = rat_neg(c);
+            rat_neg(&c, &c);
         }
 
-        bool coeff_is_one = rat_is_one(c);
+        bool coeff_is_one = rat_is_one(&c);
 
         if (e == 0) {
-            // constant term — always show coefficient
-            char* cs = rat_to_string(c);
+            char* cs = rat_to_string(&c);
             snprintf(term_buf, sizeof(term_buf), "%s", cs);
             free(cs);
         } else if (coeff_is_one) {
@@ -323,13 +347,15 @@ char* poly_to_string(const Polynomial* poly) {
             else
                 snprintf(term_buf, sizeof(term_buf), "x^%d", e);
         } else {
-            char* cs = rat_to_string(c);
+            char* cs = rat_to_string(&c);
             if (e == 1)
                 snprintf(term_buf, sizeof(term_buf), "%sx", cs);
             else
                 snprintf(term_buf, sizeof(term_buf), "%sx^%d", cs, e);
             free(cs);
         }
+
+        rat_clear(&c);
 
         size_t tlen = strlen(term_buf);
         while (len + tlen + 1 > cap) {

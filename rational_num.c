@@ -2,135 +2,151 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <limits.h>
-#include <assert.h>
 
-// Euclidean GCD on absolute values
-rat_int_t gcd_int(rat_int_t a, rat_int_t b) {
-    if (a < 0) a = -a;
-    if (b < 0) b = -b;
-    while (b != 0) {
-        rat_int_t t = b;
-        b = a % b;
-        a = t;
-    }
-    return a;
+// --- lifecycle ---
+
+void rat_init(Rational* r) {
+    mpq_init(r->val);
 }
 
-static Rational normalize(rat_int_t num, rat_int_t den) {
-    assert(den != 0);
-    if (num == 0) return (Rational){0, 1};
-    // sign always in numerator
-    if (den < 0) { num = -num; den = -den; }
-    rat_int_t g = gcd_int(num, den);
-    return (Rational){num / g, den / g};
+void rat_clear(Rational* r) {
+    mpq_clear(r->val);
 }
 
-Rational rat_create(rat_int_t num, rat_int_t den) {
-    return normalize(num, den);
+void rat_init_set(Rational* dst, const Rational* src) {
+    mpq_init(dst->val);
+    mpq_set(dst->val, src->val);
 }
 
-Rational rat_from_int(rat_int_t n) {
-    return (Rational){n, 1};
+// --- construction ---
+
+void rat_set_si(Rational* r, long num, long den) {
+    mpq_set_si(r->val, num, (unsigned long)(den < 0 ? -den : den));
+    if (den < 0) mpq_neg(r->val, r->val);
+    mpq_canonicalize(r->val);
 }
 
-Rational rat_zero(void) {
-    return (Rational){0, 1};
+void rat_set(Rational* dst, const Rational* src) {
+    mpq_set(dst->val, src->val);
 }
 
-Rational rat_one(void) {
-    return (Rational){1, 1};
+Rational rat_from_si(long num, long den) {
+    Rational r;
+    mpq_init(r.val);
+    rat_set_si(&r, num, den);
+    return r;
 }
 
-Rational rat_add(Rational a, Rational b) {
-    // a.num/a.den + b.num/b.den = (a.num*b.den + b.num*a.den) / (a.den*b.den)
-    // reduce intermediate overflow risk by dividing by gcd of denominators first
-    rat_int_t g = gcd_int(a.den, b.den);
-    rat_int_t lcm_den = a.den / g * b.den;
-    rat_int_t num = a.num * (b.den / g) + b.num * (a.den / g);
-    return normalize(num, lcm_den);
+Rational rat_from_int(long n) {
+    return rat_from_si(n, 1);
 }
 
-Rational rat_sub(Rational a, Rational b) {
-    b.num = -b.num;
-    return rat_add(a, b);
+Rational rat_zero_val(void) {
+    Rational r;
+    mpq_init(r.val);
+    return r;
 }
 
-Rational rat_mul(Rational a, Rational b) {
-    // cross-reduce before multiplying to limit overflow
-    rat_int_t g1 = gcd_int(a.num, b.den);
-    rat_int_t g2 = gcd_int(b.num, a.den);
-    rat_int_t num = (a.num / g1) * (b.num / g2);
-    rat_int_t den = (a.den / g2) * (b.den / g1);
-    return normalize(num, den);
+Rational rat_one_val(void) {
+    return rat_from_int(1);
 }
 
-Rational rat_div(Rational a, Rational b) {
-    assert(b.num != 0);
-    return rat_mul(a, (Rational){b.den, b.num});
+// --- arithmetic ---
+
+void rat_add(Rational* result, const Rational* a, const Rational* b) {
+    mpq_add(result->val, a->val, b->val);
 }
 
-Rational rat_neg(Rational a) {
-    return (Rational){-a.num, a.den};
+void rat_sub(Rational* result, const Rational* a, const Rational* b) {
+    mpq_sub(result->val, a->val, b->val);
 }
 
-Rational rat_abs(Rational a) {
-    return (Rational){a.num < 0 ? -a.num : a.num, a.den};
+void rat_mul(Rational* result, const Rational* a, const Rational* b) {
+    mpq_mul(result->val, a->val, b->val);
 }
 
-Rational rat_pow_int(Rational base, int exp) {
+void rat_div(Rational* result, const Rational* a, const Rational* b) {
+    mpq_div(result->val, a->val, b->val);
+}
+
+void rat_neg(Rational* result, const Rational* a) {
+    mpq_neg(result->val, a->val);
+}
+
+void rat_abs(Rational* result, const Rational* a) {
+    mpq_abs(result->val, a->val);
+}
+
+void rat_pow_int(Rational* result, const Rational* base, int exp) {
     if (exp < 0) {
-        assert(base.num != 0);
-        base = (Rational){base.den, base.num};
-        if (base.den < 0) { base.num = -base.num; base.den = -base.den; }
-        exp = -exp;
+        Rational inv;
+        rat_init(&inv);
+        mpq_inv(inv.val, base->val);
+        rat_pow_int(result, &inv, -exp);
+        rat_clear(&inv);
+        return;
     }
-    Rational result = rat_one();
+    mpq_set_si(result->val, 1, 1);
+    Rational b;
+    rat_init_set(&b, base);
     while (exp > 0) {
-        if (exp & 1) result = rat_mul(result, base);
-        base = rat_mul(base, base);
+        if (exp & 1) mpq_mul(result->val, result->val, b.val);
+        mpq_mul(b.val, b.val, b.val);
         exp >>= 1;
     }
-    return result;
+    rat_clear(&b);
 }
 
-bool rat_eq(Rational a, Rational b) {
-    return a.num == b.num && a.den == b.den;
+// --- comparison ---
+
+bool rat_eq(const Rational* a, const Rational* b) {
+    return mpq_equal(a->val, b->val) != 0;
 }
 
-bool rat_is_zero(Rational a) {
-    return a.num == 0;
+bool rat_is_zero(const Rational* a) {
+    return mpq_sgn(a->val) == 0;
 }
 
-bool rat_is_one(Rational a) {
-    return a.num == 1 && a.den == 1;
+bool rat_is_one(const Rational* a) {
+    return mpq_cmp_si(a->val, 1, 1) == 0;
 }
 
-bool rat_is_negative(Rational a) {
-    return a.num < 0;
+bool rat_is_negative(const Rational* a) {
+    return mpq_sgn(a->val) < 0;
 }
 
-int rat_cmp(Rational a, Rational b) {
-    // a/b vs c/d => compare a*d vs c*b (denominators always positive)
-    rat_int_t lhs = a.num * b.den;
-    rat_int_t rhs = b.num * a.den;
-    if (lhs < rhs) return -1;
-    if (lhs > rhs) return 1;
-    return 0;
+int rat_cmp(const Rational* a, const Rational* b) {
+    return mpq_cmp(a->val, b->val);
 }
 
-double rat_to_double(Rational r) {
-    return (double)r.num / (double)r.den;
+// --- conversion ---
+
+double rat_to_double(const Rational* r) {
+    return mpq_get_d(r->val);
 }
 
-char* rat_to_string(Rational r) {
-    char buf[64];
-    if (r.den == 1)
-        snprintf(buf, sizeof(buf), "%lld", r.num);
-    else
-        snprintf(buf, sizeof(buf), "%lld/%lld", r.num, r.den);
-
-    char* s = malloc(strlen(buf) + 1);
-    strcpy(s, buf);
+char* rat_to_string(const Rational* r) {
+    // check if denominator is 1
+    if (mpz_cmp_si(mpq_denref(r->val), 1) == 0) {
+        char* s = mpz_get_str(NULL, 10, mpq_numref(r->val));
+        return s;
+    }
+    char* s = mpq_get_str(NULL, 10, r->val);
     return s;
+}
+
+// --- integer GCD ---
+
+void gcd_int(mpz_t result, const mpz_t a, const mpz_t b) {
+    mpz_gcd(result, a, b);
+}
+
+// --- accessors ---
+
+long rat_num_si(const Rational* r) {
+    return mpz_get_si(mpq_numref(r->val));
+}
+
+long rat_den_si(const Rational* r) {
+    return mpz_get_si(mpq_denref(r->val));
 }
