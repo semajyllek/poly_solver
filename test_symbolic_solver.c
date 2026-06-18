@@ -905,6 +905,506 @@ void test_integrate_poly() {
     printf("  test_integrate_poly PASSED\n");
 }
 
+/***********************************************************************
+*  complex / stress tests
+*************************************************************************/
+
+void test_parse_expand_product() {
+    // (x + 1)(x + 2)(x + 3) via parser => x^3 + 6x^2 + 11x + 6
+    Expr* e = parse_and_simplify("(x + 1) * (x + 2) * (x + 3)");
+    assert(e && e->type == EXPR_POLY);
+    Term* t = e->poly->head;
+    assert(t && t->exponent == 3 && rat_eq(t->coeff, R(1)));
+    t = t->next;
+    assert(t && t->exponent == 2 && rat_eq(t->coeff, R(6)));
+    t = t->next;
+    assert(t && t->exponent == 1 && rat_eq(t->coeff, R(11)));
+    t = t->next;
+    assert(t && t->exponent == 0 && rat_eq(t->coeff, R(6)));
+    assert(t->next == NULL);
+    free_expr(e);
+    printf("  test_parse_expand_product PASSED\n");
+}
+
+void test_expand_then_factor_roundtrip() {
+    // expand (x-1)(x-2)(x-3)(x-4) then factor it back
+    // x^4 - 10x^3 + 35x^2 - 50x + 24
+    Polynomial* p = create_polynomial();
+    add_term(p, R(1), 4);
+    add_term(p, R(-10), 3);
+    add_term(p, R(35), 2);
+    add_term(p, R(-50), 1);
+    add_term(p, R(24), 0);
+
+    Factorization* f = factorize(p);
+    assert(f && f->count == 4);
+    for (int i = 0; i < 4; i++) {
+        assert(f->multiplicities[i] == 1);
+        assert(polynomial_degree(f->factors[i]) == 1);
+    }
+
+    // multiply all factors back together and verify
+    Polynomial* rebuilt = create_polynomial();
+    add_term(rebuilt, rat_one(), 0);
+    for (int i = 0; i < f->count; i++) {
+        Polynomial* tmp = poly_multiply(rebuilt, f->factors[i]);
+        free_polynomial(rebuilt);
+        rebuilt = tmp;
+    }
+    // should match original
+    Term* t = rebuilt->head;
+    assert(t && t->exponent == 4 && rat_eq(t->coeff, R(1)));
+    t = t->next;
+    assert(t && t->exponent == 3 && rat_eq(t->coeff, R(-10)));
+    t = t->next;
+    assert(t && t->exponent == 2 && rat_eq(t->coeff, R(35)));
+    t = t->next;
+    assert(t && t->exponent == 1 && rat_eq(t->coeff, R(-50)));
+    t = t->next;
+    assert(t && t->exponent == 0 && rat_eq(t->coeff, R(24)));
+
+    free_polynomial(rebuilt);
+    free_factorization(f);
+    free_polynomial(p);
+    printf("  test_expand_then_factor_roundtrip PASSED\n");
+}
+
+void test_differentiate_integrate_inverse() {
+    // d/dx(integrate(f)) should give back f
+    // f = 4x^3 - 6x^2 + 2x - 7
+    Polynomial* f = create_polynomial();
+    add_term(f, R(4), 3);
+    add_term(f, R(-6), 2);
+    add_term(f, R(2), 1);
+    add_term(f, R(-7), 0);
+
+    Polynomial* integral = poly_integral(f);
+    Polynomial* deriv = poly_derivative(integral);
+
+    // deriv should equal f exactly
+    Term* tf = f->head;
+    Term* td = deriv->head;
+    while (tf && td) {
+        assert(tf->exponent == td->exponent);
+        assert(rat_eq(tf->coeff, td->coeff));
+        tf = tf->next;
+        td = td->next;
+    }
+    assert(tf == NULL && td == NULL);
+
+    free_polynomial(f);
+    free_polynomial(integral);
+    free_polynomial(deriv);
+    printf("  test_differentiate_integrate_inverse PASSED\n");
+}
+
+void test_high_degree_polynomial_multiply() {
+    // (x^5 + 1) * (x^5 - 1) = x^10 - 1  (difference of squares)
+    Polynomial* a = create_polynomial();
+    add_term(a, R(1), 5);
+    add_term(a, R(1), 0);
+
+    Polynomial* b = create_polynomial();
+    add_term(b, R(1), 5);
+    add_term(b, R(-1), 0);
+
+    Polynomial* product = poly_multiply(a, b);
+    Term* t = product->head;
+    assert(t && t->exponent == 10 && rat_eq(t->coeff, R(1)));
+    t = t->next;
+    assert(t && t->exponent == 0 && rat_eq(t->coeff, R(-1)));
+    assert(t->next == NULL);
+
+    free_polynomial(a);
+    free_polynomial(b);
+    free_polynomial(product);
+    printf("  test_high_degree_polynomial_multiply PASSED\n");
+}
+
+void test_rational_coefficient_factoring() {
+    // (1/2)x^2 - (1/2) = (1/2)(x-1)(x+1)
+    Polynomial* p = create_polynomial();
+    add_term(p, rat_create(1, 2), 2);
+    add_term(p, rat_create(-1, 2), 0);
+
+    Factorization* f = factorize(p);
+    assert(f);
+    assert(rat_eq(f->content, rat_create(1, 2)));
+    assert(f->count == 2);
+    for (int i = 0; i < 2; i++) {
+        assert(polynomial_degree(f->factors[i]) == 1);
+        assert(f->multiplicities[i] == 1);
+    }
+
+    free_factorization(f);
+    free_polynomial(p);
+    printf("  test_rational_coefficient_factoring PASSED\n");
+}
+
+void test_solve_quartic() {
+    // (x-1)(x+1)(x-2)(x+2) = x^4 - 5x^2 + 4
+    Polynomial* p = create_polynomial();
+    add_term(p, R(1), 4);
+    add_term(p, R(-5), 2);
+    add_term(p, R(4), 0);
+
+    Solutions* sol = solve_polynomial(p);
+    assert(sol->num_rational == 4);
+
+    bool has[5] = {false};
+    for (int i = 0; i < sol->num_rational; i++) {
+        rat_int_t v = sol->rational_roots[i].num;
+        if (v >= -2 && v <= 2 && sol->rational_roots[i].den == 1)
+            has[v + 2] = true;
+    }
+    assert(has[0] && has[1] && has[3] && has[4]); // -2,-1,1,2
+
+    free_solutions(sol);
+    free_polynomial(p);
+    printf("  test_solve_quartic PASSED\n");
+}
+
+void test_solve_with_rational_root() {
+    // 6x^3 - 11x^2 + 6x - 1 = 0  has roots 1/2, 1/3, 1
+    // verify: (x-1)(2x-1)(3x-1) = 6x^3 - 11x^2 + 6x - 1
+    Polynomial* p = create_polynomial();
+    add_term(p, R(6), 3);
+    add_term(p, R(-11), 2);
+    add_term(p, R(6), 1);
+    add_term(p, R(-1), 0);
+
+    Solutions* sol = solve_polynomial(p);
+    assert(sol->num_rational == 3);
+
+    bool has_half = false, has_third = false, has_one = false;
+    for (int i = 0; i < sol->num_rational; i++) {
+        if (rat_eq(sol->rational_roots[i], rat_create(1, 2))) has_half = true;
+        if (rat_eq(sol->rational_roots[i], rat_create(1, 3))) has_third = true;
+        if (rat_eq(sol->rational_roots[i], R(1))) has_one = true;
+    }
+    assert(has_half && has_third && has_one);
+
+    char* s = solutions_to_string(sol);
+    printf("  solved: %s\n", s);
+    free(s);
+
+    free_solutions(sol);
+    free_polynomial(p);
+    printf("  test_solve_with_rational_root PASSED\n");
+}
+
+void test_gcd_nontrivial() {
+    // gcd(x^4 - 1, x^6 - 1) = x^2 - 1
+    // x^4-1 = (x^2-1)(x^2+1), x^6-1 = (x^2-1)(x^4+x^2+1)
+    Polynomial* a = create_polynomial();
+    add_term(a, R(1), 4);
+    add_term(a, R(-1), 0);
+
+    Polynomial* b = create_polynomial();
+    add_term(b, R(1), 6);
+    add_term(b, R(-1), 0);
+
+    Polynomial* g = poly_gcd(a, b);
+
+    // should be x^2 - 1 (monic)
+    Term* t = g->head;
+    assert(t && t->exponent == 2 && rat_eq(t->coeff, R(1)));
+    t = t->next;
+    assert(t && t->exponent == 0 && rat_eq(t->coeff, R(-1)));
+    assert(t->next == NULL);
+
+    free_polynomial(a);
+    free_polynomial(b);
+    free_polynomial(g);
+    printf("  test_gcd_nontrivial PASSED\n");
+}
+
+void test_definite_integral() {
+    // integral of 3x^2 from 0 to 2 = [x^3]_0^2 = 8
+    Polynomial* p = create_polynomial();
+    add_term(p, R(3), 2);
+    double result = poly_definite_integral(p, 0.0, 2.0);
+    assert(fabs(result - 8.0) < 1e-10);
+    free_polynomial(p);
+
+    // integral of x^2 + x from 1 to 3 = [x^3/3 + x^2/2]_1^3
+    // = (9 + 4.5) - (1/3 + 0.5) = 13.5 - 0.8333... = 12.6666...
+    Polynomial* q = create_polynomial();
+    add_term(q, R(1), 2);
+    add_term(q, R(1), 1);
+    double r2 = poly_definite_integral(q, 1.0, 3.0);
+    assert(fabs(r2 - 38.0/3.0) < 1e-10);
+    free_polynomial(q);
+
+    printf("  test_definite_integral PASSED\n");
+}
+
+void test_sparse_polynomial_eval() {
+    // x^100 + 1 evaluated at x=1 should be 2
+    Polynomial* p = create_polynomial();
+    add_term(p, R(1), 100);
+    add_term(p, R(1), 0);
+    double val = poly_evaluate(p, 1.0);
+    assert(fabs(val - 2.0) < 1e-10);
+
+    // x^100 evaluated at x=0 should be 0
+    double val0 = poly_evaluate(p, 0.0);
+    assert(fabs(val0 - 1.0) < 1e-10); // constant term is 1
+
+    free_polynomial(p);
+    printf("  test_sparse_polynomial_eval PASSED\n");
+}
+
+void test_polynomial_chain_operations() {
+    // compute (x+1)^4 by repeated multiplication, then differentiate twice
+    // (x+1)^4 = x^4 + 4x^3 + 6x^2 + 4x + 1
+    // d/dx = 4x^3 + 12x^2 + 12x + 4
+    // d2/dx2 = 12x^2 + 24x + 12
+    Polynomial* base = create_polynomial();
+    add_term(base, R(1), 1);
+    add_term(base, R(1), 0);
+
+    Polynomial* p = poly_copy(base);
+    for (int i = 0; i < 3; i++) {
+        Polynomial* tmp = poly_multiply(p, base);
+        free_polynomial(p);
+        p = tmp;
+    }
+
+    // verify (x+1)^4
+    Term* t = p->head;
+    assert(t && t->exponent == 4 && rat_eq(t->coeff, R(1)));
+    t = t->next;
+    assert(t && t->exponent == 3 && rat_eq(t->coeff, R(4)));
+    t = t->next;
+    assert(t && t->exponent == 2 && rat_eq(t->coeff, R(6)));
+    t = t->next;
+    assert(t && t->exponent == 1 && rat_eq(t->coeff, R(4)));
+    t = t->next;
+    assert(t && t->exponent == 0 && rat_eq(t->coeff, R(1)));
+
+    Polynomial* d1 = poly_derivative(p);
+    Polynomial* d2 = poly_derivative(d1);
+
+    // 12x^2 + 24x + 12
+    t = d2->head;
+    assert(t && t->exponent == 2 && rat_eq(t->coeff, R(12)));
+    t = t->next;
+    assert(t && t->exponent == 1 && rat_eq(t->coeff, R(24)));
+    t = t->next;
+    assert(t && t->exponent == 0 && rat_eq(t->coeff, R(12)));
+    assert(t->next == NULL);
+
+    free_polynomial(base);
+    free_polynomial(p);
+    free_polynomial(d1);
+    free_polynomial(d2);
+    printf("  test_polynomial_chain_operations PASSED\n");
+}
+
+void test_solve_degree5_partial() {
+    // x^5 - x = x(x^4 - 1) = x(x^2-1)(x^2+1) = x(x-1)(x+1)(x^2+1)
+    // rational roots: 0, 1, -1; irreducible: x^2+1
+    Polynomial* p = create_polynomial();
+    add_term(p, R(1), 5);
+    add_term(p, R(-1), 1);
+
+    Solutions* sol = solve_polynomial(p);
+    assert(sol->num_rational == 3);
+
+    bool has_0 = false, has_1 = false, has_m1 = false;
+    for (int i = 0; i < sol->num_rational; i++) {
+        if (rat_eq(sol->rational_roots[i], R(0))) has_0 = true;
+        if (rat_eq(sol->rational_roots[i], R(1))) has_1 = true;
+        if (rat_eq(sol->rational_roots[i], R(-1))) has_m1 = true;
+    }
+    assert(has_0 && has_1 && has_m1);
+    assert(sol->num_irreducible == 1);
+
+    char* s = solutions_to_string(sol);
+    printf("  solved: %s\n", s);
+    free(s);
+
+    free_solutions(sol);
+    free_polynomial(p);
+    printf("  test_solve_degree5_partial PASSED\n");
+}
+
+void test_parse_complex_expression() {
+    // (2x^2 + 3x - 5) * (x - 1) - (x^3 + 2x^2 - 8x + 5)
+    // = (2x^3 + 3x^2 - 5x - 2x^2 - 3x + 5) - (x^3 + 2x^2 - 8x + 5)
+    // = (2x^3 + x^2 - 8x + 5) - (x^3 + 2x^2 - 8x + 5)
+    // = x^3 - x^2
+    Expr* e = parse_and_simplify("(2x^2 + 3x - 5) * (x - 1) - (x^3 + 2x^2 - 8x + 5)");
+    assert(e && e->type == EXPR_POLY);
+    Term* t = e->poly->head;
+    assert(t && t->exponent == 3 && rat_eq(t->coeff, R(1)));
+    t = t->next;
+    assert(t && t->exponent == 2 && rat_eq(t->coeff, R(-1)));
+    assert(t->next == NULL);
+
+    free_expr(e);
+    printf("  test_parse_complex_expression PASSED\n");
+}
+
+void test_rational_arithmetic_stress() {
+    // chain of operations that would accumulate error with doubles
+    // ((1/7 + 1/11) * 77) should be exactly 18
+    Rational a = rat_create(1, 7);
+    Rational b = rat_create(1, 11);
+    Rational sum = rat_add(a, b);            // 18/77
+    Rational result = rat_mul(sum, rat_from_int(77)); // 18
+    assert(rat_eq(result, R(18)));
+
+    // (1/3)^10 * 3^10 = 1
+    Rational third = rat_create(1, 3);
+    Rational t10 = rat_pow_int(third, 10);   // 1/59049
+    Rational three10 = rat_pow_int(R(3), 10); // 59049
+    Rational product = rat_mul(t10, three10);
+    assert(rat_eq(product, rat_one()));
+
+    printf("  test_rational_arithmetic_stress PASSED\n");
+}
+
+void test_factor_degree6() {
+    // x^6 - 1 = (x-1)(x+1)(x^4+x^2+1)
+    // the quartic has no rational roots so stays as one irreducible factor
+    Polynomial* p = create_polynomial();
+    add_term(p, R(1), 6);
+    add_term(p, R(-1), 0);
+
+    Factorization* f = factorize(p);
+    assert(f);
+
+    int linear_count = 0;
+    int total_degree = 0;
+    for (int i = 0; i < f->count; i++) {
+        int d = polynomial_degree(f->factors[i]);
+        total_degree += d * f->multiplicities[i];
+        if (d == 1) linear_count++;
+    }
+    assert(total_degree == 6);
+    assert(linear_count == 2); // (x-1) and (x+1)
+
+    // verify by evaluation: each root should zero the original
+    assert(fabs(poly_evaluate(p, 1.0)) < 1e-10);
+    assert(fabs(poly_evaluate(p, -1.0)) < 1e-10);
+
+    // verify roundtrip: multiply all factors, scale by content
+    Polynomial* rebuilt = create_polynomial();
+    add_term(rebuilt, f->content, 0);
+    for (int i = 0; i < f->count; i++) {
+        for (int m = 0; m < f->multiplicities[i]; m++) {
+            Polynomial* tmp = poly_multiply(rebuilt, f->factors[i]);
+            free_polynomial(rebuilt);
+            rebuilt = tmp;
+        }
+    }
+    Term* t = rebuilt->head;
+    assert(t && t->exponent == 6 && rat_eq(t->coeff, R(1)));
+    t = t->next;
+    assert(t && t->exponent == 0 && rat_eq(t->coeff, R(-1)));
+    assert(t->next == NULL);
+
+    char* s = factorization_to_string(f);
+    printf("  x^6-1 factored: %s\n", s);
+    free(s);
+
+    free_polynomial(rebuilt);
+    free_factorization(f);
+    free_polynomial(p);
+    printf("  test_factor_degree6 PASSED\n");
+}
+
+void test_divmod_with_remainder() {
+    // (x^3 + 1) / (x^2 + 1) = quotient x, remainder -x + 1
+    Polynomial* a = create_polynomial();
+    add_term(a, R(1), 3);
+    add_term(a, R(1), 0);
+
+    Polynomial* b = create_polynomial();
+    add_term(b, R(1), 2);
+    add_term(b, R(1), 0);
+
+    PolyDivResult dr = poly_divmod(a, b);
+
+    // quotient = x
+    Term* t = dr.quotient->head;
+    assert(t && t->exponent == 1 && rat_eq(t->coeff, R(1)));
+    assert(t->next == NULL);
+
+    // remainder = -x + 1
+    t = dr.remainder->head;
+    assert(t && t->exponent == 1 && rat_eq(t->coeff, R(-1)));
+    t = t->next;
+    assert(t && t->exponent == 0 && rat_eq(t->coeff, R(1)));
+    assert(t->next == NULL);
+
+    // verify: a = b * quotient + remainder
+    Polynomial* bq = poly_multiply(b, dr.quotient);
+    Polynomial* check = poly_add(bq, dr.remainder);
+    t = check->head;
+    assert(t && t->exponent == 3 && rat_eq(t->coeff, R(1)));
+    t = t->next;
+    assert(t && t->exponent == 0 && rat_eq(t->coeff, R(1)));
+    assert(t->next == NULL);
+
+    free_polynomial(a);
+    free_polynomial(b);
+    free_polynomial(bq);
+    free_polynomial(check);
+    free_polynomial(dr.quotient);
+    free_polynomial(dr.remainder);
+    printf("  test_divmod_with_remainder PASSED\n");
+}
+
+void test_canonicalize_nested_division() {
+    // ((x^2 - 4) / (x - 2)) should simplify to x + 2
+    // built from tree: (x*x - 4) / (x - 2)
+    Expr* e = create_div(
+        create_sub(create_pow(create_var("x"), create_const(2)), create_const(4)),
+        create_sub(create_var("x"), create_const(2)));
+    Expr* c = canonicalize(e);
+    assert(c && c->type == EXPR_POLY);
+    Term* t = c->poly->head;
+    assert(t && t->exponent == 1 && rat_eq(t->coeff, R(1)));
+    t = t->next;
+    assert(t && t->exponent == 0 && rat_eq(t->coeff, R(2)));
+    assert(t->next == NULL);
+
+    free_expr(e);
+    free_expr(c);
+    printf("  test_canonicalize_nested_division PASSED\n");
+}
+
+void test_power_of_binomial() {
+    // (x + 2)^5 via canonicalization
+    // = x^5 + 10x^4 + 40x^3 + 80x^2 + 80x + 32
+    Expr* e = create_pow(
+        create_add(create_var("x"), create_const(2)),
+        create_const(5));
+    Expr* c = canonicalize(e);
+    assert(c && c->type == EXPR_POLY);
+
+    Term* t = c->poly->head;
+    assert(t && t->exponent == 5 && rat_eq(t->coeff, R(1)));
+    t = t->next;
+    assert(t && t->exponent == 4 && rat_eq(t->coeff, R(10)));
+    t = t->next;
+    assert(t && t->exponent == 3 && rat_eq(t->coeff, R(40)));
+    t = t->next;
+    assert(t && t->exponent == 2 && rat_eq(t->coeff, R(80)));
+    t = t->next;
+    assert(t && t->exponent == 1 && rat_eq(t->coeff, R(80)));
+    t = t->next;
+    assert(t && t->exponent == 0 && rat_eq(t->coeff, R(32)));
+    assert(t->next == NULL);
+
+    free_expr(e);
+    free_expr(c);
+    printf("  test_power_of_binomial PASSED\n");
+}
+
 void run_tests() {
     printf("Rational Number Tests:\n");
     test_rat_normalization();
@@ -961,6 +1461,26 @@ void run_tests() {
     test_differentiate_poly();
     test_differentiate_via_parser();
     test_integrate_poly();
+
+    printf("\nComplex / Stress Tests:\n");
+    test_parse_expand_product();
+    test_expand_then_factor_roundtrip();
+    test_differentiate_integrate_inverse();
+    test_high_degree_polynomial_multiply();
+    test_rational_coefficient_factoring();
+    test_solve_quartic();
+    test_solve_with_rational_root();
+    test_gcd_nontrivial();
+    test_definite_integral();
+    test_sparse_polynomial_eval();
+    test_polynomial_chain_operations();
+    test_solve_degree5_partial();
+    test_parse_complex_expression();
+    test_rational_arithmetic_stress();
+    test_factor_degree6();
+    test_divmod_with_remainder();
+    test_canonicalize_nested_division();
+    test_power_of_binomial();
 
     printf("\nAll tests passed!\n");
 }

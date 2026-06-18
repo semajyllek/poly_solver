@@ -4,16 +4,14 @@
 #include <string.h>
 
 // GCD of all coefficients in the polynomial
+// gcd(a/b, c/d) = gcd(a,c) / lcm(b,d)
 Rational poly_content(const Polynomial* poly) {
     if (poly->head == NULL) return rat_zero();
     Rational content = rat_abs(poly->head->coeff);
     Term* t = poly->head->next;
     while (t) {
-        // gcd of two rationals: gcd(a/b, c/d) = gcd(a*d, c*b) / (b*d)
         Rational abs_c = rat_abs(t->coeff);
-        rat_int_t num_gcd = gcd_int(
-            content.num * abs_c.den,
-            abs_c.num * content.den);
+        rat_int_t num_gcd = gcd_int(content.num, abs_c.num);
         rat_int_t den_lcm = content.den / gcd_int(content.den, abs_c.den) * abs_c.den;
         content = rat_create(num_gcd, den_lcm);
         t = t->next;
