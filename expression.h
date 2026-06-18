@@ -9,7 +9,8 @@ typedef enum {
     EXPR_BINOP,
     EXPR_NEG,
     EXPR_POLY,
-    EXPR_RATIONAL_FN
+    EXPR_RATIONAL_FN,
+    EXPR_LN
 } ExprType;
 
 typedef enum {
@@ -36,6 +37,7 @@ typedef struct Expr {
             Polynomial* num;
             Polynomial* den;
         } ratfn;
+        struct Expr* ln_arg;       // EXPR_LN: ln|arg|
     };
 } Expr;
 
@@ -51,6 +53,7 @@ Expr* create_pow(Expr* base, Expr* exponent);
 Expr* create_neg(Expr* operand);
 Expr* create_poly_expr(Polynomial* poly);
 Expr* create_rational_fn(Polynomial* num, Polynomial* den);
+Expr* create_ln(Expr* arg);
 
 // operations
 Expr* canonicalize(Expr* expr);

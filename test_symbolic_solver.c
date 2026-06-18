@@ -10,6 +10,7 @@
 #include "factor.h"
 #include "solver.h"
 #include "matrix.h"
+#include "partial_frac.h"
 #include "token.h"
 
 
@@ -1720,6 +1721,200 @@ void test_vector_parse() {
     printf("  test_vector_parse PASSED\n");
 }
 
+// helper: get coefficient at given degree from a polynomial
+static Rational test_get_coeff(const Polynomial* poly, int degree) {
+    Term* t = poly->head;
+    while (t) {
+        if (t->exponent == degree) return t->coeff;
+        t = t->next;
+    }
+    return rat_zero();
+}
+
+/***********************************************************************
+*  partial fraction tests
+*************************************************************************/
+
+void test_pf_simple() {
+    // (2x+3) / (x^2-1) = (2x+3)/((x-1)(x+1))
+    // = 5/2 * 1/(x-1) + (-1/2) * 1/(x+1)
+    Polynomial* num = create_polynomial();
+    add_term(num, R(2), 1);
+    add_term(num, R(3), 0);
+
+    Polynomial* den = create_polynomial();
+    add_term(den, R(1), 2);
+    add_term(den, R(-1), 0);
+
+    PartialFractionDecomp* pf = partial_fractions(num, den);
+    assert(pf);
+    assert(pf->poly_part == NULL || poly_is_zero(pf->poly_part));
+    assert(pf->num_terms == 2);
+
+    // verify by checking that the decomposition is correct:
+    // reconstruct and compare. Each term has coeffs for powers 1..m
+    // For simple roots, each term has 1 coefficient
+    char* s = pf_to_string(pf);
+    printf("  (2x+3)/(x^2-1) = %s\n", s);
+    free(s);
+
+    // verify coefficients: find term for (x-1) and (x+1)
+    for (int i = 0; i < pf->num_terms; i++) {
+        assert(!pf->terms[i].is_quadratic);
+        assert(pf->terms[i].power == 1);
+        // check coeff: for (x-1), should be 5/2; for (x+1), should be -1/2
+        Rational root_neg = test_get_coeff(pf->terms[i].factor, 0);
+        if (rat_eq(root_neg, R(-1))) {
+            // factor is (x - 1)
+            assert(rat_eq(pf->terms[i].coeffs[0], rat_create(5, 2)));
+        } else {
+            // factor is (x + 1)
+            assert(rat_eq(pf->terms[i].coeffs[0], rat_create(-1, 2)));
+        }
+    }
+
+    free_pf_decomp(pf);
+    free_polynomial(num);
+    free_polynomial(den);
+    printf("  test_pf_simple PASSED\n");
+}
+
+void test_pf_repeated_root() {
+    // (3x+5) / (x-1)^2 = A/(x-1) + B/(x-1)^2
+    // clear: 3x+5 = A(x-1) + B = Ax + (B-A)
+    // A = 3, B-A = 5, so B = 8
+    Polynomial* num = create_polynomial();
+    add_term(num, R(3), 1);
+    add_term(num, R(5), 0);
+
+    Polynomial* den = create_polynomial();
+    add_term(den, R(1), 2);
+    add_term(den, R(-2), 1);
+    add_term(den, R(1), 0);
+
+    PartialFractionDecomp* pf = partial_fractions(num, den);
+    assert(pf);
+    assert(pf->num_terms == 1);
+    assert(pf->terms[0].power == 2);
+    assert(rat_eq(pf->terms[0].coeffs[0], R(3)));  // A₁ = 3 (for 1/(x-1))
+    assert(rat_eq(pf->terms[0].coeffs[1], R(8)));  // A₂ = 8 (for 1/(x-1)²)
+
+    char* s = pf_to_string(pf);
+    printf("  (3x+5)/(x-1)^2 = %s\n", s);
+    free(s);
+
+    free_pf_decomp(pf);
+    free_polynomial(num);
+    free_polynomial(den);
+    printf("  test_pf_repeated_root PASSED\n");
+}
+
+void test_pf_improper() {
+    // (x^2+1) / (x^2-1) = 1 + 2/(x^2-1) = 1 + 1/(x-1) - 1/(x+1)
+    Polynomial* num = create_polynomial();
+    add_term(num, R(1), 2);
+    add_term(num, R(1), 0);
+
+    Polynomial* den = create_polynomial();
+    add_term(den, R(1), 2);
+    add_term(den, R(-1), 0);
+
+    PartialFractionDecomp* pf = partial_fractions(num, den);
+    assert(pf);
+    // should have polynomial part = 1
+    assert(pf->poly_part != NULL);
+    assert(pf->poly_part->head != NULL);
+    assert(rat_eq(pf->poly_part->head->coeff, R(1)));
+    assert(pf->poly_part->head->exponent == 0);
+    // should have 2 PF terms
+    assert(pf->num_terms == 2);
+
+    char* s = pf_to_string(pf);
+    printf("  (x^2+1)/(x^2-1) = %s\n", s);
+    free(s);
+
+    free_pf_decomp(pf);
+    free_polynomial(num);
+    free_polynomial(den);
+    printf("  test_pf_improper PASSED\n");
+}
+
+/***********************************************************************
+*  rational function integration tests
+*************************************************************************/
+
+void test_integrate_rational_simple() {
+    // ∫ (2x+3)/(x^2-1) dx = 5/2 ln|x-1| - 1/2 ln|x+1|
+    Polynomial* num = create_polynomial();
+    add_term(num, R(2), 1);
+    add_term(num, R(3), 0);
+    Polynomial* den = create_polynomial();
+    add_term(den, R(1), 2);
+    add_term(den, R(-1), 0);
+
+    Expr* ratfn = create_rational_fn(num, den);
+    Expr* result = integrate(ratfn, "x");
+    assert(result != NULL);
+
+    char* s = expr_to_string(result);
+    printf("  ∫(2x+3)/(x²-1)dx = %s\n", s);
+    // should contain "ln" terms
+    assert(strstr(s, "ln") != NULL);
+    free(s);
+
+    free_expr(ratfn);
+    free_expr(result);
+    printf("  test_integrate_rational_simple PASSED\n");
+}
+
+void test_integrate_rational_repeated() {
+    // ∫ 1/(x-1)^2 dx = -1/(x-1)
+    Polynomial* num = create_polynomial();
+    add_term(num, R(1), 0);
+    Polynomial* den = create_polynomial();
+    add_term(den, R(1), 2);
+    add_term(den, R(-2), 1);
+    add_term(den, R(1), 0);
+
+    Expr* ratfn = create_rational_fn(num, den);
+    Expr* result = integrate(ratfn, "x");
+    assert(result != NULL);
+
+    char* s = expr_to_string(result);
+    printf("  ∫1/(x-1)²dx = %s\n", s);
+    // should NOT contain "ln" (power rule, not log)
+    assert(strstr(s, "ln") == NULL);
+    free(s);
+
+    free_expr(ratfn);
+    free_expr(result);
+    printf("  test_integrate_rational_repeated PASSED\n");
+}
+
+void test_integrate_rational_improper() {
+    // ∫ (x^2+1)/(x^2-1) dx = x + ln terms
+    Polynomial* num = create_polynomial();
+    add_term(num, R(1), 2);
+    add_term(num, R(1), 0);
+    Polynomial* den = create_polynomial();
+    add_term(den, R(1), 2);
+    add_term(den, R(-1), 0);
+
+    Expr* ratfn = create_rational_fn(num, den);
+    Expr* result = integrate(ratfn, "x");
+    assert(result != NULL);
+
+    char* s = expr_to_string(result);
+    printf("  ∫(x²+1)/(x²-1)dx = %s\n", s);
+    // should contain both polynomial and ln parts
+    assert(strstr(s, "ln") != NULL);
+    free(s);
+
+    free_expr(ratfn);
+    free_expr(result);
+    printf("  test_integrate_rational_improper PASSED\n");
+}
+
 void run_tests() {
     printf("Rational Number Tests:\n");
     test_rat_normalization();
@@ -1819,6 +2014,16 @@ void run_tests() {
     test_inverse_singular();
     test_matrix_parse();
     test_vector_parse();
+
+    printf("\nPartial Fraction Tests:\n");
+    test_pf_simple();
+    test_pf_repeated_root();
+    test_pf_improper();
+
+    printf("\nRational Integration Tests:\n");
+    test_integrate_rational_simple();
+    test_integrate_rational_repeated();
+    test_integrate_rational_improper();
 
     printf("\nAll tests passed!\n");
 }

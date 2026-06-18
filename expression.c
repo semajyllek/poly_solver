@@ -1,6 +1,7 @@
 #include "expression.h"
 #include "polynomial.h"
 #include "factor.h"
+#include "partial_frac.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -67,6 +68,13 @@ Expr* create_rational_fn(Polynomial* num, Polynomial* den) {
     return e;
 }
 
+Expr* create_ln(Expr* arg) {
+    Expr* e = malloc(sizeof(Expr));
+    e->type = EXPR_LN;
+    e->ln_arg = arg;
+    return e;
+}
+
 // --- memory ---
 
 void free_expr(Expr* expr) {
@@ -88,6 +96,9 @@ void free_expr(Expr* expr) {
         case EXPR_RATIONAL_FN:
             free_polynomial(expr->ratfn.num);
             free_polynomial(expr->ratfn.den);
+            break;
+        case EXPR_LN:
+            free_expr(expr->ln_arg);
             break;
         case EXPR_CONST:
             break;
@@ -167,6 +178,11 @@ static void expr_to_string_impl(const Expr* expr, StrBuf* sb) {
             strbuf_append(sb, ")");
             break;
         }
+        case EXPR_LN:
+            strbuf_append(sb, "ln|");
+            expr_to_string_impl(expr->ln_arg, sb);
+            strbuf_append(sb, "|");
+            break;
     }
 }
 
@@ -437,6 +453,8 @@ Expr* canonicalize(Expr* expr) {
             return wrap_poly(poly_copy(expr->poly));
         case EXPR_RATIONAL_FN:
             return wrap_ratfn(poly_copy(expr->ratfn.num), poly_copy(expr->ratfn.den));
+        case EXPR_LN:
+            return NULL; // transcendental — cannot canonicalize to polynomial
     }
     return NULL;
 }
@@ -521,6 +539,53 @@ Expr* differentiate(Expr* expr, const char* variable) {
     return NULL;
 }
 
+// helper: build expression for (x - r) where r is rational
+static Expr* make_linear_expr(Rational root) {
+    // x - r
+    Polynomial* p = create_polynomial();
+    add_term(p, rat_one(), 1);
+    add_term(p, rat_neg(root), 0);
+    return create_poly_expr(p);
+}
+
+// integrate a single partial fraction term
+static Expr* integrate_pf_term(PFTerm* t) {
+    if (t->is_quadratic) return NULL; // arctan not yet supported
+
+    // linear factor (x - r)
+    Rational root = rat_neg(t->factor->head->next->coeff); // constant term negated
+
+    Expr* result = NULL;
+
+    for (int k = 0; k < t->power; k++) {
+        Rational coeff = t->coeffs[k];
+        if (rat_is_zero(coeff)) continue;
+
+        int power = k + 1; // denominator power
+        Expr* term;
+
+        if (power == 1) {
+            // A/(x-r) → A * ln|x - r|
+            term = create_mul(create_const_rat(coeff), create_ln(make_linear_expr(root)));
+        } else {
+            // A/(x-r)^k → A * (x-r)^(1-k) / (1-k)
+            Rational new_exp = rat_from_int(1 - power);
+            Rational divisor = rat_from_int(1 - power);
+            Rational new_coeff = rat_div(coeff, divisor);
+            term = create_mul(
+                create_const_rat(new_coeff),
+                create_pow(make_linear_expr(root), create_const_rat(new_exp)));
+        }
+
+        if (result == NULL)
+            result = term;
+        else
+            result = create_add(result, term);
+    }
+
+    return result;
+}
+
 Expr* integrate(Expr* expr, const char* variable) {
     if (!expr) return NULL;
     (void)variable;
@@ -534,7 +599,34 @@ Expr* integrate(Expr* expr, const char* variable) {
         return wrap_poly(integral);
     }
 
-    // rational function integration not yet supported
+    if (canonical->type == EXPR_RATIONAL_FN) {
+        PartialFractionDecomp* pf = partial_fractions(
+            canonical->ratfn.num, canonical->ratfn.den);
+        free_expr(canonical);
+        if (!pf) return NULL;
+
+        Expr* result = NULL;
+
+        // integrate polynomial part
+        if (pf->poly_part && !poly_is_zero(pf->poly_part)) {
+            Polynomial* poly_int = poly_integral(pf->poly_part);
+            result = wrap_poly(poly_int);
+        }
+
+        // integrate each partial fraction term
+        for (int i = 0; i < pf->num_terms; i++) {
+            Expr* term_integral = integrate_pf_term(&pf->terms[i]);
+            if (!term_integral) continue;
+            if (result == NULL)
+                result = term_integral;
+            else
+                result = create_add(result, term_integral);
+        }
+
+        free_pf_decomp(pf);
+        return result;
+    }
+
     free_expr(canonical);
     return NULL;
 }
