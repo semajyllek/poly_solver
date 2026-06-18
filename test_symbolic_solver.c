@@ -1342,6 +1342,128 @@ void test_gmp_large_coefficients() {
 }
 
 /***********************************************************************
+*  expression formatter tests
+*************************************************************************/
+
+static void assert_expr_str(Expr* e, const char* expected) {
+    char* s = expr_to_string(e);
+    if (strcmp(s, expected) != 0) {
+        fprintf(stderr, "FAIL: expected \"%s\", got \"%s\"\n", expected, s);
+        assert(0);
+    }
+    free(s);
+    free_expr(e);
+}
+
+void test_fmt_add_negative_rhs() {
+    // 3 + (-5) → "3 - 5"
+    assert_expr_str(
+        create_add(create_const(3), create_const(-5)),
+        "3 - 5");
+    printf("  test_fmt_add_negative_rhs PASSED\n");
+}
+
+void test_fmt_mul_coeff_one() {
+    // 1 * ln|x| → "ln|x|"
+    assert_expr_str(
+        create_mul(create_const(1), create_ln(create_var("x"))),
+        "ln|x|");
+    printf("  test_fmt_mul_coeff_one PASSED\n");
+}
+
+void test_fmt_mul_coeff_neg_one() {
+    // -1 * ln|x| → "-ln|x|"
+    assert_expr_str(
+        create_mul(create_const(-1), create_ln(create_var("x"))),
+        "-ln|x|");
+    printf("  test_fmt_mul_coeff_neg_one PASSED\n");
+}
+
+void test_fmt_neg_coeff_in_sum() {
+    // a + (-1/2 * b) → "a - 1/2 * b"
+    Rational half = rat_from_si(-1, 2);
+    assert_expr_str(
+        create_add(create_var("a"), create_mul(create_const_rat(&half), create_var("b"))),
+        "a - 1/2 * b");
+    rat_clear(&half);
+    printf("  test_fmt_neg_coeff_in_sum PASSED\n");
+}
+
+void test_fmt_pow_neg_one() {
+    // x^(-1) → "1/(x)"
+    assert_expr_str(
+        create_pow(create_var("x"), create_const(-1)),
+        "1/(x)");
+    printf("  test_fmt_pow_neg_one PASSED\n");
+}
+
+void test_fmt_pow_neg_two() {
+    // x^(-2) → "1/(x)^2"
+    assert_expr_str(
+        create_pow(create_var("x"), create_const(-2)),
+        "1/(x)^2");
+    printf("  test_fmt_pow_neg_two PASSED\n");
+}
+
+void test_fmt_div_parens() {
+    // (a + b) / (c * d) → "(a + b) / (c * d)"
+    assert_expr_str(
+        create_div(
+            create_add(create_var("a"), create_var("b")),
+            create_mul(create_var("c"), create_var("d"))),
+        "(a + b) / (c * d)");
+    printf("  test_fmt_div_parens PASSED\n");
+}
+
+void test_fmt_pow_poly_base() {
+    // (x + 1)^2 — polynomial base gets parens
+    Polynomial* p = create_polynomial();
+    Rational one = rat_one_val();
+    add_term(p, &one, 1);
+    add_term(p, &one, 0);
+    rat_clear(&one);
+    assert_expr_str(
+        create_pow(create_poly_expr(p), create_const(2)),
+        "(x + 1)^2");
+    printf("  test_fmt_pow_poly_base PASSED\n");
+}
+
+void test_fmt_chained_add_negatives() {
+    // a + (-b) + (-c) → "a - b - c"
+    assert_expr_str(
+        create_add(
+            create_add(create_var("a"), create_neg(create_var("b"))),
+            create_neg(create_var("c"))),
+        "a - b - c");
+    printf("  test_fmt_chained_add_negatives PASSED\n");
+}
+
+void test_fmt_integration_output() {
+    // build the tree that integrate produces for (2x+3)/(x^2-1):
+    // 5/2 * ln|x - 1| + (-1/2) * ln|x + 1|
+    // should render as: "5/2 * ln|x - 1| - 1/2 * ln|x + 1|"
+    Polynomial* p1 = create_polynomial();
+    Rational one = rat_one_val(), neg1r = rat_from_int(-1);
+    add_term(p1, &one, 1);
+    add_term(p1, &neg1r, 0);
+    Polynomial* p2 = create_polynomial();
+    Rational one2 = rat_one_val();
+    add_term(p2, &one2, 1);
+    add_term(p2, &one2, 0);
+
+    Rational coeff1 = rat_from_si(5, 2);
+    Rational coeff2 = rat_from_si(-1, 2);
+    Expr* term1 = create_mul(create_const_rat(&coeff1), create_ln(create_poly_expr(p1)));
+    Expr* term2 = create_mul(create_const_rat(&coeff2), create_ln(create_poly_expr(p2)));
+    assert_expr_str(
+        create_add(term1, term2),
+        "5/2 * ln|x - 1| - 1/2 * ln|x + 1|");
+    rat_clear(&one); rat_clear(&neg1r); rat_clear(&one2);
+    rat_clear(&coeff1); rat_clear(&coeff2);
+    printf("  test_fmt_integration_output PASSED\n");
+}
+
+/***********************************************************************
 *  GMP precision tests — cases that fail with long long or doubles
 *************************************************************************/
 
@@ -1681,6 +1803,18 @@ void run_tests() {
     test_rational_arithmetic_stress();
     test_power_of_binomial();
     test_gmp_large_coefficients();
+
+    printf("\nFormatter Tests:\n");
+    test_fmt_add_negative_rhs();
+    test_fmt_mul_coeff_one();
+    test_fmt_mul_coeff_neg_one();
+    test_fmt_neg_coeff_in_sum();
+    test_fmt_pow_neg_one();
+    test_fmt_pow_neg_two();
+    test_fmt_div_parens();
+    test_fmt_pow_poly_base();
+    test_fmt_chained_add_negatives();
+    test_fmt_integration_output();
 
     printf("\nGMP Precision Tests:\n");
     test_gmp_factorial_fraction();

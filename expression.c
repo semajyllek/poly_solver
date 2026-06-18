@@ -159,27 +159,28 @@ static bool is_negative_term(const Expr* e) {
     return false;
 }
 
-// negate a term for display: -1/2 * ln|...| becomes 1/2 * ln|...|
-static void emit_negated_term(const Expr* expr, StrBuf* sb);
 static void expr_to_string_impl(const Expr* expr, StrBuf* sb);
 
+// emit a term with its sign flipped: -1/2 * ln|x| → 1/2 * ln|x|
 static void emit_negated_term(const Expr* expr, StrBuf* sb) {
     if (is_neg_const(expr)) {
-        // negate the constant
         Rational pos; rat_init(&pos);
         rat_neg(&pos, &expr->constant);
         char* s = rat_to_string(&pos);
         strbuf_append(sb, s);
         free(s);
         rat_clear(&pos);
-    } else if (expr->type == EXPR_NEG) {
+        return;
+    }
+    if (expr->type == EXPR_NEG) {
         expr_to_string_impl(expr->operand, sb);
-    } else if (expr->type == EXPR_BINOP && expr->binop.op == OP_MUL && is_neg_const(expr->binop.left)) {
-        // -c * rhs → c * rhs (with negated coefficient)
+        return;
+    }
+    if (expr->type == EXPR_BINOP && expr->binop.op == OP_MUL
+        && is_neg_const(expr->binop.left)) {
         Rational pos; rat_init(&pos);
         rat_neg(&pos, &expr->binop.left->constant);
         if (rat_is_one(&pos)) {
-            // -1 * rhs → just rhs
             expr_to_string_impl(expr->binop.right, sb);
         } else {
             char* s = rat_to_string(&pos);
@@ -189,9 +190,74 @@ static void emit_negated_term(const Expr* expr, StrBuf* sb) {
             expr_to_string_impl(expr->binop.right, sb);
         }
         rat_clear(&pos);
-    } else {
-        expr_to_string_impl(expr, sb);
+        return;
     }
+    expr_to_string_impl(expr, sb);
+}
+
+// emit a + b, absorbing negative right-hand sides as subtraction
+static void emit_add(const Expr* left, const Expr* right, StrBuf* sb) {
+    expr_to_string_impl(left, sb);
+    if (is_negative_term(right)) {
+        strbuf_append(sb, " - ");
+        emit_negated_term(right, sb);
+    } else {
+        strbuf_append(sb, " + ");
+        expr_to_string_impl(right, sb);
+    }
+}
+
+// emit a * b, eliding coefficients of 1 and -1
+static void emit_mul(const Expr* left, const Expr* right, StrBuf* sb) {
+    if (is_one_const(left)) {
+        expr_to_string_impl(right, sb);
+    } else if (is_neg_one_const(left)) {
+        strbuf_append(sb, "-");
+        expr_to_string_impl(right, sb);
+    } else {
+        expr_to_string_impl(left, sb);
+        strbuf_append(sb, " * ");
+        expr_to_string_impl(right, sb);
+    }
+}
+
+// emit a / b with minimal parenthesization
+static void emit_div(const Expr* left, const Expr* right, StrBuf* sb) {
+    bool lp = (left->type == EXPR_BINOP &&
+               (left->binop.op == OP_ADD || left->binop.op == OP_SUB));
+    bool rp = (right->type == EXPR_BINOP);
+    if (lp) strbuf_append(sb, "(");
+    expr_to_string_impl(left, sb);
+    if (lp) strbuf_append(sb, ")");
+    strbuf_append(sb, " / ");
+    if (rp) strbuf_append(sb, "(");
+    expr_to_string_impl(right, sb);
+    if (rp) strbuf_append(sb, ")");
+}
+
+// emit base^exp, rendering negative exponents as fractions
+static void emit_pow(const Expr* base, const Expr* exp, StrBuf* sb) {
+    if (is_neg_const(exp)) {
+        Rational pos_exp; rat_init(&pos_exp);
+        rat_neg(&pos_exp, &exp->constant);
+        strbuf_append(sb, "1/(");
+        expr_to_string_impl(base, sb);
+        strbuf_append(sb, ")");
+        if (!rat_is_one(&pos_exp)) {
+            strbuf_append(sb, "^");
+            char* s = rat_to_string(&pos_exp);
+            strbuf_append(sb, s);
+            free(s);
+        }
+        rat_clear(&pos_exp);
+        return;
+    }
+    bool needs_parens = (base->type == EXPR_BINOP || base->type == EXPR_POLY);
+    if (needs_parens) strbuf_append(sb, "(");
+    expr_to_string_impl(base, sb);
+    if (needs_parens) strbuf_append(sb, ")");
+    strbuf_append(sb, "^");
+    expr_to_string_impl(exp, sb);
 }
 
 static void expr_to_string_impl(const Expr* expr, StrBuf* sb) {
@@ -212,80 +278,19 @@ static void expr_to_string_impl(const Expr* expr, StrBuf* sb) {
             expr_to_string_impl(expr->operand, sb);
             strbuf_append(sb, ")");
             break;
-        case EXPR_BINOP: {
-            BinOp op = expr->binop.op;
-            Expr* left = expr->binop.left;
-            Expr* right = expr->binop.right;
-
-            if (op == OP_ADD && is_negative_term(right)) {
-                // a + (-b) → a - b
-                expr_to_string_impl(left, sb);
-                strbuf_append(sb, " - ");
-                emit_negated_term(right, sb);
-            } else if (op == OP_ADD) {
-                expr_to_string_impl(left, sb);
-                strbuf_append(sb, " + ");
-                expr_to_string_impl(right, sb);
-            } else if (op == OP_SUB) {
-                expr_to_string_impl(left, sb);
-                strbuf_append(sb, " - ");
-                expr_to_string_impl(right, sb);
-            } else if (op == OP_MUL) {
-                // skip coefficient of 1: 1 * ln|x| → ln|x|
-                if (is_one_const(left)) {
-                    expr_to_string_impl(right, sb);
-                } else if (is_neg_one_const(left)) {
-                    strbuf_append(sb, "-");
-                    expr_to_string_impl(right, sb);
-                } else {
-                    expr_to_string_impl(left, sb);
-                    strbuf_append(sb, " * ");
-                    expr_to_string_impl(right, sb);
-                }
-            } else if (op == OP_DIV) {
-                // check if we need parens around numerator/denominator
-                bool left_needs = (left->type == EXPR_BINOP &&
-                    (left->binop.op == OP_ADD || left->binop.op == OP_SUB));
-                bool right_needs = (right->type == EXPR_BINOP);
-                if (left_needs) strbuf_append(sb, "(");
-                expr_to_string_impl(left, sb);
-                if (left_needs) strbuf_append(sb, ")");
-                strbuf_append(sb, " / ");
-                if (right_needs) strbuf_append(sb, "(");
-                expr_to_string_impl(right, sb);
-                if (right_needs) strbuf_append(sb, ")");
-            } else if (op == OP_POW) {
-                // check for negative exponents: x^(-1) → 1/(x)
-                if (is_neg_const(right)) {
-                    Rational pos_exp; rat_init(&pos_exp);
-                    rat_neg(&pos_exp, &right->constant);
-                    if (rat_is_one(&pos_exp)) {
-                        // x^(-1) → 1/(expr)
-                        strbuf_append(sb, "1/(");
-                        expr_to_string_impl(left, sb);
-                        strbuf_append(sb, ")");
-                    } else {
-                        // x^(-n) → 1/(expr)^n
-                        strbuf_append(sb, "1/(");
-                        expr_to_string_impl(left, sb);
-                        strbuf_append(sb, ")^");
-                        char* s = rat_to_string(&pos_exp);
-                        strbuf_append(sb, s);
-                        free(s);
-                    }
-                    rat_clear(&pos_exp);
-                } else {
-                    // wrap non-trivial bases in parens
-                    bool base_needs_parens = (left->type == EXPR_BINOP || left->type == EXPR_POLY);
-                    if (base_needs_parens) strbuf_append(sb, "(");
-                    expr_to_string_impl(left, sb);
-                    if (base_needs_parens) strbuf_append(sb, ")");
-                    strbuf_append(sb, "^");
-                    expr_to_string_impl(right, sb);
-                }
+        case EXPR_BINOP:
+            switch (expr->binop.op) {
+                case OP_ADD: emit_add(expr->binop.left, expr->binop.right, sb); break;
+                case OP_SUB:
+                    expr_to_string_impl(expr->binop.left, sb);
+                    strbuf_append(sb, " - ");
+                    expr_to_string_impl(expr->binop.right, sb);
+                    break;
+                case OP_MUL: emit_mul(expr->binop.left, expr->binop.right, sb); break;
+                case OP_DIV: emit_div(expr->binop.left, expr->binop.right, sb); break;
+                case OP_POW: emit_pow(expr->binop.left, expr->binop.right, sb); break;
             }
             break;
-        }
         case EXPR_POLY: {
             char* s = poly_to_string(expr->poly);
             strbuf_append(sb, s);
