@@ -18,11 +18,16 @@ CLI usage:
 ./poly_solver differentiate "3x^2 + 4x + 2"
 ./poly_solver integrate "6x^2 + 4x"
 ./poly_solver solve "x^3 - 6x^2 + 11x - 6"
+./poly_solver solve_system "[[1,2],[3,4]]" "[5,11]"
+./poly_solver det "[[1,2],[3,4]]"
+./poly_solver inverse "[[1,2],[3,4]]"
+./poly_solver rank "[[1,2,3],[4,5,6]]"
+./poly_solver rref "[[1,2,3],[4,5,6]]"
 ```
 
 ## Architecture
 
-Symbolic algebra engine with five layers:
+Symbolic algebra engine with six layers:
 
 1. **Rational arithmetic** (`rational_num.c/h`) — Exact `Rational` type (`long long` num/den, GCD-normalized). `rat_int_t` typedef enables future GMP swap. Value type passed by value.
 
@@ -30,9 +35,11 @@ Symbolic algebra engine with five layers:
 
 3. **Expression tree** (`expression.c/h`) — Tagged union `Expr` with types: `EXPR_CONST`, `EXPR_VAR`, `EXPR_BINOP` (unified binary ops with `BinOp` discriminant), `EXPR_NEG`, `EXPR_POLY`, `EXPR_RATIONAL_FN`. `canonicalize()` converts any expression tree to polynomial or rational function canonical form. `simplify()` = `canonicalize()`.
 
-4. **Parser** (`parser.c/h`) — Recursive descent with implicit multiplication (`5x^3`), unary minus (`-x`), and standard operator precedence. Single-token lookahead via saved input pointer.
+4. **Parser** (`parser.c/h`) — Shunting-yard algorithm with implicit multiplication (`5x^3`), unary minus (`-x`), and standard operator precedence. Type-safe `ExprStack`/`OpStack`.
 
 5. **Factoring & Solving** (`factor.c/h`, `solver.c/h`) — Rational root theorem + synthetic division for linear factors. Square-free decomposition via `gcd(f, f')`. Quadratic formula for degree-2 factors. Solver dispatches to factorizer, then solves each factor by degree.
+
+6. **Linear algebra** (`matrix.c/h`) — Dense row-major `Matrix` with `Rational` entries. Gaussian elimination to RREF over exact rationals. Solve Ax=b, determinant, inverse, rank. Depends only on `rational_num.h`. Bracket-notation parser for CLI input (`[[1,2],[3,4]]`).
 
 ## Key Design Invariants
 

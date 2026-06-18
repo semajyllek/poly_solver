@@ -9,6 +9,7 @@
 #include "polynomial.h"
 #include "factor.h"
 #include "solver.h"
+#include "matrix.h"
 #include "token.h"
 
 
@@ -1405,6 +1406,320 @@ void test_power_of_binomial() {
     printf("  test_power_of_binomial PASSED\n");
 }
 
+/***********************************************************************
+*  matrix / linear systems tests
+*************************************************************************/
+
+void test_matrix_create_free() {
+    Matrix* m = matrix_create(2, 3);
+    assert(m->rows == 2 && m->cols == 3);
+    // all entries should be zero
+    for (int r = 0; r < 2; r++)
+        for (int c = 0; c < 3; c++)
+            assert(rat_is_zero(MAT_AT(m, r, c)));
+    // set and read back
+    MAT_AT(m, 0, 1) = rat_from_int(7);
+    assert(rat_eq(MAT_AT(m, 0, 1), R(7)));
+    matrix_free(m);
+    printf("  test_matrix_create_free PASSED\n");
+}
+
+void test_matrix_copy() {
+    Matrix* m = matrix_create(2, 2);
+    MAT_AT(m, 0, 0) = R(1); MAT_AT(m, 0, 1) = R(2);
+    MAT_AT(m, 1, 0) = R(3); MAT_AT(m, 1, 1) = R(4);
+    Matrix* c = matrix_copy(m);
+    MAT_AT(m, 0, 0) = R(99); // modify original
+    assert(rat_eq(MAT_AT(c, 0, 0), R(1))); // copy unaffected
+    matrix_free(m);
+    matrix_free(c);
+    printf("  test_matrix_copy PASSED\n");
+}
+
+void test_vector_create_free() {
+    Vector* v = vector_create(3);
+    v->data[0] = R(5);
+    v->data[1] = R(-3);
+    v->data[2] = rat_create(1, 2);
+    assert(rat_eq(v->data[2], rat_create(1, 2)));
+    vector_free(v);
+    printf("  test_vector_create_free PASSED\n");
+}
+
+void test_matrix_to_string() {
+    Matrix* m = matrix_create(2, 2);
+    MAT_AT(m, 0, 0) = R(1); MAT_AT(m, 0, 1) = R(2);
+    MAT_AT(m, 1, 0) = R(3); MAT_AT(m, 1, 1) = R(4);
+    char* s = matrix_to_string(m);
+    assert(strstr(s, "1") != NULL);
+    assert(strstr(s, "4") != NULL);
+    free(s);
+    matrix_free(m);
+    printf("  test_matrix_to_string PASSED\n");
+}
+
+void test_rref_identity() {
+    Matrix* m = matrix_create(3, 3);
+    MAT_AT(m, 0, 0) = R(1);
+    MAT_AT(m, 1, 1) = R(1);
+    MAT_AT(m, 2, 2) = R(1);
+    Matrix* rref = matrix_rref(m);
+    for (int r = 0; r < 3; r++)
+        for (int c = 0; c < 3; c++)
+            assert(rat_eq(MAT_AT(rref, r, c), (r == c) ? rat_one() : rat_zero()));
+    matrix_free(m);
+    matrix_free(rref);
+    printf("  test_rref_identity PASSED\n");
+}
+
+void test_rref_2x3() {
+    // [[1, 2, 3], [4, 5, 6]] → RREF [[1, 0, -1], [0, 1, 2]]
+    Matrix* m = matrix_create(2, 3);
+    MAT_AT(m, 0, 0) = R(1); MAT_AT(m, 0, 1) = R(2); MAT_AT(m, 0, 2) = R(3);
+    MAT_AT(m, 1, 0) = R(4); MAT_AT(m, 1, 1) = R(5); MAT_AT(m, 1, 2) = R(6);
+    Matrix* rref = matrix_rref(m);
+    assert(rat_eq(MAT_AT(rref, 0, 0), R(1)));
+    assert(rat_eq(MAT_AT(rref, 0, 1), R(0)));
+    assert(rat_eq(MAT_AT(rref, 0, 2), R(-1)));
+    assert(rat_eq(MAT_AT(rref, 1, 0), R(0)));
+    assert(rat_eq(MAT_AT(rref, 1, 1), R(1)));
+    assert(rat_eq(MAT_AT(rref, 1, 2), R(2)));
+    matrix_free(m);
+    matrix_free(rref);
+    printf("  test_rref_2x3 PASSED\n");
+}
+
+void test_rref_needs_swap() {
+    // [[0, 1], [1, 0]] requires row swap
+    Matrix* m = matrix_create(2, 2);
+    MAT_AT(m, 0, 0) = R(0); MAT_AT(m, 0, 1) = R(1);
+    MAT_AT(m, 1, 0) = R(1); MAT_AT(m, 1, 1) = R(0);
+    Matrix* rref = matrix_rref(m);
+    assert(rat_eq(MAT_AT(rref, 0, 0), R(1)));
+    assert(rat_eq(MAT_AT(rref, 1, 1), R(1)));
+    matrix_free(m);
+    matrix_free(rref);
+    printf("  test_rref_needs_swap PASSED\n");
+}
+
+void test_rank() {
+    // rank of [[1,2,3],[4,5,6],[7,8,9]] = 2 (rows are linearly dependent)
+    Matrix* m = matrix_create(3, 3);
+    MAT_AT(m, 0, 0) = R(1); MAT_AT(m, 0, 1) = R(2); MAT_AT(m, 0, 2) = R(3);
+    MAT_AT(m, 1, 0) = R(4); MAT_AT(m, 1, 1) = R(5); MAT_AT(m, 1, 2) = R(6);
+    MAT_AT(m, 2, 0) = R(7); MAT_AT(m, 2, 1) = R(8); MAT_AT(m, 2, 2) = R(9);
+    assert(matrix_rank(m) == 2);
+    matrix_free(m);
+    printf("  test_rank PASSED\n");
+}
+
+void test_det_2x2() {
+    // det([[1,2],[3,4]]) = 1*4 - 2*3 = -2
+    Matrix* m = matrix_create(2, 2);
+    MAT_AT(m, 0, 0) = R(1); MAT_AT(m, 0, 1) = R(2);
+    MAT_AT(m, 1, 0) = R(3); MAT_AT(m, 1, 1) = R(4);
+    Rational d = matrix_det(m);
+    assert(rat_eq(d, R(-2)));
+    matrix_free(m);
+    printf("  test_det_2x2 PASSED\n");
+}
+
+void test_det_3x3() {
+    // det([[2,1,1],[1,3,2],[1,0,0]]) = 2(0-0) - 1(0-2) + 1(0-3) = 0+2-3 = -1
+    Matrix* m = matrix_create(3, 3);
+    MAT_AT(m, 0, 0) = R(2); MAT_AT(m, 0, 1) = R(1); MAT_AT(m, 0, 2) = R(1);
+    MAT_AT(m, 1, 0) = R(1); MAT_AT(m, 1, 1) = R(3); MAT_AT(m, 1, 2) = R(2);
+    MAT_AT(m, 2, 0) = R(1); MAT_AT(m, 2, 1) = R(0); MAT_AT(m, 2, 2) = R(0);
+    Rational d = matrix_det(m);
+    assert(rat_eq(d, R(-1)));
+    matrix_free(m);
+    printf("  test_det_3x3 PASSED\n");
+}
+
+void test_det_singular() {
+    // [[1,2],[2,4]] is singular
+    Matrix* m = matrix_create(2, 2);
+    MAT_AT(m, 0, 0) = R(1); MAT_AT(m, 0, 1) = R(2);
+    MAT_AT(m, 1, 0) = R(2); MAT_AT(m, 1, 1) = R(4);
+    assert(rat_is_zero(matrix_det(m)));
+    matrix_free(m);
+    printf("  test_det_singular PASSED\n");
+}
+
+void test_det_with_swap() {
+    // [[0,1],[1,0]] needs swap, det = -1
+    Matrix* m = matrix_create(2, 2);
+    MAT_AT(m, 0, 0) = R(0); MAT_AT(m, 0, 1) = R(1);
+    MAT_AT(m, 1, 0) = R(1); MAT_AT(m, 1, 1) = R(0);
+    Rational d = matrix_det(m);
+    assert(rat_eq(d, R(-1)));
+    matrix_free(m);
+    printf("  test_det_with_swap PASSED\n");
+}
+
+void test_solve_2x2_unique() {
+    // x + 2y = 5, 3x + 4y = 11 => x = 1, y = 2
+    Matrix* A = matrix_create(2, 2);
+    MAT_AT(A, 0, 0) = R(1); MAT_AT(A, 0, 1) = R(2);
+    MAT_AT(A, 1, 0) = R(3); MAT_AT(A, 1, 1) = R(4);
+    Vector* b = vector_create(2);
+    b->data[0] = R(5);
+    b->data[1] = R(11);
+
+    LinSysResult* res = linsys_solve(A, b);
+    assert(res->status == LINSYS_UNIQUE);
+    assert(rat_eq(res->solution->data[0], R(1)));
+    assert(rat_eq(res->solution->data[1], R(2)));
+
+    linsys_result_free(res);
+    matrix_free(A);
+    vector_free(b);
+    printf("  test_solve_2x2_unique PASSED\n");
+}
+
+void test_solve_3x3_unique() {
+    // x + y + z = 6, 2y + 5z = -4, 2x + 5y - z = 27
+    // solution: x = 5, y = 3, z = -2
+    Matrix* A = matrix_create(3, 3);
+    MAT_AT(A, 0, 0) = R(1); MAT_AT(A, 0, 1) = R(1); MAT_AT(A, 0, 2) = R(1);
+    MAT_AT(A, 1, 0) = R(0); MAT_AT(A, 1, 1) = R(2); MAT_AT(A, 1, 2) = R(5);
+    MAT_AT(A, 2, 0) = R(2); MAT_AT(A, 2, 1) = R(5); MAT_AT(A, 2, 2) = R(-1);
+    Vector* b = vector_create(3);
+    b->data[0] = R(6); b->data[1] = R(-4); b->data[2] = R(27);
+
+    LinSysResult* res = linsys_solve(A, b);
+    assert(res->status == LINSYS_UNIQUE);
+    assert(rat_eq(res->solution->data[0], R(5)));
+    assert(rat_eq(res->solution->data[1], R(3)));
+    assert(rat_eq(res->solution->data[2], R(-2)));
+
+    linsys_result_free(res);
+    matrix_free(A);
+    vector_free(b);
+    printf("  test_solve_3x3_unique PASSED\n");
+}
+
+void test_solve_inconsistent() {
+    // x + y = 1, x + y = 2 — no solution
+    Matrix* A = matrix_create(2, 2);
+    MAT_AT(A, 0, 0) = R(1); MAT_AT(A, 0, 1) = R(1);
+    MAT_AT(A, 1, 0) = R(1); MAT_AT(A, 1, 1) = R(1);
+    Vector* b = vector_create(2);
+    b->data[0] = R(1); b->data[1] = R(2);
+
+    LinSysResult* res = linsys_solve(A, b);
+    assert(res->status == LINSYS_INCONSISTENT);
+    assert(res->solution == NULL);
+
+    linsys_result_free(res);
+    matrix_free(A);
+    vector_free(b);
+    printf("  test_solve_inconsistent PASSED\n");
+}
+
+void test_solve_infinite() {
+    // x + 2y + 3z = 1 (1 equation, 3 unknowns)
+    Matrix* A = matrix_create(1, 3);
+    MAT_AT(A, 0, 0) = R(1); MAT_AT(A, 0, 1) = R(2); MAT_AT(A, 0, 2) = R(3);
+    Vector* b = vector_create(1);
+    b->data[0] = R(1);
+
+    LinSysResult* res = linsys_solve(A, b);
+    assert(res->status == LINSYS_INFINITE);
+    assert(res->rank == 1);
+
+    linsys_result_free(res);
+    matrix_free(A);
+    vector_free(b);
+    printf("  test_solve_infinite PASSED\n");
+}
+
+void test_solve_hilbert_3x3() {
+    // Hilbert matrix: H[i][j] = 1/(i+j+1), b = [1,1,1]
+    // exact solution: x = [3, -24, 30]
+    // floating-point solvers get this wrong (condition number ~524)
+    Matrix* H = matrix_create(3, 3);
+    MAT_AT(H, 0, 0) = rat_one();         MAT_AT(H, 0, 1) = rat_create(1, 2); MAT_AT(H, 0, 2) = rat_create(1, 3);
+    MAT_AT(H, 1, 0) = rat_create(1, 2);  MAT_AT(H, 1, 1) = rat_create(1, 3); MAT_AT(H, 1, 2) = rat_create(1, 4);
+    MAT_AT(H, 2, 0) = rat_create(1, 3);  MAT_AT(H, 2, 1) = rat_create(1, 4); MAT_AT(H, 2, 2) = rat_create(1, 5);
+
+    Vector* b = vector_create(3);
+    b->data[0] = rat_one(); b->data[1] = rat_one(); b->data[2] = rat_one();
+
+    LinSysResult* res = linsys_solve(H, b);
+    assert(res->status == LINSYS_UNIQUE);
+    assert(rat_eq(res->solution->data[0], R(3)));
+    assert(rat_eq(res->solution->data[1], R(-24)));
+    assert(rat_eq(res->solution->data[2], R(30)));
+
+    char* s = linsys_result_to_string(res);
+    printf("  hilbert solved: %s\n", s);
+    free(s);
+
+    linsys_result_free(res);
+    matrix_free(H);
+    vector_free(b);
+    printf("  test_solve_hilbert_3x3 PASSED\n");
+}
+
+void test_inverse_2x2() {
+    // inverse of [[1,2],[3,4]], verify A * A^-1 = I
+    Matrix* A = matrix_create(2, 2);
+    MAT_AT(A, 0, 0) = R(1); MAT_AT(A, 0, 1) = R(2);
+    MAT_AT(A, 1, 0) = R(3); MAT_AT(A, 1, 1) = R(4);
+
+    Matrix* inv = matrix_inverse(A);
+    assert(inv != NULL);
+
+    // expected: [[-2, 1], [3/2, -1/2]]
+    assert(rat_eq(MAT_AT(inv, 0, 0), R(-2)));
+    assert(rat_eq(MAT_AT(inv, 0, 1), R(1)));
+    assert(rat_eq(MAT_AT(inv, 1, 0), rat_create(3, 2)));
+    assert(rat_eq(MAT_AT(inv, 1, 1), rat_create(-1, 2)));
+
+    matrix_free(A);
+    matrix_free(inv);
+    printf("  test_inverse_2x2 PASSED\n");
+}
+
+void test_inverse_singular() {
+    Matrix* m = matrix_create(2, 2);
+    MAT_AT(m, 0, 0) = R(1); MAT_AT(m, 0, 1) = R(2);
+    MAT_AT(m, 1, 0) = R(2); MAT_AT(m, 1, 1) = R(4);
+    assert(matrix_inverse(m) == NULL);
+    matrix_free(m);
+    printf("  test_inverse_singular PASSED\n");
+}
+
+void test_matrix_parse() {
+    Matrix* m = matrix_parse("[[1, 2], [3, 4]]");
+    assert(m && m->rows == 2 && m->cols == 2);
+    assert(rat_eq(MAT_AT(m, 0, 0), R(1)));
+    assert(rat_eq(MAT_AT(m, 1, 1), R(4)));
+    matrix_free(m);
+
+    // rational entries
+    Matrix* m2 = matrix_parse("[[1/2, -3/4], [0, 5]]");
+    assert(m2 && m2->rows == 2 && m2->cols == 2);
+    assert(rat_eq(MAT_AT(m2, 0, 0), rat_create(1, 2)));
+    assert(rat_eq(MAT_AT(m2, 0, 1), rat_create(-3, 4)));
+    matrix_free(m2);
+
+    printf("  test_matrix_parse PASSED\n");
+}
+
+void test_vector_parse() {
+    Vector* v = vector_parse("[1, -2, 3/5]");
+    assert(v && v->n == 3);
+    assert(rat_eq(v->data[0], R(1)));
+    assert(rat_eq(v->data[1], R(-2)));
+    assert(rat_eq(v->data[2], rat_create(3, 5)));
+    vector_free(v);
+
+    assert(vector_parse("not a vector") == NULL);
+    printf("  test_vector_parse PASSED\n");
+}
+
 void run_tests() {
     printf("Rational Number Tests:\n");
     test_rat_normalization();
@@ -1481,6 +1796,29 @@ void run_tests() {
     test_divmod_with_remainder();
     test_canonicalize_nested_division();
     test_power_of_binomial();
+
+    printf("\nMatrix / Linear Systems Tests:\n");
+    test_matrix_create_free();
+    test_matrix_copy();
+    test_vector_create_free();
+    test_matrix_to_string();
+    test_rref_identity();
+    test_rref_2x3();
+    test_rref_needs_swap();
+    test_rank();
+    test_det_2x2();
+    test_det_3x3();
+    test_det_singular();
+    test_det_with_swap();
+    test_solve_2x2_unique();
+    test_solve_3x3_unique();
+    test_solve_inconsistent();
+    test_solve_infinite();
+    test_solve_hilbert_3x3();
+    test_inverse_2x2();
+    test_inverse_singular();
+    test_matrix_parse();
+    test_vector_parse();
 
     printf("\nAll tests passed!\n");
 }
