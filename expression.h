@@ -1,60 +1,67 @@
 #ifndef EXPRESSION_H
 #define EXPRESSION_H
 
-typedef struct Polynomial Polynomial; // Forward declaration
-
-typedef struct RationalExpr {
-    Polynomial* numerator;   // Pointer to the numerator polynomial
-    Polynomial* denominator; // Pointer to the denominator polynomial
-} RationalExpr;
+#include "polynomial.h"
 
 typedef enum {
-    VAR,
-    CONST,
-    ADD,
-    SUBTRACT,
-    MUL,
-    DIVIDE,
-    POW,
-    POLY,       // For explicitly indicating polynomial expressions
-    RATIONAL
+    EXPR_CONST,
+    EXPR_VAR,
+    EXPR_BINOP,
+    EXPR_NEG,
+    EXPR_POLY,
+    EXPR_RATIONAL_FN
 } ExprType;
 
+typedef enum {
+    OP_ADD,
+    OP_SUB,
+    OP_MUL,
+    OP_DIV,
+    OP_POW
+} BinOp;
+
 typedef struct Expr {
-    ExprType type; // Type of expression (VAR, CONST, ADD, etc.)
+    ExprType type;
     union {
-        char* var_name;      // Variable name for VAR type
-        double constant;     // Constant value for CONST type
-        struct {            // Addition structure
-            struct Expr* left;    // Left side of addition
-            struct Expr* right;   // Right side of addition
-        } add;
-        struct {            // Subtraction structure
-            struct Expr* left;    // Left side of subtraction
-            struct Expr* right;   // Right side of subtraction
-        } subtract;
-        struct {            // Multiplication structure
-            struct Expr* left;    // Left side of multiplication
-            struct Expr* right;   // Right side of multiplication
-        } mul;
-        struct {            // Division structure
-            struct Expr* numerator;   // Numerator for division
-            struct Expr* denominator; // Denominator for division
-        } div;
-        struct {            // Power structure
-            struct Expr* base;     // Base for power operation
-            struct Expr* exponent; // Exponent for power operation
-        } pow;
-		Polynomial* polynomial; // Pointer for POLY expressions
-        RationalExpr* rational; // Pointer for RATIONAL expressions
+        Rational constant;         // EXPR_CONST
+        char* var_name;            // EXPR_VAR
+        struct {                   // EXPR_BINOP
+            BinOp op;
+            struct Expr* left;
+            struct Expr* right;
+        } binop;
+        struct Expr* operand;      // EXPR_NEG
+        Polynomial* poly;          // EXPR_POLY
+        struct {                   // EXPR_RATIONAL_FN
+            Polynomial* num;
+            Polynomial* den;
+        } ratfn;
     };
 } Expr;
 
-// Function prototypes
+// constructors
+Expr* create_const_rat(Rational value);
+Expr* create_const(double value);
+Expr* create_var(const char* name);
+Expr* create_add(Expr* left, Expr* right);
+Expr* create_sub(Expr* left, Expr* right);
+Expr* create_mul(Expr* left, Expr* right);
+Expr* create_div(Expr* numerator, Expr* denominator);
+Expr* create_pow(Expr* base, Expr* exponent);
+Expr* create_neg(Expr* operand);
+Expr* create_poly_expr(Polynomial* poly);
+Expr* create_rational_fn(Polynomial* num, Polynomial* den);
+
+// operations
+Expr* canonicalize(Expr* expr);
 Expr* simplify(Expr* expr);
+Expr* factor(Expr* expr);
 Expr* differentiate(Expr* expr, const char* variable);
 Expr* integrate(Expr* expr, const char* variable);
-void free_expr(Expr* expr);
-void print_expr(const Expr* expr);
 
-#endif // EXPRESSION_H
+// output and memory
+char* expr_to_string(const Expr* expr);
+void print_expr(const Expr* expr);
+void free_expr(Expr* expr);
+
+#endif

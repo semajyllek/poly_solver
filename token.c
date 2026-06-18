@@ -1,5 +1,7 @@
+#define _POSIX_C_SOURCE 200809L
 #include "token.h"
 #include <stdlib.h>
+#include <string.h>
 #include <ctype.h>
 
 // Function to get the next token from the input string

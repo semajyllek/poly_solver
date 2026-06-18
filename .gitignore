@@ -1,0 +1,3 @@
+*.o
+poly_solver
+test_symbolic_solver
