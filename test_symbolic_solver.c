@@ -1328,19 +1328,262 @@ void test_power_of_binomial() {
 }
 
 void test_gmp_large_coefficients() {
-    // test that GMP handles coefficients that would overflow long long
-    // (1000000007)^3 as a coefficient — this exceeds 2^63
+    // (1000000007)^3 exceeds 2^63
     Rational big = rat_from_int(1000000007);
     Rational big_cubed; rat_init(&big_cubed);
     rat_pow_int(&big_cubed, &big, 3);
-    // verify it's not zero and not truncated
     assert(!rat_is_zero(&big_cubed));
     char* s = rat_to_string(&big_cubed);
-    assert(strlen(s) > 18); // 10^27 has 28 digits, exceeds long long range
+    assert(strlen(s) > 18);
     printf("  big^3 = %s\n", s);
     free(s);
     rat_clear(&big); rat_clear(&big_cubed);
     printf("  test_gmp_large_coefficients PASSED\n");
+}
+
+/***********************************************************************
+*  GMP precision tests — cases that fail with long long or doubles
+*************************************************************************/
+
+void test_gmp_factorial_fraction() {
+    // 1/20! is an extremely small fraction; verify it survives a roundtrip
+    // 20! = 2432902008176640000 (fits in long long but barely)
+    // 25! = 15511210043330985984000000 (does NOT fit in long long)
+    // compute 1/25! via repeated division
+    Rational r = rat_one_val();
+    for (int i = 1; i <= 25; i++) {
+        Rational divisor = rat_from_int(i);
+        Rational tmp; rat_init(&tmp);
+        rat_div(&tmp, &r, &divisor);
+        rat_set(&r, &tmp);
+        rat_clear(&tmp); rat_clear(&divisor);
+    }
+    // now multiply by 25! to get back to 1
+    for (int i = 1; i <= 25; i++) {
+        Rational factor = rat_from_int(i);
+        Rational tmp; rat_init(&tmp);
+        rat_mul(&tmp, &r, &factor);
+        rat_set(&r, &tmp);
+        rat_clear(&tmp); rat_clear(&factor);
+    }
+    Rational one = rat_one_val();
+    assert(rat_eq(&r, &one));
+    rat_clear(&r); rat_clear(&one);
+    printf("  test_gmp_factorial_fraction PASSED\n");
+}
+
+void test_gmp_hilbert_5x5() {
+    // 5x5 Hilbert matrix has condition number ~943656
+    // floating-point solvers produce garbage; exact arithmetic is exact
+    // H[i][j] = 1/(i+j+1), b = [1,1,1,1,1]
+    // exact solution: [5, -120, 630, -1120, 630]
+    Matrix* H = matrix_create(5, 5);
+    for (int r = 0; r < 5; r++)
+        for (int c = 0; c < 5; c++) {
+            Rational v = rat_from_si(1, r + c + 1);
+            rat_set(&MAT_AT(H, r, c), &v);
+            rat_clear(&v);
+        }
+    Vector* b = vector_create(5);
+    for (int i = 0; i < 5; i++) {
+        Rational one = rat_one_val();
+        rat_set(&b->data[i], &one);
+        rat_clear(&one);
+    }
+
+    LinSysResult* res = linsys_solve(H, b);
+    assert(res->status == LINSYS_UNIQUE);
+
+    long expected[] = {5, -120, 630, -1120, 630};
+    for (int i = 0; i < 5; i++) {
+        Rational e = rat_from_int(expected[i]);
+        assert(rat_eq(&res->solution->data[i], &e));
+        rat_clear(&e);
+    }
+
+    char* s = linsys_result_to_string(res);
+    printf("  hilbert 5x5: %s\n", s);
+    free(s);
+
+    linsys_result_free(res); matrix_free(H); vector_free(b);
+    printf("  test_gmp_hilbert_5x5 PASSED\n");
+}
+
+void test_gmp_poly_gcd_large() {
+    // GCD of two degree-10 polynomials with large coefficients
+    // p = (x+1000000007)^5, q = (x+1000000007)^3 * (x+13)^2
+    // gcd should be (x+1000000007)^3
+    Polynomial* factor1 = create_polynomial();
+    Rational one = rat_one_val();
+    Rational big = rat_from_int(1000000007);
+    add_term(factor1, &one, 1);
+    add_term(factor1, &big, 0);
+
+    Polynomial* factor2 = create_polynomial();
+    Rational thirteen = rat_from_int(13);
+    add_term(factor2, &one, 1);
+    add_term(factor2, &thirteen, 0);
+
+    // build (x+1000000007)^5
+    Polynomial* p = poly_copy(factor1);
+    for (int i = 0; i < 4; i++) {
+        Polynomial* tmp = poly_multiply(p, factor1);
+        free_polynomial(p); p = tmp;
+    }
+
+    // build (x+1000000007)^3 * (x+13)^2
+    Polynomial* q = poly_copy(factor1);
+    for (int i = 0; i < 2; i++) {
+        Polynomial* tmp = poly_multiply(q, factor1);
+        free_polynomial(q); q = tmp;
+    }
+    for (int i = 0; i < 2; i++) {
+        Polynomial* tmp = poly_multiply(q, factor2);
+        free_polynomial(q); q = tmp;
+    }
+
+    Polynomial* g = poly_gcd(p, q);
+    // gcd should be degree 3 (monic (x+1000000007)^3)
+    assert(polynomial_degree(g) == 3);
+    // verify: evaluate gcd at x = -1000000007, should be 0
+    double val = poly_evaluate(g, -1000000007.0);
+    // this may lose precision in double eval, so check structurally instead:
+    // the gcd should be monic and divide both p and q
+    Polynomial* rem_p = poly_mod(p, g);
+    Polynomial* rem_q = poly_mod(q, g);
+    assert(poly_is_zero(rem_p));
+    assert(poly_is_zero(rem_q));
+    (void)val;
+
+    free_polynomial(rem_p); free_polynomial(rem_q);
+    free_polynomial(p); free_polynomial(q); free_polynomial(g);
+    free_polynomial(factor1); free_polynomial(factor2);
+    rat_clear(&one); rat_clear(&big); rat_clear(&thirteen);
+    printf("  test_gmp_poly_gcd_large PASSED\n");
+}
+
+void test_gmp_det_large_matrix() {
+    // 6x6 matrix with entries up to 100 — det computation involves
+    // intermediate products that exceed long long
+    // Vandermonde matrix V[i][j] = i^j for i=1..6, j=0..5
+    // det = product of (i-j) for all i > j = 1*2*1*3*2*1*4*3*2*1*5*4*3*2*1
+    //     = 1! * 2! * 3! * 4! * 5! = 1*2*6*24*120 = 34560
+    // (but transposed Vandermonde has same det)
+    Matrix* V = matrix_create(6, 6);
+    for (int r = 0; r < 6; r++) {
+        Rational base = rat_from_int(r + 1);
+        Rational power = rat_one_val();
+        for (int c = 0; c < 6; c++) {
+            rat_set(&MAT_AT(V, r, c), &power);
+            Rational tmp; rat_init(&tmp);
+            rat_mul(&tmp, &power, &base);
+            rat_set(&power, &tmp);
+            rat_clear(&tmp);
+        }
+        rat_clear(&base); rat_clear(&power);
+    }
+
+    Rational d; rat_init(&d);
+    matrix_det(&d, V);
+    // Vandermonde det = prod_{0<=i<j<=5} (x_j - x_i) where x_k = k+1
+    // = (2-1)(3-1)(3-2)(4-1)(4-2)(4-3)(5-1)(5-2)(5-3)(5-4)(6-1)(6-2)(6-3)(6-4)(6-5)
+    // = 1*2*1*3*2*1*4*3*2*1*5*4*3*2*1 = 34560
+    Rational expected = rat_from_int(34560);
+    assert(rat_eq(&d, &expected));
+
+    rat_clear(&d); rat_clear(&expected); matrix_free(V);
+    printf("  test_gmp_det_large_matrix PASSED\n");
+}
+
+void test_gmp_chained_rational_ops() {
+    // compute sum 1/1 + 1/2 + 1/3 + ... + 1/100 exactly
+    // then verify denominator is lcm(1..100) and the sum is correct
+    // by multiplying by lcm and checking we get an integer
+    Rational sum = rat_zero_val();
+    for (int i = 1; i <= 100; i++) {
+        Rational term = rat_from_si(1, i);
+        Rational tmp; rat_init(&tmp);
+        rat_add(&tmp, &sum, &term);
+        rat_set(&sum, &tmp);
+        rat_clear(&tmp); rat_clear(&term);
+    }
+    // sum * 100! should be an integer if computed exactly
+    // simpler check: sum is not zero and denominator is huge
+    assert(!rat_is_zero(&sum));
+    char* s = rat_to_string(&sum);
+    // H_100 = 14466636279520351160221518043104131447711/278881500...
+    // the string should contain '/' (it's not an integer)
+    assert(strstr(s, "/") != NULL);
+    // numerator should be very large
+    assert(strlen(s) > 20);
+    printf("  H_100 = %s\n", s);
+
+    // verify: subtract each 1/k back out, should get zero
+    for (int i = 1; i <= 100; i++) {
+        Rational term = rat_from_si(1, i);
+        Rational tmp; rat_init(&tmp);
+        rat_sub(&tmp, &sum, &term);
+        rat_set(&sum, &tmp);
+        rat_clear(&tmp); rat_clear(&term);
+    }
+    assert(rat_is_zero(&sum));
+
+    free(s);
+    rat_clear(&sum);
+    printf("  test_gmp_chained_rational_ops PASSED\n");
+}
+
+void test_gmp_factor_large_coefficients() {
+    // factor 1000000007x^2 - 1000000007 = 1000000007(x-1)(x+1)
+    Polynomial* p = create_polynomial();
+    Rational big = rat_from_int(1000000007);
+    Rational neg_big; rat_init(&neg_big);
+    rat_neg(&neg_big, &big);
+    add_term(p, &big, 2);
+    add_term(p, &neg_big, 0);
+    rat_clear(&big); rat_clear(&neg_big);
+
+    Factorization* f = factorize(p);
+    assert(f);
+    // content should be 1000000007
+    Rational expected_content = rat_from_int(1000000007);
+    assert(rat_eq(&f->content, &expected_content));
+    rat_clear(&expected_content);
+    // should have 2 linear factors
+    assert(f->count == 2);
+    for (int i = 0; i < 2; i++) {
+        assert(polynomial_degree(f->factors[i]) == 1);
+        assert(f->multiplicities[i] == 1);
+    }
+
+    free_factorization(f); free_polynomial(p);
+    printf("  test_gmp_factor_large_coefficients PASSED\n");
+}
+
+void test_gmp_inverse_rational_entries() {
+    // inverse of [[1/2, 1/3], [1/4, 1/5]]
+    // det = 1/10 - 1/12 = 1/60
+    // inv = (1/det) * [[1/5, -1/3], [-1/4, 1/2]]
+    //     = 60 * [[1/5, -1/3], [-1/4, 1/2]]
+    //     = [[12, -20], [-15, 30]]
+    Matrix* m = matrix_create(2, 2);
+    Rational v;
+    v = rat_from_si(1, 2); rat_set(&MAT_AT(m, 0, 0), &v); rat_clear(&v);
+    v = rat_from_si(1, 3); rat_set(&MAT_AT(m, 0, 1), &v); rat_clear(&v);
+    v = rat_from_si(1, 4); rat_set(&MAT_AT(m, 1, 0), &v); rat_clear(&v);
+    v = rat_from_si(1, 5); rat_set(&MAT_AT(m, 1, 1), &v); rat_clear(&v);
+
+    Matrix* inv = matrix_inverse(m);
+    assert(inv);
+
+    Rational e;
+    e = R(12); assert(rat_eq(&MAT_AT(inv, 0, 0), &e)); rat_clear(&e);
+    e = R(-20); assert(rat_eq(&MAT_AT(inv, 0, 1), &e)); rat_clear(&e);
+    e = R(-15); assert(rat_eq(&MAT_AT(inv, 1, 0), &e)); rat_clear(&e);
+    e = R(30); assert(rat_eq(&MAT_AT(inv, 1, 1), &e)); rat_clear(&e);
+
+    matrix_free(m); matrix_free(inv);
+    printf("  test_gmp_inverse_rational_entries PASSED\n");
 }
 
 /***********************************************************************
@@ -1438,6 +1681,15 @@ void run_tests() {
     test_rational_arithmetic_stress();
     test_power_of_binomial();
     test_gmp_large_coefficients();
+
+    printf("\nGMP Precision Tests:\n");
+    test_gmp_factorial_fraction();
+    test_gmp_hilbert_5x5();
+    test_gmp_poly_gcd_large();
+    test_gmp_det_large_matrix();
+    test_gmp_chained_rational_ops();
+    test_gmp_factor_large_coefficients();
+    test_gmp_inverse_rational_entries();
 
     printf("\nPartial Fraction Tests:\n");
     test_pf_simple();
