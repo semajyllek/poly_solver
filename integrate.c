@@ -7,12 +7,14 @@
 // denominator. That remainder is split by CRT over the Q-irreducible factors P of D*:
 //   deg P = 1       -> c·ln|P|
 //   deg P = 2       -> c·ln|P| plus atan (negative discriminant) or ln of a ratio (positive)
-//   deg P >= 3      -> c·ln|P| when the numerator is c·P'; otherwise the antiderivative needs
-//                      logarithms over algebraic numbers and we fail with a clear message.
+//   deg P >= 3      -> Lazard–Rioboo–Trager (logpart.c): logs/atans when the log coefficients
+//                      have degree <= 2 over Q, otherwise an exact RootSum.
 // Every result of the Hermite step is checked exactly (g' + a/D* == r/D) before use.
 #include "expression.h"
 #include "factor.h"
+#include "logpart.h"
 #include <stdlib.h>
+#include <string.h>
 
 static const char* last_error = NULL;
 
@@ -264,23 +266,6 @@ static Expr* integrate_quadratic(const Polynomial* num, const Polynomial* P) {
     return e;
 }
 
-// num = k·P' gives k·ln|P|; anything else needs algebraic numbers
-static Expr* integrate_higher(const Polynomial* num, const Polynomial* P) {
-    Polynomial* dp = poly_derivative(P);
-    Rational k;
-    rat_init(&k);
-    rat_div(&k, &num->head->coeff, &dp->head->coeff);
-    Polynomial* kdp = poly_scale(dp, &k);
-    Polynomial* diff = poly_subtract(num, kdp);
-    Expr* e = NULL;
-    if (poly_is_zero(diff) && polynomial_degree(num) == polynomial_degree(dp)) e = ln_term(&k, P);
-    else last_error = "the antiderivative needs logarithms over algebraic numbers "
-                      "(an irreducible denominator factor of degree >= 3); not supported";
-    free_polynomial(dp); free_polynomial(kdp); free_polynomial(diff);
-    rat_clear(&k);
-    return e;
-}
-
 static Expr* integrate_simple(const Polynomial* num, const Polynomial* P) {
     if (poly_is_zero(num)) return NULL;
     int d = polynomial_degree(P);
@@ -294,7 +279,7 @@ static Expr* integrate_simple(const Polynomial* num, const Polynomial* P) {
         rat_clear(&k); rat_clear(&a);
         return e;
     }
-    return d == 2 ? integrate_quadratic(num, P) : integrate_higher(num, P);
+    return d == 2 ? integrate_quadratic(num, P) : lrt_log_part(num, P); // Lazard–Rioboo–Trager
 }
 
 // ∫ a / dstar with dstar square-free: CRT split over the irreducible factors
@@ -316,6 +301,56 @@ static Expr* log_part(const Polynomial* a, const Polynomial* dstar) {
     free_factorization(F);
     if (last_error) { free_expr(result); return NULL; }
     return result;
+}
+
+// --- final cleanup: merge c1·f + c2·f into (c1+c2)·f ---
+
+typedef struct {
+    Expr** terms;
+    int count;
+} TermList;
+
+static void collect_terms(Expr* e, TermList* L) { // consumes e
+    if (e->type == EXPR_BINOP && e->binop.op == OP_ADD) {
+        collect_terms(e->binop.left, L);
+        collect_terms(e->binop.right, L);
+        free(e);
+        return;
+    }
+    L->terms = realloc(L->terms, (size_t)(L->count + 1) * sizeof(Expr*));
+    L->terms[L->count++] = e;
+}
+
+// for c·f return f's printed form (the merge key), else NULL
+static char* scaled_key(const Expr* e) {
+    if (e->type != EXPR_BINOP || e->binop.op != OP_MUL || e->binop.left->type != EXPR_CONST) return NULL;
+    return expr_to_string(e->binop.right);
+}
+
+// fold term j into term i when both are constant multiples of the same expression
+static bool merge_into(Expr* ti, Expr* tj) {
+    char *ki = scaled_key(ti), *kj = scaled_key(tj);
+    bool same = ki && kj && strcmp(ki, kj) == 0;
+    if (same) rat_add(&ti->binop.left->constant, &ti->binop.left->constant, &tj->binop.left->constant);
+    free(ki); free(kj);
+    return same;
+}
+
+static Expr* combine_like_terms(Expr* e) {
+    TermList L = { NULL, 0 };
+    collect_terms(e, &L);
+    Expr* out = NULL;
+    for (int i = 0; i < L.count; i++) {
+        if (!L.terms[i]) continue;
+        for (int j = i + 1; j < L.count; j++)
+            if (L.terms[j] && merge_into(L.terms[i], L.terms[j])) { free_expr(L.terms[j]); L.terms[j] = NULL; }
+        bool zero = L.terms[i]->type == EXPR_BINOP && L.terms[i]->binop.op == OP_MUL &&
+                    L.terms[i]->binop.left->type == EXPR_CONST && rat_is_zero(&L.terms[i]->binop.left->constant);
+        if (zero) free_expr(L.terms[i]);
+        else out = sum(out, L.terms[i]);
+    }
+    free(L.terms);
+    return out ? out : create_poly_expr(create_polynomial());
 }
 
 // --- entry points ---
@@ -340,7 +375,7 @@ static Expr* integrate_rational(const Polynomial* num, const Polynomial* den) {
     free_polynomial(dr.quotient);
     free_polynomial(dr.remainder);
     if (last_error) { free_expr(result); return NULL; }
-    return result ? result : create_poly_expr(create_polynomial());
+    return result ? combine_like_terms(result) : create_poly_expr(create_polynomial());
 }
 
 Expr* integrate(Expr* expr, const char* variable) {

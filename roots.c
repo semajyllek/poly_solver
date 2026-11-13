@@ -2,6 +2,7 @@
 #include "poly_zx.h"
 #include "factor.h"
 #include <stdlib.h>
+#include <complex.h>
 
 // t-interval (c/2^k, (c+1)/2^k) inside (0,1), the unit interval of a scaled polynomial
 typedef struct {
@@ -216,4 +217,32 @@ void root_interval_list_free(RootIntervalList* L) {
     free(L->items);
     L->items = NULL;
     L->count = 0;
+}
+
+// --- numerical complex roots (Durand–Kerner / Weierstrass iteration) ---
+
+#define DK_ITERATIONS 2000
+
+void approx_complex_roots(const Polynomial* p, double complex* out) {
+    int n = polynomial_degree(p);
+    double* c = malloc((size_t)(n + 1) * sizeof(double)); // monic coefficients, c[k] of x^k
+    Rational r;
+    rat_init(&r);
+    for (int k = 0; k <= n; k++) { poly_coeff(&r, p, k); c[k] = rat_to_double(&r); }
+    rat_clear(&r);
+    for (int k = 0; k <= n; k++) c[k] /= c[n] == 0 ? 1 : c[n];
+    for (int i = 0; i < n; i++) out[i] = cpow(0.4 + 0.9 * I, i); // standard distinct starts
+    for (int it = 0; it < DK_ITERATIONS; it++) {
+        double change = 0;
+        for (int i = 0; i < n; i++) {
+            double complex v = 1, den = 1;
+            for (int k = n - 1; k >= 0; k--) v = v * out[i] + c[k]; // Horner, monic
+            for (int j = 0; j < n; j++) if (j != i) den *= out[i] - out[j];
+            double complex step = v / den;
+            out[i] -= step;
+            change += cabs(step);
+        }
+        if (change < 1e-15) break;
+    }
+    free(c);
 }

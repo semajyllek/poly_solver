@@ -20,6 +20,13 @@ typedef struct {
     Polynomial* remainder;
 } PolyDivResult;
 
+// roots of a quadratic: p ± r·sqrt(m) (real) or p ± r·sqrt(m)·i (complex), m square-free-ish
+typedef struct {
+    Rational p, r;
+    mpz_t m;
+    bool is_complex;
+} QuadRoots;
+
 // s*a + t*b == g with g = gcd(a, b) monic
 typedef struct {
     Polynomial* s;
@@ -63,6 +70,9 @@ double poly_definite_integral(const Polynomial* poly, double lower, double upper
 double poly_evaluate(const Polynomial* poly, double x);
 void poly_eval_rat(Rational* out, const Polynomial* poly, const Rational* x); // exact Horner
 char* poly_to_string(const Polynomial* poly); // caller frees
+char* poly_to_string_var(const Polynomial* poly, const char* var); // e.g. "t" for resultants
+QuadRoots poly_quad_roots(const Polynomial* f); // exact roots of a degree-2 polynomial
+void quad_roots_clear(QuadRoots* q);
 void free_polynomial(Polynomial* poly);
 void print_polynomial(const Polynomial* poly);
 

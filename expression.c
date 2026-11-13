@@ -6,6 +6,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <complex.h>
+#include "roots.h"
 
 // --- constructors ---
 
@@ -91,6 +93,15 @@ static Expr* create_unary_fn(ExprType type, Expr* arg) {
 }
 
 Expr* create_atan(Expr* arg) { return create_unary_fn(EXPR_ATAN, arg); }
+
+Expr* create_rootsum(Polynomial* q, Polynomial** s, int s_deg) {
+    Expr* e = malloc(sizeof(Expr));
+    e->type = EXPR_ROOTSUM;
+    e->rootsum.q = q;
+    e->rootsum.s = s;
+    e->rootsum.s_deg = s_deg;
+    return e;
+}
 Expr* create_sqrt(Expr* arg) { return create_unary_fn(EXPR_SQRT, arg); }
 
 // --- memory ---
@@ -121,6 +132,11 @@ void free_expr(Expr* expr) {
         case EXPR_ATAN:
         case EXPR_SQRT:
             free_expr(expr->fn_arg);
+            break;
+        case EXPR_ROOTSUM:
+            free_polynomial(expr->rootsum.q);
+            for (int k = 0; k <= expr->rootsum.s_deg; k++) free_polynomial(expr->rootsum.s[k]);
+            free(expr->rootsum.s);
             break;
         case EXPR_CONST:
             rat_clear(&expr->constant);
@@ -272,6 +288,37 @@ static void emit_pow(const Expr* base, const Expr* exp, StrBuf* sb) {
     expr_to_string_impl(exp, sb);
 }
 
+// one x^k term of a bivariate S(t, x) whose coefficient c is a polynomial in t
+static void emit_tx_term(StrBuf* sb, const Polynomial* c, int k) {
+    bool first = sb->len == 0 || sb->buf[sb->len - 1] == '(';
+    bool mono = c->head && !c->head->next;          // single term: fold its sign
+    bool neg = mono && rat_is_negative(&c->head->coeff);
+    if (!first) sb_append(sb, neg ? " - " : " + ");
+    else if (neg) sb_append(sb, "-");
+    Polynomial* shown = mono ? create_polynomial() : poly_copy(c);
+    if (mono) { Rational a; rat_init(&a); rat_abs(&a, &c->head->coeff); add_term(shown, &a, c->head->exponent); rat_clear(&a); }
+    bool unit = mono && c->head->exponent == 0 && rat_is_one(&shown->head->coeff);
+    if (k == 0 || !unit) {
+        if (!mono) sb_append(sb, "(");
+        sb_append_owned(sb, poly_to_string_var(shown, "t"));
+        if (!mono) sb_append(sb, ")");
+        if (k > 0) sb_append(sb, "*");
+    }
+    if (k > 0) sb_append(sb, "x");
+    if (k > 1) sb_appendf(sb, "^%d", k);
+    free_polynomial(shown);
+}
+
+// RootSum(q(t), t -> t * ln(S(t, x)))
+static void emit_rootsum(const Expr* e, StrBuf* sb) {
+    sb_append(sb, "RootSum(");
+    sb_append_owned(sb, poly_to_string_var(e->rootsum.q, "t"));
+    sb_append(sb, ", t -> t * ln(");
+    for (int k = e->rootsum.s_deg; k >= 0; k--)
+        if (!poly_is_zero(e->rootsum.s[k])) emit_tx_term(sb, e->rootsum.s[k], k);
+    sb_append(sb, "))");
+}
+
 static void expr_to_string_impl(const Expr* expr, StrBuf* sb) {
     if (!expr) { sb_append(sb, "NULL"); return; }
 
@@ -331,6 +378,9 @@ static void expr_to_string_impl(const Expr* expr, StrBuf* sb) {
             sb_append(sb, expr->type == EXPR_ATAN ? "atan(" : "sqrt(");
             expr_to_string_impl(expr->fn_arg, sb);
             sb_append(sb, ")");
+            break;
+        case EXPR_ROOTSUM:
+            emit_rootsum(expr, sb);
             break;
     }
 }
@@ -589,6 +639,7 @@ Expr* canonicalize(Expr* expr) {
         case EXPR_LN:
         case EXPR_ATAN:
         case EXPR_SQRT:
+        case EXPR_ROOTSUM:
             return NULL;
     }
     return NULL;
@@ -685,6 +736,39 @@ static double eval_binop(const Expr* e, double x, bool* ok) {
     return 0.0;
 }
 
+// S(alpha, x) for complex alpha
+static double complex eval_tx(const Expr* e, double complex alpha, double x) {
+    double complex sum = 0, xp = 1;
+    for (int k = 0; k <= e->rootsum.s_deg; k++, xp *= x) {
+        double complex c = 0, ap = 1;
+        int deg = polynomial_degree(e->rootsum.s[k]);
+        for (int l = 0; l <= deg; l++, ap *= alpha) {
+            Rational r;
+            rat_init(&r);
+            poly_coeff(&r, e->rootsum.s[k], l);
+            c += rat_to_double(&r) * ap;
+            rat_clear(&r);
+        }
+        sum += c * xp;
+    }
+    return sum;
+}
+
+// real part of Σ alpha·log S(alpha, x) over the (numerically found) roots of q
+static double eval_rootsum(const Expr* e, double x, bool* ok) {
+    int n = polynomial_degree(e->rootsum.q);
+    double complex* roots = malloc((size_t)n * sizeof(double complex));
+    approx_complex_roots(e->rootsum.q, roots);
+    double complex total = 0;
+    for (int i = 0; i < n; i++) {
+        double complex s = eval_tx(e, roots[i], x);
+        if (s == 0) *ok = false;
+        total += roots[i] * clog(s);
+    }
+    free(roots);
+    return creal(total);
+}
+
 double expr_eval(const Expr* e, double x, bool* ok) {
     switch (e->type) {
         case EXPR_CONST: return rat_to_double(&e->constant);
@@ -708,6 +792,7 @@ double expr_eval(const Expr* e, double x, bool* ok) {
             if (v < 0.0) *ok = false;
             return sqrt(v);
         }
+        case EXPR_ROOTSUM: return eval_rootsum(e, x, ok);
     }
     *ok = false;
     return 0.0;

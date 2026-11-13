@@ -399,15 +399,21 @@ void print_polynomial(const Polynomial* poly) {
     free(s);
 }
 
+typedef struct {
+    const Rational* abs_c; // |coefficient|
+    int e;                 // exponent
+    const char* var;       // variable name
+} TermFmt;
+
 // append one term (sign handled by caller) as "c", "x^e", or "cx^e"
-static void append_term_body(StrBuf* sb, const Rational* abs_c, int e) {
-    if (e == 0) { sb_append_owned(sb, rat_to_string(abs_c)); return; }
-    if (!rat_is_one(abs_c)) sb_append_owned(sb, rat_to_string(abs_c));
-    sb_append(sb, "x");
-    if (e != 1) sb_appendf(sb, "^%d", e);
+static void append_term_body(StrBuf* sb, const TermFmt* t) {
+    if (t->e == 0) { sb_append_owned(sb, rat_to_string(t->abs_c)); return; }
+    if (!rat_is_one(t->abs_c)) sb_append_owned(sb, rat_to_string(t->abs_c));
+    sb_append(sb, t->var);
+    if (t->e != 1) sb_appendf(sb, "^%d", t->e);
 }
 
-char* poly_to_string(const Polynomial* poly) {
+char* poly_to_string_var(const Polynomial* poly, const char* var) {
     StrBuf sb = sb_new();
     if (poly->head == NULL) { sb_append(&sb, "0"); return sb_finish(&sb); }
     Rational c;
@@ -417,8 +423,40 @@ char* poly_to_string(const Polynomial* poly) {
         if (t != poly->head) sb_append(&sb, neg ? " - " : " + ");
         else if (neg) sb_append(&sb, "-");
         rat_abs(&c, &t->coeff);
-        append_term_body(&sb, &c, t->exponent);
+        TermFmt fmt = { &c, t->exponent, var };
+        append_term_body(&sb, &fmt);
     }
     rat_clear(&c);
     return sb_finish(&sb);
+}
+
+char* poly_to_string(const Polynomial* poly) {
+    return poly_to_string_var(poly, "x");
+}
+
+QuadRoots poly_quad_roots(const Polynomial* f) {
+    QuadRoots q;
+    Rational a, b, c, d, t;
+    rat_init(&q.p); rat_init(&q.r); mpz_init(q.m);
+    rat_init(&a); rat_init(&b); rat_init(&c); rat_init(&d); rat_init(&t);
+    poly_coeff(&a, f, 2); poly_coeff(&b, f, 1); poly_coeff(&c, f, 0);
+    rat_mul(&d, &b, &b);                       // D = b^2 - 4ac
+    rat_mul(&t, &a, &c);
+    mpq_mul_2exp(t.val, t.val, 2);
+    rat_sub(&d, &d, &t);
+    q.is_complex = rat_is_negative(&d);
+    rat_abs(&d, &d);
+    rat_mul(&t, &a, &a);                       // |D| / (4a^2)
+    mpq_mul_2exp(t.val, t.val, 2);
+    rat_div(&d, &d, &t);
+    rat_sqrt_split(&d, &q.r, q.m);
+    rat_div(&q.p, &b, &a);                     // p = -b / 2a
+    mpq_div_2exp(q.p.val, q.p.val, 1);
+    rat_neg(&q.p, &q.p);
+    rat_clear(&a); rat_clear(&b); rat_clear(&c); rat_clear(&d); rat_clear(&t);
+    return q;
+}
+
+void quad_roots_clear(QuadRoots* q) {
+    rat_clear(&q->p); rat_clear(&q->r); mpz_clear(q->m);
 }

@@ -12,7 +12,8 @@ typedef enum {
     EXPR_RATIONAL_FN,
     EXPR_LN,
     EXPR_ATAN,
-    EXPR_SQRT
+    EXPR_SQRT,
+    EXPR_ROOTSUM
 } ExprType;
 
 typedef enum {
@@ -41,6 +42,11 @@ typedef struct Expr {
         } ratfn;
         struct Expr* ln_arg;       // EXPR_LN: ln|arg|
         struct Expr* fn_arg;       // EXPR_ATAN: atan(arg), EXPR_SQRT: sqrt(arg)
+        struct {                   // EXPR_ROOTSUM: Σ over roots t of q of t·ln(S(t, x))
+            Polynomial* q;         //   univariate in t, irreducible over Q
+            Polynomial** s;        //   S = Σ s[k](t)·x^k, each s[k] of degree < deg q
+            int s_deg;
+        } rootsum;
     };
 } Expr;
 
@@ -60,6 +66,7 @@ Expr* create_rational_fn(Polynomial* num, Polynomial* den);
 Expr* create_ln(Expr* arg);
 Expr* create_atan(Expr* arg);
 Expr* create_sqrt(Expr* arg);
+Expr* create_rootsum(Polynomial* q, Polynomial** s, int s_deg); // takes ownership
 
 // operations
 Expr* canonicalize(Expr* expr);

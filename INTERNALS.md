@@ -85,6 +85,7 @@ factor.c/h                ← content, Yun square-free decomposition, full facto
 expression.c/h            ← Expr tree, canonicalization, printing, numeric evaluation
     │
     ├──► integrate.c      ← Hermite reduction + per-factor log/atan terms
+    │        └──► logpart.c, subres.c ← Lazard–Rioboo–Trager for factors of degree >= 3
     ├──► partial_frac.c/h ← partial fractions over Q-irreducible factors (uses matrix)
     │
 token.c, parser.c         ← lexer (exact literal text) and shunting-yard parser
@@ -945,14 +946,37 @@ For `N/D`:
    - `deg P = 2`, numerator `Bx + C`: `B/(2a)·ln|P|` plus `K·∫1/P` with `K = C − B·b/(2a)` and `D = b² − 4ac`:
      - `D < 0`: `(2/√−D)·atan((2ax+b)/√−D)`
      - `D > 0`: `(1/√D)·ln|(2ax+b−√D)/(2ax+b+√D)|`
-   - `deg P ≥ 3`: if the numerator is `k·P'`, the result is `k·ln|P|`. Otherwise the antiderivative needs logarithms over algebraic numbers (a Lazard–Rioboo–Trager RootSum), which is not implemented. `integrate` returns NULL and `integrate_error()` says why. It never returns a partial answer.
+   - `deg P ≥ 3`: Lazard–Rioboo–Trager (`logpart.c`, `subres.c`); see §11.3.
 
 ```
 ∫ 1/((x-1)(x^2+1)) = 1/2 * ln|x - 1| - 1/4 * ln|x^2 + 1| - 1/2 * atan(x)
 ∫ 1/(x^2+1)^2      = 1/2x / (x^2 + 1) + 1/2 * atan(x)
 ∫ 1/(x^2-2)        = 1/4 * sqrt(2) * ln|(x - sqrt(2)) / (x + sqrt(2))|
-∫ 1/(x^3-2)        → error: needs logarithms over algebraic numbers
+∫ 1/(x^3-2)        = RootSum(108t^3 - 1, t -> t * ln(x - 6t))
+∫ x/(x^4+1)        = 1/2 * atan(x^2)
 ```
+
+### 11.3 Lazard–Rioboo–Trager (`logpart.c`, `subres.c`)
+
+For `∫ a/d` with `d` square-free, `deg a < deg d` (Bronstein, *Symbolic Integration I*, §2.5–2.8):
+
+1. **Resultant.** `R(t) = res_x(d, a − t·d')`. Its roots are exactly the coefficients of the logarithms.
+2. **Square-free split.** `R = Π Q_i^i`. Each nonconstant `Q_i` contributes `Σ_{Q_i(α)=0} α·log S_i(α, x)`. Here `S_i` is `d` when `i = deg d`, and otherwise the subresultant of degree `i` of `(d, a − t·d')`.
+3. **Lazard–Rioboo normalization.** For the square-free parts `A_j` of `lc_x(S_i)`, divide `S_i` by `gcd(A_j, Q_i)^j`. This guarantees `S_i(α, x)` has the right degree at every root `α`.
+4. **Per irreducible factor `M` of `Q_i`**, reduce `S_i` mod `M` and make it monic in x:
+   - `deg M = 1`: `α·ln|S(α, x)|` with `α` rational.
+   - `deg M = 2`, `α = p ± r√m` real: `p·ln|U² − mW²| + r√m·ln|(U + √m·W)/(U − √m·W)|`, with `S = S0 + t·S1`, `U = S0 + p·S1`, `W = r·S1`.
+   - `deg M = 2`, `α = p ± r√m·i`: `p·ln|U² + mW²|` plus the arctangent part. For `m = 1` that part is `r·LogToAtan(U, W)`. Rioboo's recursion turns `i·log((A+iB)/(A−iB))` into a sum of `atan(poly)` terms that are continuous on the real line. Otherwise it is `−2r√m·atan(√m·W/U)`.
+   - `deg M ≥ 3`: an exact `RootSum(M, t -> t * ln(S(t, x)))`.
+
+**Subresultants without a remainder sequence.** `subres.c` computes `S_j` from its definition: the coefficient of `x^i` is the determinant of the Sylvester submatrix built from the first `m+n−2j−1` columns plus the column of `x^i`. Every entry is linear in `t`, so each coefficient is a polynomial of degree ≤ `m − j`. It is evaluated exactly (`matrix_det`) at `m − j + 1` integer points and rebuilt by Newton interpolation. This avoids the subresultant-PRS bookkeeping at some cost in speed: a dense degree-20 denominator takes about 0.5 s.
+
+A final pass merges like terms (`c1·f + c2·f`), so cancelling arctangents disappear: `∫ x^2/(x^6+1) = 1/3 * atan(x^3)`.
+
+**How it is verified.**
+- When there is no `RootSum`, the test suite differentiates every antiderivative symbolically and compares it exactly with the integrand.
+- A `RootSum`'s derivative at a rational point `x0` is `Σ α·S_x(α,x0)/S(α,x0)`. That equals the trace `Tr(t·S_x·S⁻¹ mod M)`, computed exactly from Newton power sums, so `RootSum` answers are also compared exactly at six rational points.
+- `crosscheck_sympy.py` rechecks every `RootSum` answer at 60 digits.
 
 ---
 

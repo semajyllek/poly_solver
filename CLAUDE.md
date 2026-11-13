@@ -43,9 +43,9 @@ Symbolic algebra engine, layered bottom-up (INTERNALS.md has the details):
 
 5. **Roots and solving** (`roots.c/h`, `solver.c/h`): Descartes/VCA real-root isolation with exact bisection refinement. The solver gives exact rational roots, radicals for quadratic factors, and certified intervals plus non-real counts for higher degrees.
 
-6. **Expression tree and parser** (`expression.c/h`, `token.c`, `parser.c`): tagged union `Expr` (`CONST`, `VAR`, `BINOP`, `NEG`, `POLY`, `RATIONAL_FN`, `LN`, `ATAN`, `SQRT`). `canonicalize()` reduces to `EXPR_POLY` or `EXPR_RATIONAL_FN` and returns NULL for non-integer exponents or division by zero. Shunting-yard parser with implicit multiplication.
+6. **Expression tree and parser** (`expression.c/h`, `token.c`, `parser.c`): tagged union `Expr` (`CONST`, `VAR`, `BINOP`, `NEG`, `POLY`, `RATIONAL_FN`, `LN`, `ATAN`, `SQRT`, `ROOTSUM`). `canonicalize()` reduces to `EXPR_POLY` or `EXPR_RATIONAL_FN` and returns NULL for non-integer exponents or division by zero. Shunting-yard parser with implicit multiplication.
 
-7. **Calculus** (`integrate.c`, `partial_frac.c/h`): Hermite reduction (exactly self-checked) plus per-irreducible-factor ln/atan terms; refuses (NULL + `integrate_error()`) rather than returning partial results. Partial fractions handle factors of any degree.
+7. **Calculus** (`integrate.c`, `logpart.c/h`, `subres.c/h`, `partial_frac.c/h`): Hermite reduction (exactly self-checked), closed-form ln/atan for linear and quadratic factors, and Lazard–Rioboo–Trager for higher-degree factors (subresultants via exact determinants + interpolation; ln, Rioboo LogToAtan, or `EXPR_ROOTSUM`). Like terms are merged. Partial fractions handle factors of any degree.
 
 8. **Linear algebra** (`matrix.c/h`): dense row-major `Matrix` of `Rational`; Gaussian elimination to RREF; solve, det, inverse, rank; bracket-notation parser using the exact literal parser.
 

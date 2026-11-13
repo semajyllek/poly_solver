@@ -15,6 +15,9 @@
 #include "factor.h"
 #include "solver.h"
 #include "matrix.h"
+#include "logpart.h"
+
+static bool derivative_is(const Expr* F, const Polynomial* num, const Polynomial* den);
 
 #define SEED 20261113ULL
 #define TRIALS 60
@@ -135,6 +138,51 @@ static void test_reg_rejects_non_polynomials(void) {
 }
 
 // trailing or malformed input is an error, never a silently shortened expression
+// Lazard–Rioboo–Trager: irreducible denominator factors of degree >= 3
+static void test_reg_integrate_lrt(void) {
+    struct { const char* f; const char* F; } cases[] = {
+        { "1/(x^3-2)", "RootSum(108t^3 - 1, t -> t * ln(x - 6t))" },        // used to be refused
+        { "1/(x^4+1)", "RootSum(256t^4 + 1, t -> t * ln(x + 4t))" },
+        { "x/(x^4+1)", "1/2 * atan(x^2)" },                                 // complex pair, LogToAtan
+        { "x^2/(x^6+1)", "1/3 * atan(x^3)" },                               // like terms merged
+        { "(x^2+1)/(x^4-x^2+1)", "atan(x^3) + atan(x)" },                   // continuous atans
+        { "x/(x^4-2)", "-1/8 * sqrt(2) * ln|(x^2 + sqrt(2)) / (x^2 - sqrt(2))|" }, // real pair
+        { "3x^2/(x^3-2)", "ln|x^3 - 2|" },                                  // rational log coefficient
+        { "x/(x^4+3)", "1/6 * sqrt(3) * atan(x^2 / sqrt(3))" },             // complex pair, irrational i-part
+        { "x^3/(x^8+5)", "1/20 * sqrt(5) * atan(x^4 / sqrt(5))" },
+    };
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        Expr* r = integrate_str(cases[i].f);
+        assert(r != NULL);
+        expect_str(expr_to_string(r), cases[i].F);
+        free_expr(r);
+    }
+    printf("  test_reg_integrate_lrt PASSED\n");
+}
+
+// lrt_log_part on its own, including reducible square-free d where R(t) has repeated
+// roots (x^3 - x with a = 1: coefficients -1, 1/2, 1/2 force S_2 = a - t·d')
+static void test_lrt_direct(void) {
+    const char* cases[][2] = {
+        { "1", "x^3 - x" }, { "x + 2", "x^3 - x" }, { "1", "(x-1)(x-2)(x-3)" },
+        { "5x^2 - 1", "x^3 - x" }, { "1", "x^4 - 5x^2 + 4" }, { "x^2", "(x^2+1)(x^2+4)" },
+        { "x^3 + 1", "(x^3-2)(x^2+1)" }, { "1", "x^5 + x + 3" }, { "x^2 + x", "x^4 + 3" },
+    };
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        Expr *a = parse_and_simplify(cases[i][0]), *d = parse_and_simplify(cases[i][1]);
+        assert(a && d && a->type == EXPR_POLY && d->type == EXPR_POLY);
+        Expr* F = lrt_log_part(a->poly, d->poly);
+        if (!F || !derivative_is(F, a->poly, d->poly)) {
+            char* Fs = F ? expr_to_string(F) : NULL;
+            fprintf(stderr, "    LRT failed for %s / (%s): %s\n", cases[i][0], cases[i][1], Fs ? Fs : "NULL");
+            free(Fs);
+            assert(0);
+        }
+        free_expr(F); free_expr(a); free_expr(d);
+    }
+    printf("  test_lrt_direct PASSED (%zu cases)\n", sizeof cases / sizeof cases[0]);
+}
+
 static void test_reg_parser_rejects_partial(void) {
     const char* bad[] = { "x^2 = 4", "2x $ 3", "2x)", "(2x", "2 +", "*3" };
     for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) assert(parse_and_simplify(bad[i]) == NULL);
@@ -209,7 +257,6 @@ static void test_reg_integrate_complete(void) {
     r = integrate_str("1/(x^2+1)^2");
     expect_str(expr_to_string(r), "1/2x / (x^2 + 1) + 1/2 * atan(x)");
     free_expr(r);
-    assert(integrate_str("1/(x^3-2)") == NULL && integrate_error() != NULL); // fails loudly
     printf("  test_reg_integrate_complete PASSED\n");
 }
 
@@ -219,11 +266,38 @@ static void test_reg_integrate_complete(void) {
 
 static long gcd_l(long a, long b) { return b == 0 ? a : gcd_l(b, a % b); }
 
-// a random factor whose irreducibility over Q is known by construction:
-// linear a·x + b, x^2 + k (k > 0), or x^2 - d (d not a square); returns real-root count
+// a random factor whose irreducibility over Q is known by construction: linear a·x + b,
+// x^2 + k (k > 0), x^2 - d (d not a square), a rootless cubic, or x^4 + k; returns real-root count
+// x^3 + b·x + c with no integer root dividing c is irreducible over Q
+static Polynomial* irreducible_cubic(int* real_roots) {
+    long c[4] = { 0, 0, 0, 1 };
+    bool has_root;
+    do {
+        c[1] = rnd(-6, 6);
+        c[0] = rnd(-9, 9);
+        has_root = c[0] == 0;
+        for (long r = 1; r <= labs(c[0]) && !has_root; r++)
+            if (c[0] % r == 0)
+                for (long sgn = -1; sgn <= 1; sgn += 2) {
+                    long x = sgn * r;
+                    if (x * x * x + c[1] * x + c[0] == 0) has_root = true;
+                }
+    } while (has_root);
+    long disc = -4 * c[1] * c[1] * c[1] - 27 * c[0] * c[0]; // > 0: three real roots
+    *real_roots = disc > 0 ? 3 : 1;
+    return poly_si(c, 3);
+}
+
 static Polynomial* known_irreducible(int* real_roots) {
     long c[3] = { 0, 0, 0 };
-    int kind = (int)rnd(0, 2);
+    int kind = (int)rnd(0, 4);
+    if (kind == 3) return irreducible_cubic(real_roots);
+    if (kind == 4) { // x^4 + k is irreducible for k > 0 unless k = 4c^4
+        static const long ks[] = { 1, 2, 3, 5, 6, 7 };
+        long q[5] = { ks[rnd(0, 5)], 0, 0, 0, 1 };
+        *real_roots = 0;
+        return poly_si(q, 4);
+    }
     if (kind == 0) { // primitive a·x + b, i.e. gcd(a, |b|) == 1
         do { c[1] = rnd(1, 9); c[0] = rnd(-12, 12); } while (gcd_l(c[1], labs(c[0])) != 1);
         *real_roots = 1;
@@ -384,19 +458,63 @@ static const Rational* sqrt_arg(const Expr* e) { // the m in sqrt(m), or NULL
     return (e->type == EXPR_SQRT && e->fn_arg->type == EXPR_CONST) ? &e->fn_arg->constant : NULL;
 }
 
-// derivative of sqrt(m)·atan(L/sqrt m) or sqrt(m)·ln|(L-√m)/(L+√m)|; NULL shape -> false
+// k·(U·W' - U'·W) / (U^2 + shift·W^2): the derivative of every atan / log-ratio shape
+typedef struct { const Rational* k; const Rational* shift; } CrossSpec;
+
+static RF rf_cross(const Polynomial* U, const Polynomial* W, const CrossSpec* sp) {
+    Polynomial *up = poly_derivative(U), *wp = poly_derivative(W);
+    Polynomial *a = poly_multiply(U, wp), *b = poly_multiply(up, W), *n = poly_subtract(a, b);
+    Polynomial *u2 = poly_multiply(U, U), *w2 = poly_multiply(W, W), *sw2 = poly_scale(w2, sp->shift);
+    RF r = rf_make(poly_scale(n, sp->k), poly_add(u2, sw2));
+    Polynomial* tmp[] = { up, wp, a, b, n, u2, w2, sw2 };
+    for (size_t i = 0; i < sizeof tmp / sizeof tmp[0]; i++) free_polynomial(tmp[i]);
+    return r;
+}
+
+// "sqrt(m)" (W = 1) or "sqrt(m) * W": returns W (caller frees) or NULL for another shape
+static Polynomial* sqrt_w(const Expr* e) {
+    if (sqrt_arg(e)) return poly_one_t();
+    if (e->type == EXPR_BINOP && e->binop.op == OP_MUL && sqrt_arg(e->binop.left) && e->binop.right->type == EXPR_POLY)
+        return poly_copy(e->binop.right->poly);
+    return NULL;
+}
+
+// sqrt(m)·h for h = atan(U/(√m·W)), atan(√m·W/U) or ln|(U ± √m·W)/(U ∓ √m·W)|
 static bool rf_sqrt_term(const Expr* rest, const Rational* m, RF* out) {
     Rational k, sh;
     rat_init(&k); rat_init(&sh);
     bool ok = false;
-    if (rest->type == EXPR_ATAN && rest->fn_arg->type == EXPR_BINOP && rest->fn_arg->binop.op == OP_DIV) {
-        rat_set(&k, m); rat_set(&sh, m);                         // m·L'/(L^2 + m)
-        *out = rf_arc(rest->fn_arg->binop.left->poly, &k, &sh);
-        ok = true;
-    } else if (rest->type == EXPR_LN && rest->ln_arg->type == EXPR_BINOP) {
-        rat_add(&k, m, m); rat_neg(&sh, m);                      // 2m·L'/(L^2 - m)
-        *out = rf_arc(rest->ln_arg->binop.left->binop.left->poly, &k, &sh);
-        ok = true;
+    const Expr* arg = rest->type == EXPR_ATAN ? rest->fn_arg : rest->type == EXPR_LN ? rest->ln_arg : NULL;
+    if (arg && arg->type == EXPR_BINOP && arg->binop.op == OP_DIV) {
+        const Expr *l = arg->binop.left, *r = arg->binop.right;
+        Polynomial* Wr = (rest->type == EXPR_ATAN && l->type == EXPR_POLY) ? sqrt_w(r) : NULL;
+        if (Wr) {                                                            // atan(U/(√m·W)):
+            rat_neg(&k, m); rat_set(&sh, m);                                 // -m·(UW' - U'W)/(U^2 + mW^2)
+            CrossSpec sp = { &k, &sh };
+            *out = rf_cross(l->poly, Wr, &sp);
+            free_polynomial(Wr);
+            ok = true;
+        } else if (rest->type == EXPR_ATAN && r->type == EXPR_POLY) {        // m·(UW' - U'W)/(U^2 + mW^2)
+            Polynomial* W = sqrt_w(l);
+            if (W) {
+                rat_set(&k, m); rat_set(&sh, m);
+                CrossSpec sp = { &k, &sh };
+                *out = rf_cross(r->poly, W, &sp);
+                free_polynomial(W);
+                ok = true;
+            }
+        } else if (rest->type == EXPR_LN && l->type == EXPR_BINOP && l->binop.left->type == EXPR_POLY) {
+            Polynomial* W = sqrt_w(l->binop.right);                          // ±2m·(UW' - U'W)/(U^2 - mW^2)
+            if (W) {
+                rat_add(&k, m, m);
+                if (l->binop.op == OP_SUB) rat_neg(&k, &k);
+                rat_neg(&sh, m);
+                CrossSpec sp = { &k, &sh };
+                *out = rf_cross(l->binop.left->poly, W, &sp);
+                free_polynomial(W);
+                ok = true;
+            }
+        }
     }
     rat_clear(&k); rat_clear(&sh);
     return ok;
@@ -407,12 +525,15 @@ static bool rf_scaled_term(const Expr* t, RF* out) {
     const Rational* c = &t->binop.left->constant;
     const Expr* g = t->binop.right;
     bool ok = true;
+    Rational one = rat_one_val();
     if (g->type == EXPR_LN && g->ln_arg->type == EXPR_POLY) {
         *out = rf_make(poly_derivative(g->ln_arg->poly), poly_copy(g->ln_arg->poly));
     } else if (g->type == EXPR_ATAN && g->fn_arg->type == EXPR_POLY) {
-        Rational one = rat_one_val();
         *out = rf_arc(g->fn_arg->poly, &one, &one);
-        rat_clear(&one);
+    } else if (g->type == EXPR_ATAN && g->fn_arg->type == EXPR_BINOP && g->fn_arg->binop.op == OP_DIV &&
+               g->fn_arg->binop.left->type == EXPR_POLY && g->fn_arg->binop.right->type == EXPR_POLY) {
+        CrossSpec sp = { &one, &one };                                       // atan(N/G)
+        *out = rf_cross(g->fn_arg->binop.right->poly, g->fn_arg->binop.left->poly, &sp);
     } else if (g->type == EXPR_BINOP && g->binop.op == OP_DIV) {
         *out = rf_quotient_rule(g->binop.left->poly, g->binop.right->poly);
     } else if (g->type == EXPR_BINOP && g->binop.op == OP_MUL && sqrt_arg(g->binop.left)) {
@@ -420,15 +541,22 @@ static bool rf_scaled_term(const Expr* t, RF* out) {
     } else {
         ok = false;
     }
+    rat_clear(&one);
     if (ok) rf_scale(out, c);
     return ok;
 }
 
-// exact derivative of F, accumulated into acc; false on an unrecognized shape
-static bool rf_derivative(const Expr* F, RF* acc) {
+typedef struct {
+    const Expr* items[16];
+    int count;
+} RootSums;
+
+// exact derivative of F into acc; RootSum terms are set aside for a numeric check
+static bool rf_derivative(const Expr* F, RF* acc, RootSums* rs) {
     RF t;
     if (F->type == EXPR_BINOP && F->binop.op == OP_ADD)
-        return rf_derivative(F->binop.left, acc) && rf_derivative(F->binop.right, acc);
+        return rf_derivative(F->binop.left, acc, rs) && rf_derivative(F->binop.right, acc, rs);
+    if (F->type == EXPR_ROOTSUM && rs->count < 16) { rs->items[rs->count++] = F; return true; }
     if (F->type == EXPR_POLY) t = rf_make(poly_derivative(F->poly), poly_one_t());
     else if (F->type == EXPR_BINOP && F->binop.op == OP_DIV) t = rf_quotient_rule(F->binop.left->poly, F->binop.right->poly);
     else if (F->type == EXPR_BINOP && F->binop.op == OP_MUL && F->binop.left->type == EXPR_CONST) {
@@ -438,21 +566,117 @@ static bool rf_derivative(const Expr* F, RF* acc) {
     return true;
 }
 
-// F' == num/den exactly
+// --- exact RootSum derivative at a rational point, via traces in K = Q[t]/(q) ---
+
+// power sums p_i = Σ alpha^i over the roots of q, i < deg q (Newton's identities)
+static Rational* power_sums(const Polynomial* q) {
+    int n = polynomial_degree(q);
+    Rational *a = malloc((size_t)(n + 1) * sizeof(Rational)), *ps = malloc((size_t)n * sizeof(Rational));
+    Rational lc, t;
+    rat_init(&lc); rat_init(&t);
+    poly_coeff(&lc, q, n);
+    for (int k = 0; k <= n; k++) { rat_init(&a[k]); poly_coeff(&a[k], q, k); rat_div(&a[k], &a[k], &lc); }
+    for (int k = 0; k < n; k++) {
+        rat_init(&ps[k]);
+        if (k == 0) { mpq_set_si(ps[0].val, n, 1); continue; }
+        Rational kk = rat_from_int(k);                // p_k = -(k·a_{n-k} + Σ a_{n-j}·p_{k-j})
+        rat_mul(&ps[k], &kk, &a[n - k]);
+        for (int j = 1; j < k; j++) { rat_mul(&t, &a[n - j], &ps[k - j]); rat_add(&ps[k], &ps[k], &t); }
+        rat_neg(&ps[k], &ps[k]);
+        rat_clear(&kk);
+    }
+    for (int k = 0; k <= n; k++) rat_clear(&a[k]);
+    free(a);
+    rat_clear(&lc); rat_clear(&t);
+    return ps;
+}
+
+// S(t, x0) (deriv = 0) or dS/dx(t, x0) (deriv = 1) as a polynomial in t
+static Polynomial* s_at(const Expr* e, const Rational* x0, int deriv) {
+    Polynomial* r = create_polynomial();
+    Rational xp, w;
+    rat_init(&xp); rat_init(&w);
+    for (int k = deriv; k <= e->rootsum.s_deg; k++) {
+        rat_pow_int(&xp, x0, k - deriv);
+        if (deriv) { Rational kk = rat_from_int(k); rat_mul(&xp, &xp, &kk); rat_clear(&kk); }
+        Polynomial* term = poly_scale(e->rootsum.s[k], &xp);
+        Polynomial* sum2 = poly_add(r, term);
+        free_polynomial(r); free_polynomial(term);
+        r = sum2;
+    }
+    rat_clear(&xp); rat_clear(&w);
+    return r;
+}
+
+// Σ alpha·S_x(alpha, x0)/S(alpha, x0) = Tr(t·S_x·S^-1 mod q), exactly; false at a pole
+static bool rootsum_derivative_at(const Expr* e, const Rational* x0, Rational* out) {
+    const Polynomial* q = e->rootsum.q;
+    Polynomial *sv = s_at(e, x0, 0), *sx = s_at(e, x0, 1);
+    PolyBezout bz = poly_xgcd(sv, q);
+    bool ok = polynomial_degree(bz.g) == 0;           // S(alpha, x0) != 0 for every root
+    if (ok) {
+        Rational one = rat_one_val();
+        Polynomial* tpoly = create_polynomial();
+        add_term(tpoly, &one, 1);
+        Polynomial *u = poly_multiply(tpoly, sx), *v = poly_multiply(u, bz.s), *el = poly_mod(v, q);
+        Rational* ps = power_sums(q);
+        Rational c;
+        rat_init(&c);
+        mpq_set_si(out->val, 0, 1);
+        for (int i = 0; i < polynomial_degree(q); i++) {
+            poly_coeff(&c, el, i);
+            rat_mul(&c, &c, &ps[i]);
+            rat_add(out, out, &c);
+            rat_clear(&ps[i]);
+        }
+        free(ps);
+        rat_clear(&c); rat_clear(&one);
+        free_polynomial(tpoly); free_polynomial(u); free_polynomial(v); free_polynomial(el);
+    }
+    free_bezout(&bz);
+    free_polynomial(sv); free_polynomial(sx);
+    return ok;
+}
+
+// F' == num/den: as rational functions when F has no RootSum, else exactly at rational points
 static bool derivative_is(const Expr* F, const Polynomial* num, const Polynomial* den) {
     RF acc = rf_make(create_polynomial(), poly_one_t());
-    bool ok = rf_derivative(F, &acc);
-    if (ok) {
+    RootSums rs = { { NULL }, 0 };
+    bool ok = rf_derivative(F, &acc, &rs);
+    if (ok && rs.count == 0) {
         Polynomial *x = poly_multiply(acc.num, den), *y = poly_multiply(num, acc.den);
         ok = poly_equal(x, y);
         free_polynomial(x); free_polynomial(y);
     }
+    static const long pts[][2] = { { -10, 3 }, { -17, 10 }, { -3, 5 }, { 9, 20 }, { 13, 10 }, { 29, 10 } };
+    Rational x0, f, d, got, part;
+    rat_init(&x0); rat_init(&f); rat_init(&d); rat_init(&got); rat_init(&part);
+    int checked = 0;
+    for (size_t i = 0; ok && rs.count > 0 && i < sizeof pts / sizeof pts[0]; i++) {
+        rat_set_si(&x0, pts[i][0], pts[i][1]);
+        poly_eval_rat(&d, den, &x0);
+        poly_eval_rat(&part, acc.den, &x0);
+        if (rat_is_zero(&d) || rat_is_zero(&part)) continue; // a pole: skip this point
+        poly_eval_rat(&f, num, &x0); rat_div(&f, &f, &d);
+        poly_eval_rat(&got, acc.num, &x0); rat_div(&got, &got, &part);
+        bool pole = false;
+        for (int k = 0; k < rs.count && !pole; k++) {
+            pole = !rootsum_derivative_at(rs.items[k], &x0, &part);
+            rat_add(&got, &got, &part);
+        }
+        if (pole) continue;
+        ok = rat_eq(&got, &f);
+        checked++;
+    }
+    if (rs.count > 0 && checked < 3) ok = false;        // demand real evidence
+    rat_clear(&x0); rat_clear(&f); rat_clear(&d); rat_clear(&got); rat_clear(&part);
     rf_free(&acc);
     return ok;
 }
 
-// backward generation: integrands whose antiderivatives are known to be elementary over Q
+// backward generation: integrands built from known irreducible factors (incl. cubics -> LRT)
 static void test_prop_integrate_derivative(void) {
+    int with_rootsum = 0;
     for (int trial = 0; trial < TRIALS; trial++) {
         Generated g = generate_product();
         long nc[6];
@@ -465,9 +689,12 @@ static void test_prop_integrate_derivative(void) {
         Expr* F = integrate(integrand, "x");
         if (!F) fprintf(stderr, "    integrate failed: %s\n", integrate_error());
         assert(F != NULL);
+        char* Fs0 = expr_to_string(F);
+        with_rootsum += strstr(Fs0, "RootSum") != NULL;
+        free(Fs0);
         if (!derivative_is(F, num, g.product)) {
             char *fs = expr_to_string(integrand), *Fs = expr_to_string(F);
-            fprintf(stderr, "    d/dx F != f exactly\n    f = %s\n    F = %s\n", fs, Fs);
+            fprintf(stderr, "    d/dx F != f\n    f = %s\n    F = %s\n", fs, Fs);
             free(fs); free(Fs);
             assert(0);
         }
@@ -476,7 +703,7 @@ static void test_prop_integrate_derivative(void) {
         free_polynomial(num);
         free_generated(&g);
     }
-    printf("  test_prop_integrate_derivative PASSED (%d trials)\n", TRIALS);
+    printf("  test_prop_integrate_derivative PASSED (%d trials, %d with RootSum terms)\n", TRIALS, with_rootsum);
 }
 
 static Matrix* random_matrix(int n) {
@@ -556,6 +783,8 @@ void run_property_tests(void) {
     test_reg_cyclotomic_counts();
     test_reg_solve_irrational_exact();
     test_reg_integrate_complete();
+    test_reg_integrate_lrt();
+    test_lrt_direct();
     printf("\nProperty Tests (seed %s):\n", env ? env : "default");
     test_prop_factor_roundtrip();
     test_prop_root_isolation();

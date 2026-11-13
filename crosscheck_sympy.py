@@ -9,8 +9,9 @@ Checks, per random input:
              count/multiplicities match sympy.factor_list
   solve      claimed rational roots are exact roots; each "x ~ d" is within 1e-9 of a
              SymPy real root; real and non-real root counts (with multiplicity) match
-  integrate  SymPy confirms d/dx(printed antiderivative) - f == 0, or the CLI refused
-             and the denominator has an irreducible factor of degree >= 3
+  integrate  SymPy confirms d/dx(printed antiderivative) - f == 0 symbolically; answers
+             containing RootSum(q, t -> t * ln(S)) are checked at 60 significant digits
+             (Σ over the roots of q of t·S_x/S, plus the derivative of the other terms)
   det/inv    exact agreement with SymPy's Matrix
 """
 import argparse
@@ -19,11 +20,14 @@ import re
 import subprocess
 import sys
 
+import mpmath as mp
 import sympy as sp
 from sympy.parsing.sympy_parser import (implicit_multiplication_application,
                                         parse_expr, standard_transformations)
 
-x = sp.Symbol("x")
+x, t = sp.symbols("x t")
+mp.mp.dps = 60
+ROOTSUM = r"RootSum\(([^,]*), t -> t \* ln\((.*?)\)\)(?= [+-] |$)"
 TRANSFORMS = standard_transformations + (implicit_multiplication_application,)
 
 
@@ -38,7 +42,7 @@ def to_sympy(text):
     ln|u| becomes log(u): d/dx ln|u| = u'/u = d/dx log(u) on every branch, and SymPy
     cannot simplify the sign(u) terms that differentiating Abs would introduce."""
     text = re.sub(r"ln\|([^|]*)\|", r"log(\1)", text).replace("^", "**")
-    return parse_expr(text, local_dict={"x": x, "atan": sp.atan, "sqrt": sp.sqrt,
+    return parse_expr(text, local_dict={"x": x, "t": t, "atan": sp.atan, "sqrt": sp.sqrt,
                                         "log": sp.log, "Abs": sp.Abs},
                       transformations=TRANSFORMS)
 
@@ -97,16 +101,34 @@ def check_solve(p):
         assert p.subs(x, e) == 0, f"claimed root {e} is not a root"
 
 
+def rootsum_ok(f, out):
+    """High-precision check of an antiderivative that contains RootSum terms."""
+    rootsums = re.findall(ROOTSUM, out)
+    rest = re.sub(r"\s*[+-]?\s*" + ROOTSUM, "", out).strip()
+    rest = re.sub(r"^\+\s*", "", rest)
+    d_rest = sp.diff(to_sympy(rest), x) if rest else sp.Integer(0)
+    for x0 in (sp.Rational(-33, 10), sp.Rational(-3, 5), sp.Rational(13, 10), sp.Rational(29, 10)):
+        val = sp.N(d_rest.subs(x, x0), 60)
+        for q, body in rootsums:
+            S = to_sympy(body)
+            Sx = sp.diff(S, x)
+            for a in sp.Poly(to_sympy(q), t).nroots(n=60, maxsteps=500):
+                val += sp.N(a * Sx.subs({x: x0, t: a}) / S.subs({x: x0, t: a}), 60)
+        fx = sp.N(f.subs(x, x0), 60)
+        if abs(sp.N(val - fx, 60)) > sp.Float("1e-40") * (1 + abs(fx)):
+            return False
+    return True
+
+
 def check_integrate(rng):
     num = sum(rng.randint(-5, 5) * x**i for i in range(rng.randint(0, 3))) or sp.Integer(1)
     den = random_poly(rng, coeff=5)
     f = sp.cancel(num / den)
     code, out, err = run_cli("integrate", to_cli(f))
-    if code != 0:
-        _, den_factors = sp.factor_list(sp.denom(f))
-        assert "algebraic" in err and any(sp.degree(q, x) >= 3 for q, _ in den_factors), \
-            f"refused without a degree >= 3 denominator factor: f={f}: {err}"
-        return "refused"
+    assert code == 0, f"integrate failed for f={f}: {err}"
+    if "RootSum" in out:
+        assert rootsum_ok(f, out), f"d/dx F != f (60 digits) for f={f}, F={out}"
+        return "rootsum"
     F = to_sympy(out)
     d = sp.cancel(sp.together(sp.diff(F, x) - f))  # cheap first; simplify only if needed
     if d != 0:
@@ -129,16 +151,16 @@ def main():
     ap.add_argument("--seed", type=int, default=20261113)
     args = ap.parse_args()
     rng = random.Random(args.seed)
-    refused = 0
+    rootsums = 0
     for t in range(args.trials):
         p = random_poly(rng)
         check_factor(p)
         check_solve(p)
-        refused += check_integrate(rng) == "refused"
+        rootsums += check_integrate(rng) == "rootsum"
         check_matrix(rng)
         print(f"  trial {t + 1}/{args.trials} ok", flush=True)
     print(f"crosscheck OK: {args.trials} trials (factor, solve, integrate, det); "
-          f"{refused} integrals correctly refused as needing algebraic numbers")
+          f"{rootsums} antiderivatives contained RootSum terms (checked to 60 digits)")
 
 
 if __name__ == "__main__":

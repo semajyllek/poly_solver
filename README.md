@@ -7,7 +7,7 @@ A fast C library and CLI for symbolic polynomial algebra and linear systems with
 - **Exact arbitrary-precision arithmetic** (GMP): input literals, coefficients and output are never rounded. `1/3` stays `1/3`, `0.1` is `1/10`, and a 30-digit coefficient prints in full.
 - **Simplification**: canonicalizes expressions by combining like terms and reducing rational functions.
 - **Complete factoring over Q**: Yun square-free decomposition plus Berlekamp–Zassenhaus (Cantor–Zassenhaus mod p, Hensel lifting, recombination), e.g. `x^4 + 4 = (x^2 - 2x + 2)(x^2 + 2x + 2)`.
-- **Differentiation & integration**: polynomials and rational functions. Integration uses Hermite reduction plus `ln`/`atan` terms for every linear and quadratic factor, and fails with a clear message rather than returning a partial answer.
+- **Differentiation & integration**: every rational function over Q can be integrated. Hermite reduction gives the rational part. Linear and quadratic factors get `ln`/`atan` closed forms. Higher-degree factors use **Lazard–Rioboo–Trager**: rational and quadratic log coefficients come out as `ln`/`atan` (Rioboo's continuous arctangents), and anything else as an exact `RootSum`.
 - **Equation solving**: exact rational roots, exact radicals for quadratic factors (including complex roots), and certified real-root intervals (Descartes/VCA bisection) for higher degrees.
 - **Linear systems**: solve Ax=b, determinant, inverse, rank and RREF with exact rational arithmetic.
 
@@ -41,6 +41,8 @@ make sanitize && ./test_symbolic_solver   # AddressSanitizer + UBSan build of th
 | `differentiate` | `./poly_solver differentiate "3x^2 + 4x + 2"`    | `6x + 4`                           |
 | `integrate`     | `./poly_solver integrate "6x^2 + 4x"`            | `2x^3 + 2x^2`                      |
 | `integrate`     | `./poly_solver integrate "1/((x-1)(x^2+1))"`     | `1/2 * ln\|x - 1\| - 1/4 * ln\|x^2 + 1\| - 1/2 * atan(x)` |
+| `integrate`     | `./poly_solver integrate "x/(x^4+1)"`            | `1/2 * atan(x^2)`                  |
+| `integrate`     | `./poly_solver integrate "1/(x^3-2)"`            | `RootSum(108t^3 - 1, t -> t * ln(x - 6t))` |
 | `solve`         | `./poly_solver solve "x^3 - 6x^2 + 11x - 6"`    | `x = 1, x = 2, x = 3`             |
 | `solve`         | `./poly_solver solve "x^2 - x - 1"`              | `x = 1/2 - 1/2*sqrt(5) ~ -0.6180339887, x = 1/2 + 1/2*sqrt(5) ~ 1.6180339887` |
 | `solve`         | `./poly_solver solve "x^3 - 2"`                  | `x ~ 1.2599210498, 2 non-real roots of (x^3 - 2)` |
@@ -69,7 +71,7 @@ Matrix entries can be integers, fractions or decimals of any size (`1/3`, `-5/7`
 
 ### Limits
 
-- Integrals that need logarithms over algebraic numbers, such as `1/(x^3 - 2)` and `1/(x^4 + 1)`, are refused with an explanation. That would need Lazard–Rioboo–Trager RootSums.
+- When a logarithm's coefficient is an algebraic number of degree 3 or more, the answer is an exact `RootSum(q(t), t -> t * ln(S(t, x)))`: the sum of `t·ln(S(t, x))` over the roots of `q`. It is not expanded into radicals. Example: `1/(x^4+1)`, whose coefficients have degree 4 over Q.
 - Complex roots of irreducible factors of degree 3 or more are counted but not located.
 
 ## Tests
@@ -83,7 +85,7 @@ make && ./test_symbolic_solver
 - Seeded property tests that check invariants on generated inputs:
   - `content · Π factors == input` exactly
   - each root interval brackets a sign change
-  - the exact derivative of every antiderivative equals the integrand
+  - the exact derivative of every antiderivative equals the integrand (for `RootSum` terms, compared exactly at rational points via traces over Q(α))
   - `A·solve(A, A·x) == A·x`
   - parse(print(p)) == p
 
@@ -95,7 +97,7 @@ A differential check against SymPy is also available. It is optional and needs `
 make cli && python3 crosscheck_sympy.py --trials 40   # about a minute; --seed N for others
 ```
 
-It confirms each factorization multiplies back, each root and root count, and each antiderivative by differentiating it. A refusal is accepted only when the denominator really has an irreducible cubic or higher factor.
+It confirms each factorization multiplies back, each root and root count, and each antiderivative by differentiating it. Answers containing `RootSum` are checked at 60 significant digits.
 
 ## Architecture
 

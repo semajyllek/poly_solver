@@ -23,4 +23,7 @@ void refine_root(RootInterval* r, const Polynomial* f, const Rational* width);
 
 void root_interval_list_free(RootIntervalList* L);
 
+// numerical approximations of all complex roots (Durand–Kerner); out has deg p slots
+void approx_complex_roots(const Polynomial* p, double _Complex* out);
+
 #endif

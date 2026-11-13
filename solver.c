@@ -105,40 +105,6 @@ static void append_multiplicity(StrBuf* sb, int mult) {
     if (mult > 1) sb_appendf(sb, " (multiplicity %d)", mult);
 }
 
-// a quadratic's roots p ± r*sqrt(m) (real) or p ± r*sqrt(m)*i (complex), exactly
-typedef struct {
-    Rational p, r;
-    mpz_t m;
-    bool complex;
-} QuadRoots;
-
-static QuadRoots quad_roots(const Polynomial* f) {
-    QuadRoots q;
-    Rational a, b, c, d, t;
-    rat_init(&q.p); rat_init(&q.r); mpz_init(q.m);
-    rat_init(&a); rat_init(&b); rat_init(&c); rat_init(&d); rat_init(&t);
-    poly_coeff(&a, f, 2); poly_coeff(&b, f, 1); poly_coeff(&c, f, 0);
-    rat_mul(&d, &b, &b);                       // D = b^2 - 4ac
-    rat_mul(&t, &a, &c);
-    mpq_mul_2exp(t.val, t.val, 2);
-    rat_sub(&d, &d, &t);
-    q.complex = rat_is_negative(&d);
-    rat_abs(&d, &d);
-    rat_mul(&t, &a, &a);                       // |D| / (4a^2)
-    mpq_mul_2exp(t.val, t.val, 2);
-    rat_div(&d, &d, &t);
-    rat_sqrt_split(&d, &q.r, q.m);
-    rat_div(&q.p, &b, &a);                     // p = -b / 2a
-    mpq_div_2exp(q.p.val, q.p.val, 1);
-    rat_neg(&q.p, &q.p);
-    rat_clear(&a); rat_clear(&b); rat_clear(&c); rat_clear(&d); rat_clear(&t);
-    return q;
-}
-
-static void quad_roots_clear(QuadRoots* q) {
-    rat_clear(&q->p); rat_clear(&q->r); mpz_clear(q->m);
-}
-
 // "p + " / "p - " / "" / "-" ahead of the radical term
 static void append_root_prefix(StrBuf* sb, const QuadRoots* q, const char* sign) {
     if (mpq_sgn(q->p.val) != 0) {
@@ -150,8 +116,8 @@ static void append_root_prefix(StrBuf* sb, const QuadRoots* q, const char* sign)
 }
 
 static void append_quadratic(StrBuf* sb, const IrrationalFactor* e, bool* first) {
-    QuadRoots q = quad_roots(e->factor);
-    if (q.complex) {
+    QuadRoots q = poly_quad_roots(e->factor);
+    if (q.is_complex) {
         separator(sb, first);
         sb_append(sb, "x = ");
         append_root_prefix(sb, &q, "+/-");
