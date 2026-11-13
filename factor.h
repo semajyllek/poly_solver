@@ -4,6 +4,8 @@
 #include "polynomial.h"
 #include "expression.h"
 
+// poly == content · Π factors[i]^multiplicities[i]; factors are primitive
+// integer polynomials with positive leading coefficient, irreducible over Q
 typedef struct {
     Polynomial** factors;
     int* multiplicities;
@@ -11,13 +13,21 @@ typedef struct {
     Rational content;
 } Factorization;
 
+// square-free decomposition (Yun): poly == lc · Π parts[i]^(i+1), parts monic,
+// pairwise coprime, square-free (a part may be the constant 1)
+typedef struct {
+    Polynomial** parts;
+    int count;
+} SquareFreeDecomp;
+
+SquareFreeDecomp square_free_decompose(const Polynomial* poly);
+void free_square_free(SquareFreeDecomp* d);
+
 Rational poly_content(const Polynomial* poly);
 Polynomial* poly_primitive_part(const Polynomial* poly);
-Polynomial* synthetic_divide(const Polynomial* poly, const Rational* root);
 Factorization* factorize(const Polynomial* poly);
 void free_factorization(Factorization* f);
 
-Expr* factorization_to_expr(const Factorization* f);
 char* factorization_to_string(const Factorization* f);
 
 #endif

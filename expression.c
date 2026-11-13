@@ -1,10 +1,11 @@
 #include "expression.h"
 #include "polynomial.h"
 #include "factor.h"
-#include "partial_frac.h"
+#include "strbuf.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 // --- constructors ---
 
@@ -15,15 +16,17 @@ Expr* create_const_rat(const Rational* value) {
     return e;
 }
 
-Expr* create_const(double value) {
-    long int_val = (long)value;
-    if ((double)int_val == value) {
-        Rational r = rat_from_int(int_val);
-        Expr* e = create_const_rat(&r);
-        rat_clear(&r);
-        return e;
-    }
-    Rational r = rat_from_si((long)(value * 1000000), 1000000);
+Expr* create_const(long value) {
+    Rational r = rat_from_int(value);
+    Expr* e = create_const_rat(&r);
+    rat_clear(&r);
+    return e;
+}
+
+Expr* create_const_str(const char* literal) {
+    Rational r;
+    rat_init(&r);
+    if (!rat_parse_literal(&r, literal)) mpq_set_si(r.val, 0, 1);
     Expr* e = create_const_rat(&r);
     rat_clear(&r);
     return e;
@@ -80,6 +83,16 @@ Expr* create_ln(Expr* arg) {
     return e;
 }
 
+static Expr* create_unary_fn(ExprType type, Expr* arg) {
+    Expr* e = malloc(sizeof(Expr));
+    e->type = type;
+    e->fn_arg = arg;
+    return e;
+}
+
+Expr* create_atan(Expr* arg) { return create_unary_fn(EXPR_ATAN, arg); }
+Expr* create_sqrt(Expr* arg) { return create_unary_fn(EXPR_SQRT, arg); }
+
 // --- memory ---
 
 void free_expr(Expr* expr) {
@@ -105,6 +118,10 @@ void free_expr(Expr* expr) {
         case EXPR_LN:
             free_expr(expr->ln_arg);
             break;
+        case EXPR_ATAN:
+        case EXPR_SQRT:
+            free_expr(expr->fn_arg);
+            break;
         case EXPR_CONST:
             rat_clear(&expr->constant);
             break;
@@ -113,24 +130,6 @@ void free_expr(Expr* expr) {
 }
 
 // --- output ---
-
-typedef struct { char* buf; size_t len; size_t cap; } StrBuf;
-
-static StrBuf strbuf_new(void) {
-    StrBuf sb = { malloc(64), 0, 64 };
-    sb.buf[0] = '\0';
-    return sb;
-}
-
-static void strbuf_append(StrBuf* sb, const char* s) {
-    size_t slen = strlen(s);
-    while (sb->len + slen + 1 > sb->cap) {
-        sb->cap *= 2;
-        sb->buf = realloc(sb->buf, sb->cap);
-    }
-    memcpy(sb->buf + sb->len, s, slen + 1);
-    sb->len += slen;
-}
 
 // check if an expression is a negative constant
 static bool is_neg_const(const Expr* e) {
@@ -167,7 +166,7 @@ static void emit_negated_term(const Expr* expr, StrBuf* sb) {
         Rational pos; rat_init(&pos);
         rat_neg(&pos, &expr->constant);
         char* s = rat_to_string(&pos);
-        strbuf_append(sb, s);
+        sb_append(sb, s);
         free(s);
         rat_clear(&pos);
         return;
@@ -184,9 +183,9 @@ static void emit_negated_term(const Expr* expr, StrBuf* sb) {
             expr_to_string_impl(expr->binop.right, sb);
         } else {
             char* s = rat_to_string(&pos);
-            strbuf_append(sb, s);
+            sb_append(sb, s);
             free(s);
-            strbuf_append(sb, " * ");
+            sb_append(sb, " * ");
             expr_to_string_impl(expr->binop.right, sb);
         }
         rat_clear(&pos);
@@ -199,40 +198,53 @@ static void emit_negated_term(const Expr* expr, StrBuf* sb) {
 static void emit_add(const Expr* left, const Expr* right, StrBuf* sb) {
     expr_to_string_impl(left, sb);
     if (is_negative_term(right)) {
-        strbuf_append(sb, " - ");
+        sb_append(sb, " - ");
         emit_negated_term(right, sb);
     } else {
-        strbuf_append(sb, " + ");
+        sb_append(sb, " + ");
         expr_to_string_impl(right, sb);
     }
+}
+
+// true for a sum that needs parentheses as a factor: a+b, a-b, or a multi-term polynomial
+static bool is_sum(const Expr* e) {
+    if (e->type == EXPR_BINOP) return e->binop.op == OP_ADD || e->binop.op == OP_SUB;
+    return e->type == EXPR_POLY && e->poly->head && e->poly->head->next;
+}
+
+// emit an operand, parenthesized when it is a sum
+static void emit_factor(const Expr* e, StrBuf* sb) {
+    bool p = is_sum(e);
+    if (p) sb_append(sb, "(");
+    expr_to_string_impl(e, sb);
+    if (p) sb_append(sb, ")");
 }
 
 // emit a * b, eliding coefficients of 1 and -1
 static void emit_mul(const Expr* left, const Expr* right, StrBuf* sb) {
     if (is_one_const(left)) {
-        expr_to_string_impl(right, sb);
+        emit_factor(right, sb);
     } else if (is_neg_one_const(left)) {
-        strbuf_append(sb, "-");
-        expr_to_string_impl(right, sb);
+        sb_append(sb, "-");
+        emit_factor(right, sb);
     } else {
-        expr_to_string_impl(left, sb);
-        strbuf_append(sb, " * ");
-        expr_to_string_impl(right, sb);
+        emit_factor(left, sb);
+        sb_append(sb, " * ");
+        emit_factor(right, sb);
     }
 }
 
 // emit a / b with minimal parenthesization
 static void emit_div(const Expr* left, const Expr* right, StrBuf* sb) {
-    bool lp = (left->type == EXPR_BINOP &&
-               (left->binop.op == OP_ADD || left->binop.op == OP_SUB));
-    bool rp = (right->type == EXPR_BINOP);
-    if (lp) strbuf_append(sb, "(");
+    bool lp = is_sum(left);
+    bool rp = (right->type == EXPR_BINOP) || is_sum(right);
+    if (lp) sb_append(sb, "(");
     expr_to_string_impl(left, sb);
-    if (lp) strbuf_append(sb, ")");
-    strbuf_append(sb, " / ");
-    if (rp) strbuf_append(sb, "(");
+    if (lp) sb_append(sb, ")");
+    sb_append(sb, " / ");
+    if (rp) sb_append(sb, "(");
     expr_to_string_impl(right, sb);
-    if (rp) strbuf_append(sb, ")");
+    if (rp) sb_append(sb, ")");
 }
 
 // emit base^exp, rendering negative exponents as fractions
@@ -240,50 +252,50 @@ static void emit_pow(const Expr* base, const Expr* exp, StrBuf* sb) {
     if (is_neg_const(exp)) {
         Rational pos_exp; rat_init(&pos_exp);
         rat_neg(&pos_exp, &exp->constant);
-        strbuf_append(sb, "1/(");
+        sb_append(sb, "1/(");
         expr_to_string_impl(base, sb);
-        strbuf_append(sb, ")");
+        sb_append(sb, ")");
         if (!rat_is_one(&pos_exp)) {
-            strbuf_append(sb, "^");
+            sb_append(sb, "^");
             char* s = rat_to_string(&pos_exp);
-            strbuf_append(sb, s);
+            sb_append(sb, s);
             free(s);
         }
         rat_clear(&pos_exp);
         return;
     }
     bool needs_parens = (base->type == EXPR_BINOP || base->type == EXPR_POLY);
-    if (needs_parens) strbuf_append(sb, "(");
+    if (needs_parens) sb_append(sb, "(");
     expr_to_string_impl(base, sb);
-    if (needs_parens) strbuf_append(sb, ")");
-    strbuf_append(sb, "^");
+    if (needs_parens) sb_append(sb, ")");
+    sb_append(sb, "^");
     expr_to_string_impl(exp, sb);
 }
 
 static void expr_to_string_impl(const Expr* expr, StrBuf* sb) {
-    if (!expr) { strbuf_append(sb, "NULL"); return; }
+    if (!expr) { sb_append(sb, "NULL"); return; }
 
     switch (expr->type) {
         case EXPR_CONST: {
             char* s = rat_to_string(&expr->constant);
-            strbuf_append(sb, s);
+            sb_append(sb, s);
             free(s);
             break;
         }
         case EXPR_VAR:
-            strbuf_append(sb, expr->var_name);
+            sb_append(sb, expr->var_name);
             break;
         case EXPR_NEG:
-            strbuf_append(sb, "-(");
+            sb_append(sb, "-(");
             expr_to_string_impl(expr->operand, sb);
-            strbuf_append(sb, ")");
+            sb_append(sb, ")");
             break;
         case EXPR_BINOP:
             switch (expr->binop.op) {
                 case OP_ADD: emit_add(expr->binop.left, expr->binop.right, sb); break;
                 case OP_SUB:
                     expr_to_string_impl(expr->binop.left, sb);
-                    strbuf_append(sb, " - ");
+                    sb_append(sb, " - ");
                     expr_to_string_impl(expr->binop.right, sb);
                     break;
                 case OP_MUL: emit_mul(expr->binop.left, expr->binop.right, sb); break;
@@ -293,34 +305,40 @@ static void expr_to_string_impl(const Expr* expr, StrBuf* sb) {
             break;
         case EXPR_POLY: {
             char* s = poly_to_string(expr->poly);
-            strbuf_append(sb, s);
+            sb_append(sb, s);
             free(s);
             break;
         }
         case EXPR_RATIONAL_FN: {
-            strbuf_append(sb, "(");
+            sb_append(sb, "(");
             char* ns = poly_to_string(expr->ratfn.num);
-            strbuf_append(sb, ns);
+            sb_append(sb, ns);
             free(ns);
-            strbuf_append(sb, ") / (");
+            sb_append(sb, ") / (");
             char* ds = poly_to_string(expr->ratfn.den);
-            strbuf_append(sb, ds);
+            sb_append(sb, ds);
             free(ds);
-            strbuf_append(sb, ")");
+            sb_append(sb, ")");
             break;
         }
         case EXPR_LN:
-            strbuf_append(sb, "ln|");
+            sb_append(sb, "ln|");
             expr_to_string_impl(expr->ln_arg, sb);
-            strbuf_append(sb, "|");
+            sb_append(sb, "|");
+            break;
+        case EXPR_ATAN:
+        case EXPR_SQRT:
+            sb_append(sb, expr->type == EXPR_ATAN ? "atan(" : "sqrt(");
+            expr_to_string_impl(expr->fn_arg, sb);
+            sb_append(sb, ")");
             break;
     }
 }
 
 char* expr_to_string(const Expr* expr) {
-    StrBuf sb = strbuf_new();
+    StrBuf sb = sb_new();
     expr_to_string_impl(expr, &sb);
-    return sb.buf;
+    return sb_finish(&sb);
 }
 
 void print_expr(const Expr* expr) {
@@ -336,10 +354,20 @@ static Expr* wrap_poly(Polynomial* poly) {
 }
 
 static Expr* wrap_ratfn(Polynomial* num, Polynomial* den) {
-    if (den->head != NULL && den->head->next == NULL &&
-        den->head->exponent == 0 && rat_is_one(&den->head->coeff)) {
+    if (poly_is_zero(den)) { // division by zero is an error, not a value
+        free_polynomial(num);
         free_polynomial(den);
-        return wrap_poly(num);
+        return NULL;
+    }
+    if (polynomial_degree(den) == 0) { // constant denominator: scale the numerator
+        Rational inv;
+        rat_init(&inv);
+        mpq_inv(inv.val, den->head->coeff.val);
+        Polynomial* c = poly_constant(&inv);
+        Polynomial* scaled = poly_multiply(num, c);
+        free_polynomial(c); free_polynomial(num); free_polynomial(den);
+        rat_clear(&inv);
+        return wrap_poly(scaled);
     }
     Polynomial* g = poly_gcd(num, den);
     if (!poly_is_zero(g) && polynomial_degree(g) > 0) {
@@ -361,6 +389,37 @@ static Expr* wrap_ratfn(Polynomial* num, Polynomial* den) {
     return create_rational_fn(num, den);
 }
 
+// largest polynomial degree a power may produce (guards against x^999999999)
+#define MAX_POW_DEGREE 100000
+
+// exact integer exponent from a constant polynomial; false if not an integer or too large
+static bool exact_int_exponent(const Polynomial* rp, long* out) {
+    if (rp->head == NULL) { *out = 0; return true; }
+    if (rp->head->exponent != 0 || rp->head->next != NULL) return false;
+    const mpq_t* q = &rp->head->coeff.val;
+    if (mpz_cmp_ui(mpq_denref(*q), 1) != 0) return false; // x^(1/2) is not a polynomial
+    if (!mpz_fits_slong_p(mpq_numref(*q))) return false;
+    *out = mpz_get_si(mpq_numref(*q));
+    return true;
+}
+
+// lp^rp for a constant integer rp; consumes both
+static Expr* canon_int_pow(Polynomial* lp, Polynomial* rp) {
+    long exp;
+    bool ok = exact_int_exponent(rp, &exp);
+    free_polynomial(rp);
+    long deg = polynomial_degree(lp) > 0 ? polynomial_degree(lp) : 1;
+    long mag = exp < 0 ? -exp : exp;
+    if (!ok || mag > MAX_POW_DEGREE / deg) { free_polynomial(lp); return NULL; }
+    Polynomial* powered = poly_pow(lp, (unsigned)mag);
+    free_polynomial(lp);
+    if (exp >= 0) return wrap_poly(powered);
+    Rational one = rat_one_val();
+    Polynomial* num = poly_constant(&one);
+    rat_clear(&one);
+    return wrap_ratfn(num, powered);
+}
+
 static Expr* canon_poly_op(BinOp op, Polynomial* lp, Polynomial* rp) {
     switch (op) {
         case OP_ADD: {
@@ -380,44 +439,8 @@ static Expr* canon_poly_op(BinOp op, Polynomial* lp, Polynomial* rp) {
         }
         case OP_DIV:
             return wrap_ratfn(lp, rp);
-        case OP_POW: {
-            if (rp->head && rp->head->exponent == 0 && rp->head->next == NULL) {
-                int exp = (int)rat_to_double(&rp->head->coeff);
-                free_polynomial(rp);
-                if (exp == 0) {
-                    free_polynomial(lp);
-                    Polynomial* one = create_polynomial();
-                    Rational one_r = rat_one_val();
-                    add_term(one, &one_r, 0);
-                    rat_clear(&one_r);
-                    return wrap_poly(one);
-                }
-                if (exp < 0) {
-                    Polynomial* num = create_polynomial();
-                    Rational one_r = rat_one_val();
-                    add_term(num, &one_r, 0);
-                    rat_clear(&one_r);
-                    Polynomial* den = poly_copy(lp);
-                    for (int i = 1; i < -exp; i++) {
-                        Polynomial* tmp = poly_multiply(den, lp);
-                        free_polynomial(den);
-                        den = tmp;
-                    }
-                    free_polynomial(lp);
-                    return wrap_ratfn(num, den);
-                }
-                Polynomial* result = poly_copy(lp);
-                for (int i = 1; i < exp; i++) {
-                    Polynomial* tmp = poly_multiply(result, lp);
-                    free_polynomial(result);
-                    result = tmp;
-                }
-                free_polynomial(lp);
-                return wrap_poly(result);
-            }
-            free_polynomial(lp); free_polynomial(rp);
-            return NULL;
-        }
+        case OP_POW:
+            return canon_int_pow(lp, rp);
     }
     free_polynomial(lp); free_polynomial(rp);
     return NULL;
@@ -564,6 +587,8 @@ Expr* canonicalize(Expr* expr) {
         case EXPR_RATIONAL_FN:
             return wrap_ratfn(poly_copy(expr->ratfn.num), poly_copy(expr->ratfn.den));
         case EXPR_LN:
+        case EXPR_ATAN:
+        case EXPR_SQRT:
             return NULL;
     }
     return NULL;
@@ -646,97 +671,44 @@ Expr* differentiate(Expr* expr, const char* variable) {
     return NULL;
 }
 
-static Expr* make_linear_expr(const Rational* root) {
-    Polynomial* p = create_polynomial();
-    Rational one_r = rat_one_val();
-    add_term(p, &one_r, 1);
-    rat_clear(&one_r);
-    Rational neg_root;
-    rat_init(&neg_root);
-    rat_neg(&neg_root, root);
-    add_term(p, &neg_root, 0);
-    rat_clear(&neg_root);
-    return create_poly_expr(p);
+// --- numeric evaluation ---
+
+static double eval_binop(const Expr* e, double x, bool* ok) {
+    double l = expr_eval(e->binop.left, x, ok), r = expr_eval(e->binop.right, x, ok);
+    switch (e->binop.op) {
+        case OP_ADD: return l + r;
+        case OP_SUB: return l - r;
+        case OP_MUL: return l * r;
+        case OP_DIV: if (r == 0.0) *ok = false; return l / r;
+        case OP_POW: return pow(l, r);
+    }
+    return 0.0;
 }
 
-static Expr* integrate_pf_term(PFTerm* t) {
-    if (t->is_quadratic) return NULL;
-
-    // linear factor (x - r): constant term negated gives root
-    Rational root;
-    rat_init(&root);
-    rat_neg(&root, &t->factor->head->next->coeff);
-
-    Expr* result = NULL;
-
-    for (int k = 0; k < t->power; k++) {
-        if (rat_is_zero(&t->coeffs[k])) continue;
-
-        int power = k + 1;
-        Expr* term;
-
-        if (power == 1) {
-            term = create_mul(create_const_rat(&t->coeffs[k]),
-                              create_ln(make_linear_expr(&root)));
-        } else {
-            Rational new_exp = rat_from_int(1 - power);
-            Rational divisor = rat_from_int(1 - power);
-            Rational new_coeff;
-            rat_init(&new_coeff);
-            rat_div(&new_coeff, &t->coeffs[k], &divisor);
-            term = create_mul(
-                create_const_rat(&new_coeff),
-                create_pow(make_linear_expr(&root), create_const_rat(&new_exp)));
-            rat_clear(&new_coeff);
-            rat_clear(&new_exp);
-            rat_clear(&divisor);
+double expr_eval(const Expr* e, double x, bool* ok) {
+    switch (e->type) {
+        case EXPR_CONST: return rat_to_double(&e->constant);
+        case EXPR_VAR: return x;
+        case EXPR_BINOP: return eval_binop(e, x, ok);
+        case EXPR_NEG: return -expr_eval(e->operand, x, ok);
+        case EXPR_POLY: return poly_evaluate(e->poly, x);
+        case EXPR_RATIONAL_FN: {
+            double d = poly_evaluate(e->ratfn.den, x);
+            if (d == 0.0) *ok = false;
+            return poly_evaluate(e->ratfn.num, x) / d;
         }
-
-        if (result == NULL) result = term;
-        else result = create_add(result, term);
-    }
-
-    rat_clear(&root);
-    return result;
-}
-
-Expr* integrate(Expr* expr, const char* variable) {
-    if (!expr) return NULL;
-    (void)variable;
-
-    Expr* canonical = canonicalize(expr);
-    if (!canonical) return NULL;
-
-    if (canonical->type == EXPR_POLY) {
-        Polynomial* integral = poly_integral(canonical->poly);
-        free_expr(canonical);
-        return wrap_poly(integral);
-    }
-
-    if (canonical->type == EXPR_RATIONAL_FN) {
-        PartialFractionDecomp* pf = partial_fractions(
-            canonical->ratfn.num, canonical->ratfn.den);
-        free_expr(canonical);
-        if (!pf) return NULL;
-
-        Expr* result = NULL;
-
-        if (pf->poly_part && !poly_is_zero(pf->poly_part)) {
-            Polynomial* poly_int = poly_integral(pf->poly_part);
-            result = wrap_poly(poly_int);
+        case EXPR_LN: {
+            double v = fabs(expr_eval(e->ln_arg, x, ok));
+            if (v == 0.0) *ok = false;
+            return log(v);
         }
-
-        for (int i = 0; i < pf->num_terms; i++) {
-            Expr* term_integral = integrate_pf_term(&pf->terms[i]);
-            if (!term_integral) continue;
-            if (result == NULL) result = term_integral;
-            else result = create_add(result, term_integral);
+        case EXPR_ATAN: return atan(expr_eval(e->fn_arg, x, ok));
+        case EXPR_SQRT: {
+            double v = expr_eval(e->fn_arg, x, ok);
+            if (v < 0.0) *ok = false;
+            return sqrt(v);
         }
-
-        free_pf_decomp(pf);
-        return result;
     }
-
-    free_expr(canonical);
-    return NULL;
+    *ok = false;
+    return 0.0;
 }

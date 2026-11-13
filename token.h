@@ -19,7 +19,7 @@ typedef enum {
 typedef struct {
     TokenType type; // Type of token
     union {
-        double number;  // For constant numeric values
+        char* number_text; // exact literal text, e.g. "3", "1.25", "2e10"
         char* variable; // For variable names
     };
 } Token;

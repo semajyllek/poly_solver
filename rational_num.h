@@ -43,10 +43,21 @@ int  rat_cmp(const Rational* a, const Rational* b);
 double rat_to_double(const Rational* r);
 char*  rat_to_string(const Rational* r); // caller frees
 
+// exact literal parsing: digits[.digits][(e|E)[+-]digits] -> Rational, no floating point.
+// returns pointer past the literal, or NULL if s does not start with a digit
+const char* rat_parse_literal(Rational* out, const char* s);
+
+// decimal rendering truncated toward zero to `digits` places (caller frees)
+char* rat_to_decimal(const Rational* r, int digits);
+
+// sqrt(q) = r * sqrt(m) for q > 0, with m a positive integer stripped of square
+// factors below 10^4 (and of a perfect-square remainder); r rational
+void rat_sqrt_split(const Rational* q, Rational* r, mpz_t m);
+
 // integer GCD (for poly_content etc.)
 void gcd_int(mpz_t result, const mpz_t a, const mpz_t b);
 
-// access numerator/denominator as long (for small values)
+// access numerator/denominator as long (lossy for big values; tests only)
 long rat_num_si(const Rational* r);
 long rat_den_si(const Rational* r);
 

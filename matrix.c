@@ -1,4 +1,5 @@
 #include "matrix.h"
+#include "strbuf.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -260,71 +261,43 @@ LinSysResult* linsys_solve(const Matrix* A, const Vector* b) {
 // --- output ---
 
 char* matrix_to_string(const Matrix* m) {
-    size_t cap = 128, len = 0;
-    char* buf = malloc(cap);
-    buf[0] = '\0';
+    StrBuf sb = sb_new();
     for (int r = 0; r < m->rows; r++) {
-        const char* rs = (r == 0) ? "[[" : " [";
-        while (len + strlen(rs) + 1 > cap) { cap *= 2; buf = realloc(buf, cap); }
-        strcat(buf, rs); len += strlen(rs);
+        sb_append(&sb, r == 0 ? "[[" : " [");
         for (int c = 0; c < m->cols; c++) {
-            char* vs = rat_to_string(&MAT_AT(m, r, c));
-            const char* sep = (c < m->cols - 1) ? ", " : "";
-            while (len + strlen(vs) + strlen(sep) + 1 > cap) { cap *= 2; buf = realloc(buf, cap); }
-            strcat(buf, vs); strcat(buf, sep);
-            len += strlen(vs) + strlen(sep);
-            free(vs);
+            if (c > 0) sb_append(&sb, ", ");
+            sb_append_owned(&sb, rat_to_string(&MAT_AT(m, r, c)));
         }
-        const char* re = (r < m->rows - 1) ? "]\n" : "]]";
-        while (len + strlen(re) + 1 > cap) { cap *= 2; buf = realloc(buf, cap); }
-        strcat(buf, re); len += strlen(re);
+        sb_append(&sb, r < m->rows - 1 ? "]\n" : "]]");
     }
-    return buf;
+    return sb_finish(&sb);
 }
 
 char* vector_to_string(const Vector* v) {
-    size_t cap = 64, len = 0;
-    char* buf = malloc(cap);
-    buf[0] = '\0';
-    strcat(buf, "["); len++;
+    StrBuf sb = sb_new();
+    sb_append(&sb, "[");
     for (int i = 0; i < v->n; i++) {
-        char* rs = rat_to_string(&v->data[i]);
-        const char* sep = (i < v->n - 1) ? ", " : "";
-        while (len + strlen(rs) + strlen(sep) + 1 > cap) { cap *= 2; buf = realloc(buf, cap); }
-        strcat(buf, rs); strcat(buf, sep);
-        len += strlen(rs) + strlen(sep);
-        free(rs);
+        if (i > 0) sb_append(&sb, ", ");
+        sb_append_owned(&sb, rat_to_string(&v->data[i]));
     }
-    while (len + 2 > cap) { cap *= 2; buf = realloc(buf, cap); }
-    strcat(buf, "]");
-    return buf;
+    sb_append(&sb, "]");
+    return sb_finish(&sb);
 }
 
 char* linsys_result_to_string(const LinSysResult* r) {
-    size_t cap = 128;
-    char* buf = malloc(cap);
+    StrBuf sb = sb_new();
     if (r->status == LINSYS_INCONSISTENT) {
-        snprintf(buf, cap, "No solution (inconsistent system, rank = %d)", r->rank);
-        return buf;
+        sb_appendf(&sb, "No solution (inconsistent system, rank = %d)", r->rank);
+    } else if (r->status == LINSYS_INFINITE) {
+        sb_appendf(&sb, "Infinitely many solutions (rank = %d)", r->rank);
+    } else {
+        for (int i = 0; i < r->solution->n; i++) {
+            if (i > 0) sb_append(&sb, ", ");
+            sb_appendf(&sb, "x%d = ", i + 1);
+            sb_append_owned(&sb, rat_to_string(&r->solution->data[i]));
+        }
     }
-    if (r->status == LINSYS_INFINITE) {
-        snprintf(buf, cap, "Infinitely many solutions (rank = %d, %d variables)", r->rank, r->rank);
-        return buf;
-    }
-    size_t len = 0;
-    buf[0] = '\0';
-    for (int i = 0; i < r->solution->n; i++) {
-        char* rs = rat_to_string(&r->solution->data[i]);
-        char entry[128];
-        snprintf(entry, sizeof(entry), "x%d = %s", i + 1, rs);
-        free(rs);
-        const char* sep = (i < r->solution->n - 1) ? ", " : "";
-        size_t elen = strlen(entry);
-        while (len + elen + strlen(sep) + 1 > cap) { cap *= 2; buf = realloc(buf, cap); }
-        strcat(buf, entry); strcat(buf, sep);
-        len += elen + strlen(sep);
-    }
-    return buf;
+    return sb_finish(&sb);
 }
 
 void linsys_result_free(LinSysResult* r) {
@@ -337,24 +310,30 @@ void linsys_result_free(LinSysResult* r) {
 
 static void skip_ws(const char** s) { while (isspace(**s)) (*s)++; }
 
-static bool parse_rational_lit(const char** s, Rational* out) {
+// optional sign followed by an exact literal ("-12", "+3.5", "1e30")
+static bool parse_signed_lit(const char** s, Rational* out) {
     skip_ws(s);
-    char* end;
-    long num = strtol(*s, &end, 10);
-    if (end == *s) return false;
+    bool neg = false;
+    if (**s == '-' || **s == '+') { neg = (**s == '-'); (*s)++; skip_ws(s); }
+    const char* end = rat_parse_literal(out, *s);
+    if (!end) return false;
     *s = end;
-    skip_ws(s);
-    if (**s == '/') {
-        (*s)++;
-        skip_ws(s);
-        long den = strtol(*s, &end, 10);
-        if (end == *s || den == 0) return false;
-        *s = end;
-        rat_set_si(out, num, den);
-    } else {
-        rat_set_si(out, num, 1);
-    }
+    if (neg) rat_neg(out, out);
     return true;
+}
+
+// entry of the form  a  or  a/b  with arbitrary-precision a and b
+static bool parse_rational_lit(const char** s, Rational* out) {
+    if (!parse_signed_lit(s, out)) return false;
+    skip_ws(s);
+    if (**s != '/') return true;
+    (*s)++;
+    Rational den;
+    rat_init(&den);
+    bool ok = parse_signed_lit(s, &den) && !rat_is_zero(&den);
+    if (ok) rat_div(out, out, &den);
+    rat_clear(&den);
+    return ok;
 }
 
 Vector* vector_parse(const char* str) {

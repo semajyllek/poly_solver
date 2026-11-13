@@ -5,12 +5,14 @@
 #include "rational_num.h"
 #include <stdbool.h>
 
+// One irreducible denominator factor P with multiplicity m contributes
+//   numerators[0]/P + numerators[1]/P^2 + ... + numerators[m-1]/P^m,
+// each numerator of degree < deg P.
 typedef struct {
-    Rational* coeffs;      // A₁..Aₘ for linear, or NULL for quadratic
-    Polynomial* factor;    // (x - r) or (x² + bx + c)
-    int power;             // highest power m
-    bool is_quadratic;
-    Rational* quad_coeffs; // B₁,C₁,B₂,C₂,... for quadratic (NULL for linear)
+    Polynomial* factor;       // irreducible over Q, primitive integer coefficients
+    int power;                // multiplicity m
+    Polynomial** numerators;  // m numerators
+    Rational* coeffs;         // linear factors only: the constant numerators (else NULL)
 } PFTerm;
 
 typedef struct {

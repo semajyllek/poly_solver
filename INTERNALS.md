@@ -62,24 +62,34 @@ Input string
 ## 2. Module Dependency Graph
 
 ```
-rational_num.c/h          ← standalone, no dependencies
+strbuf.c/h                ← growable strings; every printer uses it (no fixed buffers)
+rational_num.c/h          ← GMP mpq_t wrapper, exact literal parsing, decimal output
     │
     ▼
-polynomial.c/h            ← depends on rational_num
+polynomial.c/h            ← sparse Q[x]: arithmetic, gcd, xgcd, pow, exact evaluation
     │
-    ▼
-expression.c/h            ← depends on polynomial, rational_num
+    ├──► poly_zp.c/h      ← dense F_p[x]: arithmetic, distinct/equal-degree factoring
+    ├──► poly_zx.c/h      ← dense Z[x] (mpz_t): exact division, primitive part, mod p^k
+    │        │
+    │        ▼
+    │    zx_factor.c      ← Berlekamp–Zassenhaus: prime choice, Hensel lifting, recombination
+    │        │
+    ▼        ▼
+factor.c/h                ← content, Yun square-free decomposition, full factorization
     │
-    ├──► factor.c/h       ← depends on polynomial, expression
+    ├──► roots.c/h        ← Descartes/VCA real-root isolation, exact bisection refinement
+    │        │
+    │        ▼
+    ├──► solver.c/h       ← exact rational roots, radicals for quadratics, certified intervals
     │
-    ▼
-parser.c/h                ← depends on expression, token
+expression.c/h            ← Expr tree, canonicalization, printing, numeric evaluation
     │
-    ▼
-solver.c/h                ← depends on polynomial, factor
+    ├──► integrate.c      ← Hermite reduction + per-factor log/atan terms
+    ├──► partial_frac.c/h ← partial fractions over Q-irreducible factors (uses matrix)
     │
-    ▼
-main.c                    ← depends on everything, wires CLI
+token.c, parser.c         ← lexer (exact literal text) and shunting-yard parser
+matrix.c/h                ← exact Gaussian elimination (rational_num, strbuf)
+main.c                    ← CLI wiring
 ```
 
 ---
@@ -108,7 +118,7 @@ free_polynomial(sum);
 
 Ownership transfer happens in only one place: the `extract_poly` and `extract_ratfn` helpers inside canonicalization, which null out pointers in the source `Expr` to transfer ownership of the inner `Polynomial*` without copying.
 
-The `Rational` type is a **value type** (16 bytes, two `long long` fields) passed by value on the stack. It never needs freeing. The only heap-allocated rational output is `rat_to_string()`, which the caller must free.
+The `Rational` type wraps a GMP `mpq_t`. It must be initialized (`rat_init`, or a constructor like `rat_from_int`) and cleared (`rat_clear`); arithmetic writes into a pre-initialized result. `rat_to_string()` and `rat_to_decimal()` return heap strings the caller frees.
 
 ---
 
@@ -128,72 +138,29 @@ Exact arithmetic is essential for polynomial GCD (where a single rounding error 
 ### 4.2 The `Rational` struct
 
 ```c
-typedef long long rat_int_t;  // typedef allows future GMP swap
-
 typedef struct {
-    rat_int_t num;   // numerator (carries the sign)
-    rat_int_t den;   // denominator (always > 0 after normalization)
+    mpq_t val;   // GMP arbitrary-precision rational, always canonical
 } Rational;
 ```
 
-Every `Rational` is kept in **lowest terms** with a **positive denominator**. This normalization is enforced by the `normalize()` function called by every constructor and arithmetic operation.
+GMP keeps every value in lowest terms with a positive denominator, so equality is structural and there is no overflow: `rat_add`, `rat_mul` and friends are thin wrappers over `mpq_add`, `mpq_mul`, etc.
 
-### 4.3 Normalization via Euclidean GCD
+### 4.3 Exact literals in, exact text out
 
-The Euclidean algorithm computes `gcd(a, b)` by repeatedly replacing the larger number with the remainder of dividing the two:
-
-```
-gcd(12, 8):
-    12 mod 8 = 4   → gcd(8, 4)
-     8 mod 4 = 0   → gcd(4, 0) → answer: 4
-```
-
-In code (`gcd_int`):
-```c
-rat_int_t gcd_int(rat_int_t a, rat_int_t b) {
-    if (a < 0) a = -a;  // work with absolute values
-    if (b < 0) b = -b;
-    while (b != 0) {
-        rat_int_t t = b;
-        b = a % b;
-        a = t;
-    }
-    return a;
-}
-```
-
-Normalization then divides both numerator and denominator by their GCD and ensures the denominator is positive:
+Numbers never pass through `double`. The lexer finds a literal's extent with `rat_parse_literal`, which accepts `digits[.digits][(e|E)[+-]digits]` and builds the value exactly:
 
 ```
-normalize(6, -4):
-    den < 0 → flip signs → (-6, 4)
-    gcd(6, 4) = 2
-    result: -6/2 = -3,  4/2 = 2  → Rational{-3, 2}
+"1.25"   → 125 · 10^-2 = 5/4
+"2e-2"   → 2 · 10^-2   = 1/50
+"10000000000000000000000" → stays exact (it used to saturate to 2^63 - 1)
+"2e"     → 2, then the variable e   (an exponent needs digits)
 ```
 
-### 4.4 Arithmetic with overflow mitigation
+Matrix entries use the same parser, so `[[1/3, 0.5]]` is exact too. On output, `rat_to_decimal(r, d)` prints a truncated decimal with `d` places using only integer arithmetic, and all printers append into a growable `StrBuf`, so coefficients of any size print in full.
 
-**Addition** uses the identity `a/b + c/d = (a*(d/g) + c*(b/g)) / (b/g*d)` where `g = gcd(b, d)`. By dividing out the GCD of the denominators first, intermediate products stay smaller:
+### 4.4 Square roots of rationals
 
-```
-1/6 + 1/4:
-    g = gcd(6, 4) = 2
-    lcm_den = 6/2 * 4 = 12
-    num = 1*(4/2) + 1*(6/2) = 2 + 3 = 5
-    normalize(5, 12) → 5/12
-```
-
-**Multiplication** cross-reduces before multiplying: `(a/b) * (c/d)` first computes `g1 = gcd(a, d)` and `g2 = gcd(c, b)`, then multiplies the reduced numerators and denominators:
-
-```
-(2/3) * (3/4):
-    g1 = gcd(2, 4) = 2     g2 = gcd(3, 3) = 3
-    num = (2/2) * (3/3) = 1 * 1 = 1
-    den = (3/3) * (4/2) = 1 * 2 = 2
-    result: 1/2
-```
-
-Without cross-reduction, the intermediate would be `6/12` — same result after normalization, but with larger intermediates that risk overflow.
+`rat_sqrt_split(q, &r, m)` writes `sqrt(q) = r · sqrt(m)` with `m` an integer stripped of square factors (trial division up to 10^4, then a perfect-square test on what is left). The solver and integrator use it to print radicals such as `1/2*sqrt(3)`.
 
 ### 4.5 Exponentiation by squaring
 
@@ -593,14 +560,17 @@ typedef struct { OpEntry* items; int top; int cap; } OpStack;
 ### 7.3 Precedence and associativity table
 
 ```
-Level 4: unary minus (-)          right-associative
-Level 3: power (^)                right-associative
+Level 3: power (^), unary minus   right-associative
 Level 2: multiply (*), divide (/) left-associative
 Level 1: add (+), subtract (-)    left-associative
 Level 0: parentheses, sentinel
 ```
 
 Power is right-associative so `x^2^3` parses as `x^(2^3)`, not `(x^2)^3`.
+
+Unary minus shares the level of `^` and is also right-associative, so `-x^2` is `-(x^2)` and `x^-2` is `x^(-2)`, while `-2*3` still applies the sign first. An earlier version gave unary minus a higher level, so `-x^2` parsed as `(-x)^2`.
+
+After parsing, `parse_and_simplify` rejects any unconsumed input (`x^2 = 4`, `2x $ 3`). A missing operand (`2 +`) or an unbalanced parenthesis is also an error, never a shortened expression.
 
 ### 7.4 The algorithm, step by step
 
@@ -856,259 +826,72 @@ The result is then passed through `wrap_ratfn` for GCD reduction.
 
 ## 9. Polynomial Factoring
 
-### 9.1 Overview of the factoring pipeline
+### 9.1 Pipeline
 
 ```
-Input polynomial
-    │
-    ▼
-┌────────────────────┐
-│ Extract content    │  GCD of all coefficients
-│ (poly_content)     │  → separate leading scalar
-└────────────────────┘
-    │  primitive polynomial (content = 1)
-    ▼
-┌────────────────────┐
-│ Clear denominators │  multiply so all coefficients are integers
-└────────────────────┘
-    │  integer-coefficient polynomial
-    ▼
-┌────────────────────┐
-│ Rational Root      │  test p/q candidates where p | constant, q | leading
-│ Theorem            │
-└────────────────────┘
-    │  list of rational roots
-    ▼
-┌────────────────────┐
-│ Synthetic Division │  divide out each (x - root) factor
-└────────────────────┘
-    │  factored form + irreducible remainder
-    ▼
-  Factorization result
+f ∈ Q[x]
+  │  Yun square-free decomposition (gcds over Q)
+  ▼
+f = lc · a_1 · a_2^2 · … · a_k^k        a_i square-free, pairwise coprime
+  │  per a_i: primitive integer part, then Berlekamp–Zassenhaus
+  ▼
+irreducible primitive integer factors with multiplicities, sorted
+  │  content = lc(f) / Π lc(factor)^mult
+  ▼
+f = content · Π factor^mult   (exactly)
 ```
 
-### 9.2 Content extraction
+The convention is the standard one: factors are primitive integer polynomials with positive leading coefficient, and all scaling lives in `content`. So `2x^2 - 3x + 1` prints as `(2x - 1)(x - 1)`, and `x^2/2 - 1/8` as `1/8(2x + 1)(2x - 1)`.
 
-The **content** of a polynomial is the GCD of all its coefficients. For rational coefficients, the GCD is computed as:
+### 9.2 Yun's square-free decomposition
 
-```
-gcd(a/b, c/d) = gcd(a, c) / lcm(b, d)
-```
-
-**Example:** Content of `(1/2)x^2 - (3/4)x + (1/4)`:
+With `a0 = gcd(f, f')`, `b = f/a0`, `d = f'/a0 - b'`, each pass computes `a_i = gcd(b, d)`, then `b ← b/a_i` and `d ← (d/a_i) - b'`. Part `i` collects exactly the factors of multiplicity `i`:
 
 ```
-Coefficients: 1/2, -3/4, 1/4
-Absolute values: 1/2, 3/4, 1/4
-
-gcd(1/2, 3/4):
-    gcd(1, 3) = 1
-    lcm(2, 4) = 4
-    → 1/4
-
-gcd(1/4, 1/4):
-    gcd(1, 1) = 1
-    lcm(4, 4) = 4
-    → 1/4
-
-Content = 1/4
+f = (x - 1)(x^2 - 2)^2
+parts: [x - 1, x^2 - 2]   → multiplicities 1 and 2
 ```
 
-Dividing all coefficients by `1/4` gives the primitive part: `2x^2 - 3x + 1`.
+### 9.3 Berlekamp–Zassenhaus (`zx_factor.c`)
 
-### 9.3 The Rational Root Theorem
+For a primitive, square-free `f ∈ Z[x]`:
 
-For a polynomial `a_n*x^n + ... + a_1*x + a_0` with integer coefficients, any rational root `p/q` (in lowest terms) must satisfy:
+1. **Choose a prime.** Try odd primes until five are usable (p does not divide lc(f), and f stays square-free mod p). Factor f mod each one and keep the prime giving the fewest factors. One factor mod p proves f irreducible.
+2. **Factor mod p** (`poly_zp.c`). Distinct-degree factorization isolates the product of all degree-d factors as `gcd(x^(p^d) - x, f)`. Cantor–Zassenhaus then splits each product with `gcd(a^((p^d-1)/2) - 1, g)` for pseudo-random `a`. The generator has a fixed seed, so output is deterministic.
+3. **Hensel lift** to `P = p^k > 2·|lc|·(n+1)·2^n·max|a_i|`, a loosened Mignotte bound. The target is `f / lc(f) mod P`. Factors are split into two halves recursively; each pair `g·h` is lifted linearly with Bézout coefficients `s·g + t·h ≡ 1 (mod p)`:
+   ```
+   e  = (target - g·h) / M  mod p
+   g += M · (e·t mod g)      h += M · (e·s mod h)      M ← M·p
+   ```
+4. **Recombine.** For subset sizes 1, 2, …, form `lc(f) · Π u_i mod P` in the symmetric range and take its primitive part. Accept it **only if it divides f exactly in Z[x]**. A lifting bug can therefore only under-factor; it can never return a wrong factor.
 
-- `p` divides the constant term `a_0`
-- `q` divides the leading coefficient `a_n`
-
-**Example:** Finding roots of `2x^3 - 3x^2 - 8x - 3`:
-
-```
-a_0 = -3, a_n = 2
-
-Divisors of |-3|: 1, 3
-Divisors of |2|:  1, 2
-
-Candidate roots (±p/q):
-    ±1/1, ±3/1, ±1/2, ±3/2
-
-Test each by evaluating the polynomial:
-    f(1)   = 2 - 3 - 8 - 3 = -12  ✗
-    f(-1)  = -2 - 3 + 8 - 3 = 0   ✓  root found!
-    
-After dividing out (x + 1), test remaining polynomial 2x^2 - 5x - 3:
-    f(3)   = 18 - 15 - 3 = 0      ✓  root found!
-    
-After dividing out (x - 3), remainder: 2x + 1
-    f(-1/2) = -1 + 1 = 0          ✓  root found!
-```
-
-The implementation clears denominators first (multiplying all coefficients by the LCM of their denominators) so that the rational root theorem applies to integer coefficients.
-
-When a constant term is zero, the algorithm immediately records `x = 0` as a root and divides out `x` before proceeding.
-
-When a root is found, the algorithm re-tests the same candidate to detect **repeated roots**: if `x = r` is a root of `f(x)`, it divides out `(x - r)` and checks if `r` is still a root of the quotient.
-
-### 9.4 Synthetic division
-
-Synthetic division is an efficient algorithm for dividing a polynomial by `(x - r)`. It's much faster than full polynomial long division for this special case.
-
-**Example:** Dividing `2x^3 - 3x^2 - 8x - 3` by `(x - 3)`:
-
-```
-Write coefficients in descending order: [2, -3, -8, -3]
-Root: r = 3
-
-    Step 0: bring down first coefficient:    result[0] = 2
-    Step 1: result[1] = -3 + 2*3 = -3 + 6 = 3
-    Step 2: result[2] = -8 + 3*3 = -8 + 9 = 1
-
-Quotient coefficients: [2, 3, 1] → 2x^2 + 3x + 1
-(The remainder would be -3 + 1*3 = 0, confirming 3 is a root)
-```
-
-The implementation converts the sparse linked list to a dense coefficient array for the synthetic division, then converts back.
-
-### 9.5 The `Factorization` result
-
-```c
-typedef struct {
-    Polynomial** factors;     // array of irreducible factors
-    int* multiplicities;      // multiplicity of each factor
-    int count;                // number of distinct factors
-    Rational content;         // leading scalar (GCD of original coefficients)
-} Factorization;
-```
-
-**Example:** Factoring `6x^2 + 12x + 6`:
-
-```
-Content: 6
-Primitive part: x^2 + 2x + 1
-
-Rational roots of x^2 + 2x + 1:
-    f(-1) = 1 - 2 + 1 = 0 → root -1
-    Divide by (x + 1): quotient = x + 1
-    f(-1) again: -1 + 1 = 0 → repeated root!
-    Divide by (x + 1): quotient = 1 (constant)
-
-Result:
-    content = 6
-    factors = [(x + 1)]
-    multiplicities = [2]
-
-Displayed as: 6(x + 1)^2
-```
-
-### 9.6 Handling irreducible remainders
-
-After extracting all rational roots, the remaining polynomial may be irreducible over Q (has no rational roots). It is added as a factor with multiplicity 1.
-
-**Example:** Factoring `x^6 - 1`:
-
-```
-Rational roots: 1, -1
-
-After dividing out (x - 1) and (x + 1):
-    x^6 - 1 / (x - 1) = x^5 + x^4 + x^3 + x^2 + x + 1
-    that / (x + 1) = x^4 + x^2 + 1
-
-x^4 + x^2 + 1 has no rational roots → kept as irreducible factor.
-
-Result: (x - 1)(x + 1)(x^4 + x^2 + 1)
-```
-
-(Mathematically, `x^4 + x^2 + 1 = (x^2 + x + 1)(x^2 - x + 1)`, but neither quadratic has rational roots, so the factorizer cannot split it further without more advanced algorithms.)
+Examples that exercise recombination: `x^4 + 1` and `x^4 - 10x^2 + 1` are irreducible over Q but split modulo every prime. `x^8 + 98x^4 + 1` splits into two quartics.
 
 ---
 
 ## 10. Equation Solving
 
-### 10.1 Strategy: factor first, then solve each factor
+### 10.1 Strategy
 
-The solver delegates to the factoring engine, then solves each irreducible factor individually based on its degree:
+`solve_polynomial` factors first. Linear factors give exact rational roots. Every irreducible factor of degree ≥ 2 becomes an `IrrationalFactor`, holding its certified real-root intervals.
 
-```
-solve_polynomial(p):
-    f = factorize(p)
-    for each factor in f:
-        if degree == 1: solve linear
-        if degree == 2: solve quadratic (formula)
-        if degree > 2:  report as irreducible (no closed-form solution)
-```
+### 10.2 Real-root isolation (`roots.c`)
 
-### 10.2 Linear solving
+The method is Vincent–Collins–Akritas bisection driven by Descartes' rule of signs. Everything is exact integer arithmetic:
 
-For `ax + b = 0`:  `x = -b/a` (exact rational result).
+- A power-of-two Cauchy bound `B` maps the positive roots of `f(Bt)` and of `f(-Bt)` into `(0, 1)`.
+- The number of roots in `(0, 1)` is bounded by the sign variations of `(t+1)^n · g(1/(t+1))`, computed with a reversal and a Taylor shift. A count of 0 drops the interval, 1 isolates it, and more bisects via `2^n·g(t/2)` and its shift by 1.
+- An exact root at a bisection point is recorded as a degenerate interval.
 
-### 10.3 Quadratic solving
+`refine_root` then bisects an isolating interval with exact evaluation (`poly_eval_rat`) until it is narrower than 10^-12. The printed decimal is the truncated midpoint.
 
-For `ax^2 + bx + c = 0`, compute the discriminant `D = b^2 - 4ac` using exact rational arithmetic.
+### 10.3 Output
 
-Three cases:
+- Rational roots: `x = 3/2`.
+- Quadratic factors print exact radicals: `x = 1/2 - 1/2*sqrt(5) ~ -0.6180339887`, or `x = -1/2 +/- 1/2*sqrt(3)*i` for complex roots.
+- Higher-degree factors print their real roots as `x ~ 1.2599210498` and the number of non-real roots: `2 non-real roots of (x^3 - 2)`. Complex roots of degree ≥ 3 factors are counted, not located.
 
-**D = 0:** One repeated root: `x = -b/(2a)`
-
-```
-x^2 - 2x + 1 = 0:
-    D = 4 - 4 = 0
-    x = 2/2 = 1 (multiplicity 2)
-```
-
-**D > 0, perfect square:** Two exact rational roots via the quadratic formula.
-
-```
-x^2 - 5x + 6 = 0:
-    D = 25 - 24 = 1 → √1 = 1
-    x = (5 ± 1) / 2 → x = 3 or x = 2
-```
-
-The `is_perfect_square_rat` function checks if both the numerator and denominator of `D` are perfect squares by computing their floating-point square roots, rounding, and verifying `round(√n)^2 == n`.
-
-**D > 0, not perfect square:** Two irrational roots, returned as doubles.
-
-```
-x^2 - 2 = 0:
-    D = 0 + 8 = 8 → not a perfect square
-    x ≈ (0 ± 2.828) / 2 → x ≈ ±1.414
-```
-
-**D < 0:** No real roots. The irreducible quadratic is recorded for display.
-
-```
-x^2 + 1 = 0:
-    D = 0 - 4 = -4 < 0
-    → "(x^2 + 1) = 0 (no rational roots)"
-```
-
-### 10.4 Worked example: solving a cubic
-
-Input: `x^3 - 6x^2 + 11x - 6 = 0`
-
-```
-Step 1: Factorize
-    Content: 1 (monic)
-    Rational root theorem candidates: ±1, ±2, ±3, ±6
-    
-    f(1) = 1 - 6 + 11 - 6 = 0 → root 1
-    Synthetic divide by (x - 1): x^2 - 5x + 6
-    
-    f(2) = 4 - 10 + 6 = 0 → root 2
-    Synthetic divide by (x - 2): x - 3
-    
-    f(3) = 3 - 3 = 0 → root 3
-    
-    Factorization: (x - 1)(x - 2)(x - 3)
-
-Step 2: Solve each linear factor
-    x - 1 = 0 → x = 1
-    x - 2 = 0 → x = 2
-    x - 3 = 0 → x = 3
-
-Output: "x = 1, x = 2, x = 3"
-```
+For compatibility, `Solutions` still exposes `irrational_roots` (doubles from the certified intervals) and `irreducible_factors` (factors that have non-real roots).
 
 ---
 
@@ -1143,9 +926,33 @@ Result: (x^2 - 2x - 1) / (x^2 - 2x + 1)
 
 The result is then passed through `wrap_ratfn` which attempts GCD reduction. In this case, the GCD of the numerator and denominator is 1, so no simplification occurs.
 
-### 11.2 Integration
+### 11.2 Integration (`integrate.c`)
 
-`integrate()` canonicalizes, then delegates to `poly_integral` for polynomial inputs. Rational function integration (partial fractions) is not yet implemented.
+For `N/D`:
+
+1. **Polynomial part.** Divide: `N = q·D + r`, and integrate `q` term by term.
+2. **Rational part: Hermite reduction** (Mack's linear version; Bronstein, *Symbolic Integration I*, §2.2). This needs only gcds and the extended Euclidean algorithm, no factoring:
+   ```
+   Dm ← gcd(D, D'), Ds ← D/Dm
+   while deg Dm > 0:
+       Dm2 ← gcd(Dm, Dm'), Dms ← Dm/Dm2
+       solve B·(-Ds·Dm'/Dm) + C·Dms = A
+       A ← C - B'·Ds/Dms,  g ← g + B/Dm,  Dm ← Dm2
+   ```
+   The result is `∫ r/D = g + ∫ a/Ds` with `Ds` square-free. **The identity `g' + a/Ds = r/D` is checked exactly before use.**
+3. **Logarithmic part.** Factor `Ds` into irreducibles `P_i`. Then `a/Ds = Σ A_i/P_i`, where `A_i` comes from `s·Q_i + t·P_i = a` and `Q_i = Ds/P_i`. Per factor:
+   - `deg P = 1`: `k/(αx+β)` → `(k/α)·ln|αx+β|`
+   - `deg P = 2`, numerator `Bx + C`: `B/(2a)·ln|P|` plus `K·∫1/P` with `K = C − B·b/(2a)` and `D = b² − 4ac`:
+     - `D < 0`: `(2/√−D)·atan((2ax+b)/√−D)`
+     - `D > 0`: `(1/√D)·ln|(2ax+b−√D)/(2ax+b+√D)|`
+   - `deg P ≥ 3`: if the numerator is `k·P'`, the result is `k·ln|P|`. Otherwise the antiderivative needs logarithms over algebraic numbers (a Lazard–Rioboo–Trager RootSum), which is not implemented. `integrate` returns NULL and `integrate_error()` says why. It never returns a partial answer.
+
+```
+∫ 1/((x-1)(x^2+1)) = 1/2 * ln|x - 1| - 1/4 * ln|x^2 + 1| - 1/2 * atan(x)
+∫ 1/(x^2+1)^2      = 1/2x / (x^2 + 1) + 1/2 * atan(x)
+∫ 1/(x^2-2)        = 1/4 * sqrt(2) * ln|(x - sqrt(2)) / (x + sqrt(2))|
+∫ 1/(x^3-2)        → error: needs logarithms over algebraic numbers
+```
 
 ---
 
@@ -1195,15 +1002,10 @@ The pipeline for every action:
    EXPR_POLY: [1*x^2, -5*x^1, 6*x^0]
 
 3. factorize() is called on this polynomial:
-   - Content: 1 (it's monic)
-   - Primitive part: x^2 - 5x + 6
-   - Rational root candidates: ±1, ±2, ±3, ±6
-   - f(1) = 1-5+6 = 2 ≠ 0
-   - f(-1) = 1+5+6 = 12 ≠ 0
-   - f(2) = 4-10+6 = 0 ✓ → root found
-   - Synthetic divide: (x^2-5x+6)/(x-2) = x-3
-   - f(3) on (x-3): 3-3=0 ✓ → root found
-   - Factorization: {factors: [(x-2), (x-3)], multiplicities: [1, 1], content: 1}
+   - Yun: f is square-free → one part, multiplicity 1
+   - Berlekamp–Zassenhaus: f ≡ x(x + 1) (mod 3), two linear factors; they lift
+     to (x - 3) and (x - 2) mod 3^k, and each divides f exactly over Z
+   - sorted by root: {factors: [(x - 2), (x - 3)], multiplicities: [1, 1], content: 1}
 
 4. factorization_to_string: "(x - 2)(x - 3)"
 

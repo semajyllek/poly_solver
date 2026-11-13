@@ -1,4 +1,5 @@
 #include "polynomial.h"
+#include "strbuf.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -217,6 +218,105 @@ Polynomial* poly_lcm(const Polynomial* poly1, const Polynomial* poly2) {
     return lcm;
 }
 
+Polynomial* poly_constant(const Rational* c) {
+    Polynomial* p = create_polynomial();
+    add_term(p, c, 0);
+    return p;
+}
+
+Polynomial* poly_pow(const Polynomial* base, unsigned exp) {
+    Rational one = rat_one_val();
+    Polynomial* result = poly_constant(&one);
+    rat_clear(&one);
+    Polynomial* sq = poly_copy(base);
+    while (exp > 0) {
+        if (exp & 1u) { // fold the current square into the result
+            Polynomial* t = poly_multiply(result, sq);
+            free_polynomial(result);
+            result = t;
+        }
+        exp >>= 1;
+        if (exp) {
+            Polynomial* t = poly_multiply(sq, sq);
+            free_polynomial(sq);
+            sq = t;
+        }
+    }
+    free_polynomial(sq);
+    return result;
+}
+
+Polynomial* poly_scale(const Polynomial* p, const Rational* c) {
+    Polynomial* r = create_polynomial();
+    Rational t;
+    rat_init(&t);
+    for (Term* term = p->head; term; term = term->next) {
+        rat_mul(&t, &term->coeff, c);
+        add_term(r, &t, term->exponent);
+    }
+    rat_clear(&t);
+    return r;
+}
+
+// next = old - q * cur (one row of the extended Euclidean recurrence)
+static Polynomial* euclid_row(const Polynomial* old, const Polynomial* q, const Polynomial* cur) {
+    Polynomial* qc = poly_multiply(q, cur);
+    Polynomial* r = poly_subtract(old, qc);
+    free_polynomial(qc);
+    return r;
+}
+
+PolyBezout poly_xgcd(const Polynomial* a, const Polynomial* b) {
+    Rational one = rat_one_val();
+    Polynomial *r0 = poly_copy(a), *r1 = poly_copy(b);
+    Polynomial *s0 = poly_constant(&one), *s1 = create_polynomial();
+    Polynomial *t0 = create_polynomial(), *t1 = poly_constant(&one);
+    while (!poly_is_zero(r1)) {
+        PolyDivResult dr = poly_divmod(r0, r1);
+        Polynomial* s2 = euclid_row(s0, dr.quotient, s1);
+        Polynomial* t2 = euclid_row(t0, dr.quotient, t1);
+        free_polynomial(dr.quotient); free_polynomial(r0); free_polynomial(s0); free_polynomial(t0);
+        r0 = r1; r1 = dr.remainder;
+        s0 = s1; s1 = s2;
+        t0 = t1; t1 = t2;
+    }
+    // normalize so the gcd is monic
+    Rational inv;
+    rat_init(&inv);
+    if (r0->head) mpq_inv(inv.val, r0->head->coeff.val);
+    else mpq_set_si(inv.val, 1, 1);
+    PolyBezout bz = { poly_scale(s0, &inv), poly_scale(t0, &inv), poly_scale(r0, &inv) };
+    free_polynomial(r0); free_polynomial(r1); free_polynomial(s0);
+    free_polynomial(s1); free_polynomial(t0); free_polynomial(t1);
+    rat_clear(&inv); rat_clear(&one);
+    return bz;
+}
+
+void free_bezout(PolyBezout* bz) {
+    free_polynomial(bz->s);
+    free_polynomial(bz->t);
+    free_polynomial(bz->g);
+}
+
+void poly_coeff(Rational* out, const Polynomial* poly, int degree) {
+    for (Term* t = poly->head; t; t = t->next) {
+        if (t->exponent == degree) { rat_set(out, &t->coeff); return; }
+        if (t->exponent < degree) break; // terms are sorted descending
+    }
+    mpq_set_si(out->val, 0, 1);
+}
+
+void poly_eval_rat(Rational* out, const Polynomial* poly, const Rational* x) {
+    mpq_set_si(out->val, 0, 1);
+    int prev = poly->head ? poly->head->exponent : 0;
+    for (Term* t = poly->head; t; t = t->next) {
+        for (int i = t->exponent; i < prev; i++) rat_mul(out, out, x); // skip the gap
+        rat_add(out, out, &t->coeff);
+        prev = t->exponent;
+    }
+    for (int i = 0; i < prev; i++) rat_mul(out, out, x);
+}
+
 double poly_evaluate(const Polynomial* poly, double x) {
     if (poly->head == NULL) return 0.0;
 
@@ -299,75 +399,26 @@ void print_polynomial(const Polynomial* poly) {
     free(s);
 }
 
+// append one term (sign handled by caller) as "c", "x^e", or "cx^e"
+static void append_term_body(StrBuf* sb, const Rational* abs_c, int e) {
+    if (e == 0) { sb_append_owned(sb, rat_to_string(abs_c)); return; }
+    if (!rat_is_one(abs_c)) sb_append_owned(sb, rat_to_string(abs_c));
+    sb_append(sb, "x");
+    if (e != 1) sb_appendf(sb, "^%d", e);
+}
+
 char* poly_to_string(const Polynomial* poly) {
-    if (poly->head == NULL) {
-        char* s = malloc(2);
-        strcpy(s, "0");
-        return s;
+    StrBuf sb = sb_new();
+    if (poly->head == NULL) { sb_append(&sb, "0"); return sb_finish(&sb); }
+    Rational c;
+    rat_init(&c);
+    for (Term* t = poly->head; t; t = t->next) {
+        bool neg = rat_is_negative(&t->coeff);
+        if (t != poly->head) sb_append(&sb, neg ? " - " : " + ");
+        else if (neg) sb_append(&sb, "-");
+        rat_abs(&c, &t->coeff);
+        append_term_body(&sb, &c, t->exponent);
     }
-
-    size_t cap = 128, len = 0;
-    char* buf = malloc(cap);
-    buf[0] = '\0';
-
-    Term* current = poly->head;
-    bool first = true;
-
-    while (current != NULL) {
-        char term_buf[128];
-        // work with a copy for sign manipulation
-        Rational c;
-        rat_init_set(&c, &current->coeff);
-        int e = current->exponent;
-
-        if (!first) {
-            if (rat_is_negative(&c)) {
-                strcat(buf, " - ");
-                len += 3;
-                rat_neg(&c, &c);
-            } else {
-                strcat(buf, " + ");
-                len += 3;
-            }
-        } else if (rat_is_negative(&c)) {
-            strcat(buf, "-");
-            len += 1;
-            rat_neg(&c, &c);
-        }
-
-        bool coeff_is_one = rat_is_one(&c);
-
-        if (e == 0) {
-            char* cs = rat_to_string(&c);
-            snprintf(term_buf, sizeof(term_buf), "%s", cs);
-            free(cs);
-        } else if (coeff_is_one) {
-            if (e == 1)
-                snprintf(term_buf, sizeof(term_buf), "x");
-            else
-                snprintf(term_buf, sizeof(term_buf), "x^%d", e);
-        } else {
-            char* cs = rat_to_string(&c);
-            if (e == 1)
-                snprintf(term_buf, sizeof(term_buf), "%sx", cs);
-            else
-                snprintf(term_buf, sizeof(term_buf), "%sx^%d", cs, e);
-            free(cs);
-        }
-
-        rat_clear(&c);
-
-        size_t tlen = strlen(term_buf);
-        while (len + tlen + 1 > cap) {
-            cap *= 2;
-            buf = realloc(buf, cap);
-        }
-        strcat(buf, term_buf);
-        len += tlen;
-
-        first = false;
-        current = current->next;
-    }
-
-    return buf;
+    rat_clear(&c);
+    return sb_finish(&sb);
 }

@@ -20,6 +20,13 @@ typedef struct {
     Polynomial* remainder;
 } PolyDivResult;
 
+// s*a + t*b == g with g = gcd(a, b) monic
+typedef struct {
+    Polynomial* s;
+    Polynomial* t;
+    Polynomial* g;
+} PolyBezout;
+
 // construction
 Polynomial* create_polynomial(void);
 Term* create_term(const Rational* coeff, int exponent);
@@ -39,6 +46,12 @@ Polynomial* poly_divide(const Polynomial* dividend, const Polynomial* divisor);
 Polynomial* poly_mod(const Polynomial* dividend, const Polynomial* divisor);
 Polynomial* poly_gcd(const Polynomial* poly1, const Polynomial* poly2);
 Polynomial* poly_lcm(const Polynomial* poly1, const Polynomial* poly2);
+Polynomial* poly_pow(const Polynomial* base, unsigned exp); // binary exponentiation
+Polynomial* poly_scale(const Polynomial* p, const Rational* c);
+PolyBezout  poly_xgcd(const Polynomial* a, const Polynomial* b);
+void        free_bezout(PolyBezout* bz);
+Polynomial* poly_constant(const Rational* c);               // the constant polynomial c
+void poly_coeff(Rational* out, const Polynomial* poly, int degree); // 0 when absent
 void poly_make_monic(Polynomial* poly);
 
 // calculus
@@ -48,6 +61,7 @@ double poly_definite_integral(const Polynomial* poly, double lower, double upper
 
 // evaluation and output
 double poly_evaluate(const Polynomial* poly, double x);
+void poly_eval_rat(Rational* out, const Polynomial* poly, const Rational* x); // exact Horner
 char* poly_to_string(const Polynomial* poly); // caller frees
 void free_polynomial(Polynomial* poly);
 void print_polynomial(const Polynomial* poly);

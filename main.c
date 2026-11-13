@@ -130,7 +130,8 @@ int main(int argc, char* argv[]) {
     const char* input = argv[2];
     Expr* expr = parse_and_simplify(input);
     if (expr == NULL) {
-        fprintf(stderr, "Error: could not parse expression.\n");
+        fprintf(stderr, "Error: not a polynomial or rational function "
+                        "(check syntax; exponents must be integers; division by zero is undefined).\n");
         return 1;
     }
 
@@ -166,7 +167,7 @@ int main(int argc, char* argv[]) {
     } else if (strcmp(action, "integrate") == 0) {
         Expr* integral = integrate(expr, "x");
         if (!integral) {
-            fprintf(stderr, "Error: could not integrate expression.\n");
+            fprintf(stderr, "Error: could not integrate expression: %s.\n", integrate_error());
             free_expr(expr);
             return 1;
         }

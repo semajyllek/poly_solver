@@ -1,218 +1,224 @@
 #include "solver.h"
 #include "factor.h"
-#include <stdio.h>
+#include "strbuf.h"
 #include <stdlib.h>
 #include <string.h>
-#include <math.h>
 
-static bool is_perfect_square_rat(const Rational* r, Rational* root) {
-    if (rat_is_negative(r)) return false;
-    if (rat_is_zero(r)) { mpq_set_si(root->val, 0, 1); return true; }
-    // check if both num and den are perfect squares
-    if (!mpz_perfect_square_p(mpq_numref(r->val))) return false;
-    if (!mpz_perfect_square_p(mpq_denref(r->val))) return false;
-    mpz_t sn, sd;
-    mpz_init(sn); mpz_init(sd);
-    mpz_sqrt(sn, mpq_numref(r->val));
-    mpz_sqrt(sd, mpq_denref(r->val));
-    mpq_set_num(root->val, sn);
-    mpq_set_den(root->val, sd);
-    mpq_canonicalize(root->val);
-    mpz_clear(sn); mpz_clear(sd);
-    return true;
+#define DECIMAL_DIGITS 10 // digits shown for irrational roots (truncated)
+
+// --- building the solution set ---
+
+static void push_rational(Solutions* sol, const Rational* r) {
+    sol->rational_roots = realloc(sol->rational_roots, (size_t)(sol->num_rational + 1) * sizeof(Rational));
+    rat_init_set(&sol->rational_roots[sol->num_rational++], r);
 }
 
-static void solve_quadratic(const Rational* a, const Rational* b, const Rational* c, Solutions* sol) {
-    // D = b^2 - 4ac
-    Rational b2, four, ac, four_ac, d;
-    rat_init(&b2); rat_init(&four); rat_init(&ac); rat_init(&four_ac); rat_init(&d);
-    rat_mul(&b2, b, b);
-    mpq_set_si(four.val, 4, 1);
-    rat_mul(&ac, a, c);
-    rat_mul(&four_ac, &four, &ac);
-    rat_sub(&d, &b2, &four_ac);
+// root -c0/c1 of a linear factor, repeated by multiplicity
+static void solve_linear(Solutions* sol, const Polynomial* f, int mult) {
+    Rational c0, c1, root;
+    rat_init(&c0); rat_init(&c1); rat_init(&root);
+    poly_coeff(&c0, f, 0);
+    poly_coeff(&c1, f, 1);
+    rat_div(&root, &c0, &c1);
+    rat_neg(&root, &root);
+    for (int m = 0; m < mult; m++) push_rational(sol, &root);
+    rat_clear(&c0); rat_clear(&c1); rat_clear(&root);
+}
 
-    if (rat_is_zero(&d)) {
-        Rational neg_b, two_a, root;
-        rat_init(&neg_b); rat_init(&two_a); rat_init(&root);
-        rat_neg(&neg_b, b);
-        Rational two = rat_from_int(2);
-        rat_mul(&two_a, &two, a);
-        rat_div(&root, &neg_b, &two_a);
-        sol->rational_roots = realloc(sol->rational_roots,
-            (sol->num_rational + 1) * sizeof(Rational));
-        rat_init_set(&sol->rational_roots[sol->num_rational++], &root);
-        rat_clear(&neg_b); rat_clear(&two_a); rat_clear(&root); rat_clear(&two);
-    } else if (rat_is_negative(&d)) {
-        Polynomial* irr = create_polynomial();
-        add_term(irr, a, 2);
-        add_term(irr, b, 1);
-        add_term(irr, c, 0);
-        sol->irreducible_factors = realloc(sol->irreducible_factors,
-            (sol->num_irreducible + 1) * sizeof(Polynomial*));
-        sol->irreducible_factors[sol->num_irreducible++] = irr;
-    } else {
-        Rational sqrt_d;
-        rat_init(&sqrt_d);
-        if (is_perfect_square_rat(&d, &sqrt_d)) {
-            Rational neg_b, two_a, sum, diff, r1, r2;
-            rat_init(&neg_b); rat_init(&two_a); rat_init(&sum); rat_init(&diff);
-            rat_init(&r1); rat_init(&r2);
-            rat_neg(&neg_b, b);
-            Rational two = rat_from_int(2);
-            rat_mul(&two_a, &two, a);
-            rat_add(&sum, &neg_b, &sqrt_d);
-            rat_div(&r1, &sum, &two_a);
-            rat_sub(&diff, &neg_b, &sqrt_d);
-            rat_div(&r2, &diff, &two_a);
-            sol->rational_roots = realloc(sol->rational_roots,
-                (sol->num_rational + 2) * sizeof(Rational));
-            rat_init_set(&sol->rational_roots[sol->num_rational++], &r1);
-            if (!rat_eq(&r1, &r2))
-                rat_init_set(&sol->rational_roots[sol->num_rational++], &r2);
-            rat_clear(&neg_b); rat_clear(&two_a); rat_clear(&sum); rat_clear(&diff);
-            rat_clear(&r1); rat_clear(&r2); rat_clear(&two);
-        } else {
-            Rational neg_b, two_a;
-            rat_init(&neg_b); rat_init(&two_a);
-            rat_neg(&neg_b, b);
-            Rational two = rat_from_int(2);
-            rat_mul(&two_a, &two, a);
-            double dd_val = sqrt(rat_to_double(&d));
-            double bd = rat_to_double(&neg_b);
-            double ad = rat_to_double(&two_a);
-            sol->irrational_roots = realloc(sol->irrational_roots,
-                (sol->num_irrational + 2) * sizeof(double));
-            sol->irrational_roots[sol->num_irrational++] = (bd + dd_val) / ad;
-            sol->irrational_roots[sol->num_irrational++] = (bd - dd_val) / ad;
-            rat_clear(&neg_b); rat_clear(&two_a); rat_clear(&two);
+static void midpoint(Rational* out, const RootInterval* r) {
+    rat_add(out, &r->lo, &r->hi);
+    mpq_div_2exp(out->val, out->val, 1);
+}
+
+// fill the legacy double / non-real-factor views for one irrational factor
+static void push_legacy_views(Solutions* sol, const IrrationalFactor* e) {
+    Rational mid;
+    rat_init(&mid);
+    for (int i = 0; i < e->num_real; i++) {
+        midpoint(&mid, &e->real[i]);
+        for (int m = 0; m < e->multiplicity; m++) {
+            sol->irrational_roots = realloc(sol->irrational_roots, (size_t)(sol->num_irrational + 1) * sizeof(double));
+            sol->irrational_roots[sol->num_irrational++] = rat_to_double(&mid);
         }
-        rat_clear(&sqrt_d);
     }
-
-    rat_clear(&b2); rat_clear(&four); rat_clear(&ac); rat_clear(&four_ac); rat_clear(&d);
+    rat_clear(&mid);
+    if (e->num_real == polynomial_degree(e->factor)) return; // all roots are real
+    for (int m = 0; m < e->multiplicity; m++) {
+        sol->irreducible_factors = realloc(sol->irreducible_factors, (size_t)(sol->num_irreducible + 1) * sizeof(Polynomial*));
+        sol->irreducible_factors[sol->num_irreducible++] = poly_copy(e->factor);
+    }
 }
 
-static void get_coeff(Rational* result, const Polynomial* poly, int degree) {
-    Term* t = poly->head;
-    while (t) {
-        if (t->exponent == degree) { rat_set(result, &t->coeff); return; }
-        t = t->next;
-    }
-    mpq_set_si(result->val, 0, 1);
+// isolate and refine the real roots of an irreducible factor of degree >= 2
+static void solve_irrational(Solutions* sol, const Polynomial* f, int mult) {
+    RootIntervalList L = isolate_real_roots(f);
+    Rational width; // 10^-(digits+2): well below the last digit shown
+    rat_init(&width);
+    mpz_ui_pow_ui(mpq_denref(width.val), 10, DECIMAL_DIGITS + 2);
+    mpz_set_ui(mpq_numref(width.val), 1);
+    for (int i = 0; i < L.count; i++) refine_root(&L.items[i], f, &width);
+    rat_clear(&width);
+    sol->irr = realloc(sol->irr, (size_t)(sol->num_irr + 1) * sizeof(IrrationalFactor));
+    IrrationalFactor* e = &sol->irr[sol->num_irr++];
+    *e = (IrrationalFactor){ poly_copy(f), mult, L.items, L.count };
+    push_legacy_views(sol, e);
 }
 
 Solutions* solve_polynomial(const Polynomial* poly) {
-    Solutions* sol = malloc(sizeof(Solutions));
-    sol->rational_roots = NULL;
-    sol->num_rational = 0;
-    sol->irrational_roots = NULL;
-    sol->num_irrational = 0;
-    sol->irreducible_factors = NULL;
-    sol->num_irreducible = 0;
-
+    Solutions* sol = calloc(1, sizeof(Solutions));
     if (poly->head == NULL) return sol;
-
     Factorization* f = factorize(poly);
-    if (!f) return sol;
-
     for (int i = 0; i < f->count; i++) {
-        Polynomial* factor = f->factors[i];
-        int deg = polynomial_degree(factor);
-        int mult = f->multiplicities[i];
-
-        if (deg == 1) {
-            Rational a, b, root;
-            rat_init(&a); rat_init(&b); rat_init(&root);
-            get_coeff(&a, factor, 1);
-            get_coeff(&b, factor, 0);
-            Rational neg_b;
-            rat_init(&neg_b);
-            rat_neg(&neg_b, &b);
-            rat_div(&root, &neg_b, &a);
-            for (int m = 0; m < mult; m++) {
-                sol->rational_roots = realloc(sol->rational_roots,
-                    (sol->num_rational + 1) * sizeof(Rational));
-                rat_init_set(&sol->rational_roots[sol->num_rational++], &root);
-            }
-            rat_clear(&a); rat_clear(&b); rat_clear(&root); rat_clear(&neg_b);
-        } else if (deg == 2) {
-            Rational a, b, c;
-            rat_init(&a); rat_init(&b); rat_init(&c);
-            get_coeff(&a, factor, 2);
-            get_coeff(&b, factor, 1);
-            get_coeff(&c, factor, 0);
-            for (int m = 0; m < mult; m++)
-                solve_quadratic(&a, &b, &c, sol);
-            rat_clear(&a); rat_clear(&b); rat_clear(&c);
-        } else {
-            for (int m = 0; m < mult; m++) {
-                sol->irreducible_factors = realloc(sol->irreducible_factors,
-                    (sol->num_irreducible + 1) * sizeof(Polynomial*));
-                sol->irreducible_factors[sol->num_irreducible++] = poly_copy(factor);
-            }
-        }
+        if (polynomial_degree(f->factors[i]) == 1) solve_linear(sol, f->factors[i], f->multiplicities[i]);
+        else solve_irrational(sol, f->factors[i], f->multiplicities[i]);
     }
-
     free_factorization(f);
     return sol;
 }
 
+// --- output ---
+
+// sqrt-term text "r*sqrt(m)" with the trivial parts elided ("1" if both trivial)
+static void append_radical(StrBuf* sb, const Rational* r, const mpz_t m) {
+    bool unit_r = rat_is_one(r), unit_m = mpz_cmp_ui(m, 1) == 0;
+    if (!unit_r || unit_m) sb_append_owned(sb, rat_to_string(r));
+    if (!unit_r && !unit_m) sb_append(sb, "*");
+    if (!unit_m) { sb_append(sb, "sqrt("); sb_append_owned(sb, mpz_get_str(NULL, 10, m)); sb_append(sb, ")"); }
+}
+
+static void separator(StrBuf* sb, bool* first) {
+    if (!*first) sb_append(sb, ", ");
+    *first = false;
+}
+
+// " ~ 1.4142135623" from a refined isolating interval
+static void append_approx(StrBuf* sb, const RootInterval* r) {
+    Rational mid;
+    rat_init(&mid);
+    midpoint(&mid, r);
+    sb_append(sb, " ~ ");
+    sb_append_owned(sb, rat_to_decimal(&mid, DECIMAL_DIGITS));
+    rat_clear(&mid);
+}
+
+static void append_multiplicity(StrBuf* sb, int mult) {
+    if (mult > 1) sb_appendf(sb, " (multiplicity %d)", mult);
+}
+
+// a quadratic's roots p ± r*sqrt(m) (real) or p ± r*sqrt(m)*i (complex), exactly
+typedef struct {
+    Rational p, r;
+    mpz_t m;
+    bool complex;
+} QuadRoots;
+
+static QuadRoots quad_roots(const Polynomial* f) {
+    QuadRoots q;
+    Rational a, b, c, d, t;
+    rat_init(&q.p); rat_init(&q.r); mpz_init(q.m);
+    rat_init(&a); rat_init(&b); rat_init(&c); rat_init(&d); rat_init(&t);
+    poly_coeff(&a, f, 2); poly_coeff(&b, f, 1); poly_coeff(&c, f, 0);
+    rat_mul(&d, &b, &b);                       // D = b^2 - 4ac
+    rat_mul(&t, &a, &c);
+    mpq_mul_2exp(t.val, t.val, 2);
+    rat_sub(&d, &d, &t);
+    q.complex = rat_is_negative(&d);
+    rat_abs(&d, &d);
+    rat_mul(&t, &a, &a);                       // |D| / (4a^2)
+    mpq_mul_2exp(t.val, t.val, 2);
+    rat_div(&d, &d, &t);
+    rat_sqrt_split(&d, &q.r, q.m);
+    rat_div(&q.p, &b, &a);                     // p = -b / 2a
+    mpq_div_2exp(q.p.val, q.p.val, 1);
+    rat_neg(&q.p, &q.p);
+    rat_clear(&a); rat_clear(&b); rat_clear(&c); rat_clear(&d); rat_clear(&t);
+    return q;
+}
+
+static void quad_roots_clear(QuadRoots* q) {
+    rat_clear(&q->p); rat_clear(&q->r); mpz_clear(q->m);
+}
+
+// "p + " / "p - " / "" / "-" ahead of the radical term
+static void append_root_prefix(StrBuf* sb, const QuadRoots* q, const char* sign) {
+    if (mpq_sgn(q->p.val) != 0) {
+        sb_append_owned(sb, rat_to_string(&q->p));
+        sb_appendf(sb, " %s ", sign);
+    } else if (strcmp(sign, "+") != 0) {
+        sb_append(sb, strcmp(sign, "-") == 0 ? "-" : "+/- ");
+    }
+}
+
+static void append_quadratic(StrBuf* sb, const IrrationalFactor* e, bool* first) {
+    QuadRoots q = quad_roots(e->factor);
+    if (q.complex) {
+        separator(sb, first);
+        sb_append(sb, "x = ");
+        append_root_prefix(sb, &q, "+/-");
+        if (!rat_is_one(&q.r) || mpz_cmp_ui(q.m, 1) != 0) { // "i" alone when the term is 1
+            append_radical(sb, &q.r, q.m);
+            sb_append(sb, "*");
+        }
+        sb_append(sb, "i");
+        append_multiplicity(sb, e->multiplicity);
+    } else {
+        const char* signs[2] = { "-", "+" }; // intervals are ascending: smaller root first
+        for (int i = 0; i < e->num_real; i++) {
+            separator(sb, first);
+            sb_append(sb, "x = ");
+            append_root_prefix(sb, &q, signs[i]);
+            append_radical(sb, &q.r, q.m);
+            append_approx(sb, &e->real[i]);
+            append_multiplicity(sb, e->multiplicity);
+        }
+    }
+    quad_roots_clear(&q);
+}
+
+static void append_general(StrBuf* sb, const IrrationalFactor* e, bool* first) {
+    for (int i = 0; i < e->num_real; i++) {
+        separator(sb, first);
+        sb_append(sb, "x");
+        append_approx(sb, &e->real[i]);
+        append_multiplicity(sb, e->multiplicity);
+    }
+    int nonreal = polynomial_degree(e->factor) - e->num_real;
+    if (nonreal == 0) return;
+    separator(sb, first);
+    sb_appendf(sb, "%d non-real roots of (", nonreal);
+    sb_append_owned(sb, poly_to_string(e->factor));
+    sb_append(sb, ")");
+    append_multiplicity(sb, e->multiplicity);
+}
+
 char* solutions_to_string(const Solutions* sol) {
-    size_t cap = 128, len = 0;
-    char* buf = malloc(cap);
-    buf[0] = '\0';
-
-    if (sol->num_rational == 0 && sol->num_irrational == 0 && sol->num_irreducible == 0) {
-        strcpy(buf, "No solutions found");
-        return buf;
-    }
-
+    StrBuf sb = sb_new();
+    bool first = true;
     for (int i = 0; i < sol->num_rational; i++) {
-        char* rs = rat_to_string(&sol->rational_roots[i]);
-        char line[128];
-        snprintf(line, sizeof(line), "x = %s", rs);
-        free(rs);
-        size_t llen = strlen(line);
-        while (len + llen + 3 > cap) { cap *= 2; buf = realloc(buf, cap); }
-        if (len > 0) { strcat(buf, ", "); len += 2; }
-        strcat(buf, line);
-        len += llen;
+        separator(&sb, &first);
+        sb_append(&sb, "x = ");
+        sb_append_owned(&sb, rat_to_string(&sol->rational_roots[i]));
     }
-
-    for (int i = 0; i < sol->num_irrational; i++) {
-        char line[128];
-        snprintf(line, sizeof(line), "x ~ %.6f", sol->irrational_roots[i]);
-        size_t llen = strlen(line);
-        while (len + llen + 3 > cap) { cap *= 2; buf = realloc(buf, cap); }
-        if (len > 0) { strcat(buf, ", "); len += 2; }
-        strcat(buf, line);
-        len += llen;
+    for (int i = 0; i < sol->num_irr; i++) {
+        if (polynomial_degree(sol->irr[i].factor) == 2) append_quadratic(&sb, &sol->irr[i], &first);
+        else append_general(&sb, &sol->irr[i], &first);
     }
-
-    for (int i = 0; i < sol->num_irreducible; i++) {
-        char* ps = poly_to_string(sol->irreducible_factors[i]);
-        char line[256];
-        snprintf(line, sizeof(line), "(%s) = 0 (no rational roots)", ps);
-        free(ps);
-        size_t llen = strlen(line);
-        while (len + llen + 3 > cap) { cap *= 2; buf = realloc(buf, cap); }
-        if (len > 0) { strcat(buf, ", "); len += 2; }
-        strcat(buf, line);
-        len += llen;
-    }
-
-    return buf;
+    if (first) sb_append(&sb, "No solutions found");
+    return sb_finish(&sb);
 }
 
 void free_solutions(Solutions* sol) {
     if (!sol) return;
-    for (int i = 0; i < sol->num_rational; i++)
-        rat_clear(&sol->rational_roots[i]);
+    for (int i = 0; i < sol->num_rational; i++) rat_clear(&sol->rational_roots[i]);
     free(sol->rational_roots);
+    for (int i = 0; i < sol->num_irr; i++) {
+        RootIntervalList L = { sol->irr[i].real, sol->irr[i].num_real };
+        root_interval_list_free(&L);
+        free_polynomial(sol->irr[i].factor);
+    }
+    free(sol->irr);
     free(sol->irrational_roots);
-    for (int i = 0; i < sol->num_irreducible; i++)
-        free_polynomial(sol->irreducible_factors[i]);
+    for (int i = 0; i < sol->num_irreducible; i++) free_polynomial(sol->irreducible_factors[i]);
     free(sol->irreducible_factors);
     free(sol);
 }

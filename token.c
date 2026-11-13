@@ -1,5 +1,6 @@
 #define _POSIX_C_SOURCE 200809L
 #include "token.h"
+#include "rational_num.h"
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
@@ -19,9 +20,13 @@ Token* get_next_token(const char** input) {
     // Handle numbers
     if (isdigit(**input)) {
         token->type = TOKEN_NUMBER;
-        char* end;
-        token->number = strtod(*input, &end);
-        *input = end; // Move the input pointer forward
+        // find the literal's extent with the exact parser, then keep its text
+        Rational scratch;
+        rat_init(&scratch);
+        const char* end = rat_parse_literal(&scratch, *input);
+        rat_clear(&scratch);
+        token->number_text = strndup(*input, (size_t)(end - *input));
+        *input = end;
         return token;
     }
 

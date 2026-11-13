@@ -1,4 +1,5 @@
 #include "parser.h"
+#include <ctype.h>
 #include "token.h"
 #include "expression.h"
 #include "polynomial.h"
@@ -85,7 +86,8 @@ static void ostack_free(OpStack* s) {
 // --- precedence and associativity ---
 
 static int precedence(TokenType type, bool is_unary) {
-    if (is_unary) return 4;
+    // unary minus binds like ^ (both right-associative): -x^2 = -(x^2), x^-2 = x^(-2)
+    if (is_unary) return 3;
     switch (type) {
         case TOKEN_PLUS: case TOKEN_MINUS: return 1;
         case TOKEN_MULTIPLY: case TOKEN_DIVIDE: return 2;
@@ -131,8 +133,9 @@ static bool apply_op(ExprStack* exprs, OpEntry op) {
     return true;
 }
 
-// push operator, first popping higher-precedence ops
-static void push_operator(ExprStack* exprs, OpStack* ops, OpEntry entry) {
+// push operator, first popping higher-precedence ops; false if an operand was missing
+static bool push_operator(ExprStack* exprs, OpStack* ops, OpEntry entry) {
+    bool ok = true;
     int p = precedence(entry.type, entry.is_unary);
     bool ra = is_right_assoc(entry.type, entry.is_unary);
 
@@ -142,12 +145,13 @@ static void push_operator(ExprStack* exprs, OpStack* ops, OpEntry entry) {
         int tp = precedence(top.type, top.is_unary);
         if (tp > p || (tp == p && !ra)) {
             ostack_pop(ops);
-            apply_op(exprs, top);
+            ok = apply_op(exprs, top) && ok;
         } else {
             break;
         }
     }
     ostack_push(ops, entry);
+    return ok;
 }
 
 // true if token type can start an operand (triggers implicit mul detection)
@@ -173,11 +177,12 @@ Expr* parse_expression(const char** input) {
         // implicit multiplication: operand followed by operand-start
         if (prev_was_operand && is_operand_start(tt)) {
             OpEntry mul = { TOKEN_MULTIPLY, false };
-            push_operator(&exprs, &ops, mul);
+            success = push_operator(&exprs, &ops, mul) && success;
         }
 
         if (tt == TOKEN_NUMBER) {
-            estack_push(&exprs, create_const(tok->number));
+            estack_push(&exprs, create_const_str(tok->number_text));
+            free(tok->number_text);
             prev_was_operand = true;
 
         } else if (tt == TOKEN_VARIABLE) {
@@ -200,7 +205,7 @@ Expr* parse_expression(const char** input) {
                     break;
                 }
                 ostack_pop(&ops);
-                apply_op(&exprs, top);
+                success = apply_op(&exprs, top) && success;
             }
             if (!found) { success = false; free(tok); break; }
             prev_was_operand = true;
@@ -211,7 +216,7 @@ Expr* parse_expression(const char** input) {
             // unary minus: minus when previous was not an operand
             bool unary = (tt == TOKEN_MINUS && !prev_was_operand);
             OpEntry entry = { tt, unary };
-            push_operator(&exprs, &ops, entry);
+            success = push_operator(&exprs, &ops, entry) && success;
             prev_was_operand = false;
 
         } else {
@@ -228,27 +233,29 @@ Expr* parse_expression(const char** input) {
     while (!ostack_empty(&ops)) {
         OpEntry top = ostack_pop(&ops);
         if (top.type == TOKEN_LEFT_PAREN) { success = false; break; }
-        apply_op(&exprs, top);
+        success = apply_op(&exprs, top) && success;
     }
 
     Expr* result = NULL;
     if (success && exprs.top == 0) {
         result = exprs.items[0];
-        exprs.top = -1; // prevent estack_free from freeing the result
+        free(exprs.items); // the result now belongs to the caller
     } else {
-        estack_free(&exprs);
+        estack_free(&exprs); // frees remaining expressions and the array, exactly once
     }
-
     ostack_free(&ops);
-    if (exprs.top >= 0) free(exprs.items);
-    else free(exprs.items);
-
     return result;
 }
 
 Expr* parse_and_simplify(const char* input) {
     const char* p = input;
     Expr* expression = parse_expression(&p);
+    while (expression && isspace((unsigned char)*p)) p++;
+    if (expression && *p != '\0') { // never silently ignore trailing input such as "= 4"
+        fprintf(stderr, "Error: unexpected '%c' at position %ld.\n", *p, (long)(p - input) + 1);
+        free_expr(expression);
+        return NULL;
+    }
     if (expression == NULL) {
         fprintf(stderr, "Error parsing expression.\n");
         return NULL;

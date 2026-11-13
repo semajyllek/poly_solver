@@ -1838,7 +1838,10 @@ void run_tests() {
     printf("\nAll tests passed!\n");
 }
 
+void run_property_tests(void); // test_properties.c
+
 int main() {
     run_tests();
+    run_property_tests();
     return 0;
 }
