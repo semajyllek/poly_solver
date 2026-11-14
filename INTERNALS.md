@@ -1022,7 +1022,29 @@ Anything else stays `RootSum`. For example, `x^5 + x + 3` has Galois group S5, s
    - products collect their rational factor, and `sqrt(m)·sqrt(m) = m`;
    - sums collect their rational part and merge like terms;
    - `ln|c·m^e·…|` splits into logs of rationals, which merge when their coefficients are integer multiples (`-ln(3) + 2ln(2) = ln(4/3)`);
-   - `atan` takes its exact values at `0`, `±1`, `±sqrt(3)` and `±1/sqrt(3)`, and `atan(−u) = −atan(u)`.
+   - `atan` takes its exact values at `0`, `±1`, `±sqrt(3)`, `±1/sqrt(3)`, `±(sqrt(2) ∓ 1)` (π/8, 3π/8) and `±(2 ∓ sqrt(3))` (π/12, 5π/12), and `atan(−u) = −atan(u)`;
+   - **Q(√m) arithmetic** (`qsurd.c`): a constant `p + q·sqrt(m)` with rational `p`, `q` is parsed into a `QSurd`, which supports `+ − · /`, an exact sign, and integer square roots in Z[√m]. In a folded sum, ln and atan terms whose arguments lie in one Q(√m) and whose coefficients share the same non-rational factor combine pairwise:
+     - Coefficients in a ratio `p/q`, with `|p|, q ≤ 64`, merge as `(c/q)·(q·fn(u) + p·fn(v))`.
+     - Logs: `q·ln|u| + p·ln|v| = ln|u^q·v^p|`. Surd logs merge only at integer ratios (`q = 1`). A fractional ratio would give arguments like `(1+√2)³ = 7+5√2`, whose cube root is not detected.
+     - Atans add one at a time, tracked exactly as an angle `atan(w) + n·π/2`: `atan(w) + atan(v) = atan((w + v)/(1 − wv))`. This adds `sign(w)·π` when `1 − wv < 0`, and gives exactly `sign(w)·π/2` when `1 − wv = 0`. So `atan(1+√2) − atan(1−√2) = π/2` and `2·atan(1/3) = atan(3/4)`. The total angle fixes `w` and `n`, so a merged sum prints one way.
+   - **Canonical log arguments.** Every `ln|g|` with `g` in Q(√m) is rewritten so that `g > 1` and has coprime integer parts, then reduced further:
+     - a factor `√m` is split off while `m` divides `p`: `2+√2 = √2·(1+√2)`;
+     - when `p` or `q` is negative, the conjugate is used instead: `ln g = ln|N| − ln|ḡ|`, with `N = p² − q²m`. So `ln(−1+3√2)` becomes `ln(17) − ln(1+3√2)`, and conjugate arguments print alike;
+     - a square root is taken while `g` is a perfect square in Z[√m]: `3+2√2 = (1+√2)²`;
+     - rational logs are written with `v > 1` and with perfect powers taken out: `ln(1/17) = −ln(17)`, `ln(485809) = 2·ln(697)`.
+
+     Each rewrite splits off rational logs. Then terms are sorted: logs, atans, the rest, then multiples of π, ordered by printed form within each group. So `∫₀¹ 1/(x⁴+1) = 1/4·√2·ln(1+√2) + 1/8·√2·π`, and the integral over `[−1, 0]` prints the same.
+
+     Check: for even integrands, `[a, b]` and `[−b, −a]` print identically in all 452 tested pairs.
+
+     Surd logs are merged only with surd logs, and rational logs only with rational ones, since a merged surd log splits off rational logs and mixing the kinds would cycle. Merging ends because:
+     - nothing creates an unnormalized log or a new surd log;
+     - each surd merge removes a surd log;
+     - each rational-log or atan merge removes a term of its own kind and adds no other.
+
+     Pairs are tried in both orders, since a surd-log merge needs `c_j/c_i` to be an integer. The printer drops `abs` for a constant argument it can prove positive.
+
+     Values in two radicals at once, such as `cos(π/12) = (√6+√2)/4`, or in a radical other than a square root, such as `2^(1/4)`, are left unmerged.
 4. **atan jumps.** LRT can produce `atan(N/(c·W))`, for example `∫ (x²+1)/(x⁴+3x²+1) = 1/5·sqrt(5)·atan((x² − 1)/(sqrt(5)·x))`. This jumps by `±π` where `W` crosses zero. Each root of `W` inside `(a, b)` is isolated exactly, and the jump's direction is read from the sign of the argument on either side. The correction is `∓π` times the term's coefficient. A root of `W` at a bound uses the one-sided limit `±π/2`.
 5. **Infinite bounds.** A term's limit comes from the leading behaviour of its argument, `u ~ L·x^d`. `expr_lead` in `constfold.c` finds it structurally: it handles `+ − · /` and integer powers, folds x-free subtrees as constants, and fails if the leading terms cancel. Then:
    - `c·atan(u)`: tends to `±c·π/2` when `d > 0`, with sign `sign(L)·(±1)^d`. It tends to `c·atan(L)` when `d = 0`, and to 0 when `d < 0`.

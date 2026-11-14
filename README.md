@@ -78,7 +78,7 @@ Matrix entries can be integers, fractions or decimals of any size (`1/3`, `-5/7`
 
 - When a logarithm's coefficient is an algebraic number of degree 3 or more, the answer is an exact `RootSum(q(t), t -> t * ln(S(t, x)))`: the sum of `t·ln(S(t, x))` over the roots of `q`. This happens only when the roots aren't known in closed form. Example: `1/(x^5+x+3)`, whose roots can't be written with radicals at all (its Galois group is S5).
 - Complex roots of other irreducible factors of degree 3 or more (for example `x^3 + x + 1`, or the Capelli factors `x^4 ± 2x^2 + 2` of `x^8 + 4`) are counted but not located.
-- Definite integrals: when the antiderivative has a `RootSum`, only the numeric value is given. Exact values are folded but not fully simplified: `atan(-1 + sqrt(2)) + atan(1 + sqrt(2))` is left as is rather than rewritten as `pi/2`.
+- Definite integrals: when the antiderivative has a `RootSum`, only the numeric value is given. Exact values are simplified in one quadratic field Q(√m): logs merge, atan pairs combine (`∫₀¹ 1/(x⁴+1)` gives `1/4 * sqrt(2) * ln(1 + sqrt(2)) + 1/8 * sqrt(2) * pi`). Values that need two radicals (`cos(pi/12)`) or higher roots (`2^(1/4)`) are folded but not merged.
 
 ## Tests
 
@@ -117,7 +117,7 @@ It confirms each factorization multiplies back, each root and root count (every 
 6. **Factoring** (`factor.c`, `zx_factor.c`): Yun square-free decomposition + Berlekamp–Zassenhaus
 7. **Roots and solver** (`roots.c`, `solver.c`): Descartes/VCA isolation, exact refinement, radicals
 8. **Integration** (`integrate.c`, `logpart.c`, `subres.c`, `rootform.c`, `surd.c`, `partial_frac.c`): Hermite reduction, log/atan terms, Lazard–Rioboo–Trager, radical forms, partial fractions
-9. **Definite integrals** (`definite.c`, `constfold.c`): pole detection, exact evaluation with atan jump corrections, constant folding, quadrature check
+9. **Definite integrals** (`definite.c`, `constfold.c`): pole detection, exact evaluation with atan jump corrections, constant folding with Q(√m) arithmetic (`qsurd.c`), quadrature check
 10. **Linear algebra** (`matrix.c`): Gaussian elimination over exact rationals
 
 See [INTERNALS.md](INTERNALS.md) for how each algorithm works.

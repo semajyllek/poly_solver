@@ -8,6 +8,7 @@
 #include <math.h>
 #include <complex.h>
 #include "roots.h"
+#include "qsurd.h"
 
 // --- constructors ---
 
@@ -217,6 +218,16 @@ static bool is_negative_term(const Expr* e) {
     if (e->type == EXPR_NEG) return true;
     if (e->type == EXPR_BINOP && e->binop.op == OP_MUL && is_neg_const(e->binop.left)) return true;
     return false;
+}
+
+// a positive rational, or a positive element p + q·sqrt(m) (decided exactly)
+static bool positive_constant(const Expr* e) {
+    if (e->type == EXPR_CONST) return mpq_sgn(e->constant.val) > 0;
+    QSurd a;
+    qs_init(&a);
+    bool pos = qs_parse(e, &a) && qs_sign(&a) > 0;
+    qs_clear(&a);
+    return pos;
 }
 
 static void expr_to_string_impl(const Expr* expr, StrBuf* sb);
@@ -429,8 +440,8 @@ static void expr_to_string_impl(const Expr* expr, StrBuf* sb) {
             break;
         }
         case EXPR_LN:
-            if (expr->ln_arg->type == EXPR_CONST && mpq_sgn(expr->ln_arg->constant.val) > 0) {
-                sb_append(sb, "ln(");                    // ln(3/2): no abs for a positive number
+            if (positive_constant(expr->ln_arg)) {
+                sb_append(sb, "ln(");                    // ln(3/2), ln(3 + 2 * sqrt(2)): no abs
                 expr_to_string_impl(expr->ln_arg, sb);
                 sb_append(sb, ")");
                 break;

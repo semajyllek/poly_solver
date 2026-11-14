@@ -4,6 +4,7 @@
 // multiple of π, logs of rationals c·ln(v) merged by v, and other terms merged when their
 // factors print the same.
 #include "constfold.h"
+#include "qsurd.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -124,6 +125,29 @@ typedef struct {
     SumTerm* t;
     int nt;
 } Sum;
+
+// the smallest k >= 2 for which v > 0 is a perfect k-th power, with n/d set to the roots; or 0
+static long root_degree(const Rational* v, mpz_t n, mpz_t d) {
+    size_t nb = mpz_sizeinbase(mpq_numref(v->val), 2), db = mpz_sizeinbase(mpq_denref(v->val), 2);
+    long top = (long)(nb > db ? nb : db);                 // 2^k <= v needs k <= bits
+    for (long k = 2; k <= top; k++)
+        if (mpz_root(n, mpq_numref(v->val), (unsigned long)k) && mpz_root(d, mpq_denref(v->val), (unsigned long)k)) return k;
+    return 0;
+}
+
+// v = w^k with k as large as possible, for v > 0: v becomes w, and k is returned
+static long perfect_root(Rational* v) {
+    long total = 1, k;
+    mpz_t n, d;
+    mpz_init(n); mpz_init(d);
+    while ((k = root_degree(v, n, d))) {
+        mpq_set_num(v->val, n);
+        mpq_set_den(v->val, d);
+        total *= k;
+    }
+    mpz_clear(n); mpz_clear(d);
+    return total;
+}
 
 static Sum sum_new(void) { return (Sum){ rat_zero_val(), rat_zero_val(), NULL, NULL, 0, NULL, 0 }; }
 
@@ -283,19 +307,373 @@ static void merge_logs(Sum* S) {
     rat_clear(&one);
 }
 
+// --- ln and atan terms over Q(sqrt(m)) ---
+
+static Expr* fold_ln(Expr* a);
+static Expr* fold_atan(Expr* a);
+
+// a summand body rest·fn(arg) with fn = ln or atan and arg in Q(sqrt(m))
+typedef struct {
+    ExprType type; // EXPR_LN or EXPR_ATAN
+    Expr* rest;    // the other factors
+    char* key;     // rest, printed
+    QSurd arg;
+} FnTerm;
+
+static bool fn_term(const Expr* body, FnTerm* t) {
+    Rational c = rat_one_val();
+    Factors F = { NULL, 0 };
+    gather(body, &c, &F);
+    int k = -1, fns = 0;
+    for (int i = 0; i < F.n; i++)
+        if (F.f[i]->type == EXPR_LN || F.f[i]->type == EXPR_ATAN) { k = i; fns++; }
+    qs_init(&t->arg);
+    bool ok = fns == 1 && qs_parse(F.f[k]->type == EXPR_LN ? F.f[k]->ln_arg : F.f[k]->fn_arg, &t->arg);
+    if (ok) {
+        t->type = F.f[k]->type;
+        free_expr(F.f[k]);
+        F.f[k] = F.f[--F.n];                              // drop the fn factor
+        t->rest = make_product(&c, &F);
+        t->key = expr_to_string(t->rest);
+    } else {
+        free_factors(&F);
+        qs_clear(&t->arg);
+    }
+    rat_clear(&c);
+    return ok;
+}
+
+static void fn_term_free(FnTerm* t) { free_expr(t->rest); free(t->key); qs_clear(&t->arg); }
+
+// two like terms c·R·fn(u) and (p/q)·c·R·fn(v), merged as (c/q)·R·(q·fn(u) + p·fn(v))
+typedef struct {
+    const FnTerm *a, *b;
+    long p, q; // small: |p|, q <= 64
+} FnPair;
+
+// c_j / c_i = p/q in lowest terms with |p|, q <= 64; false otherwise
+static bool small_ratio(const Rational* ci, const Rational* cj, long* p, long* q) {
+    if (rat_is_zero(ci) || rat_is_zero(cj)) return false;
+    Rational r;
+    rat_init(&r);
+    rat_div(&r, cj, ci);
+    bool small = mpz_cmpabs_ui(mpq_numref(r.val), 64) <= 0 && mpz_cmp_ui(mpq_denref(r.val), 64) <= 0;
+    if (small) { *p = mpz_get_si(mpq_numref(r.val)); *q = mpz_get_si(mpq_denref(r.val)); }
+    rat_clear(&r);
+    return small;
+}
+
+// g ← g·a^n (n may be negative)
+static bool mul_pow(QSurd* g, const QSurd* a, long n) {
+    bool ok = true;
+    for (long i = 0; ok && i < labs(n); i++) ok = n > 0 ? qs_mul(g, g, a) : qs_div(g, g, a);
+    return ok;
+}
+
+// the positive rational r with g = r·g', g' having coprime integer parts
+static void content(Rational* r, const QSurd* g) {
+    mpz_t n, d;
+    mpz_init(n); mpz_init(d);
+    mpz_gcd(n, mpq_numref(g->p.val), mpq_numref(g->q.val));
+    mpz_lcm(d, mpq_denref(g->p.val), mpq_denref(g->q.val));
+    mpq_set_num(r->val, n);
+    mpq_set_den(r->val, d);
+    mpq_canonicalize(r->val);
+    mpz_clear(n); mpz_clear(d);
+}
+
+// ln|g| = acc + sign·power·ln(g), with g reduced in place by canon_ln
+typedef struct {
+    Expr* acc; // rational logs split off so far
+    long sign, power;
+} LnForm;
+
+// acc += sign·power·k·ln(v)
+// acc += sign·power·k·ln|v|, written with |v| > 1 (ln(1/17) = -ln(17); ln(1) dropped)
+static void split_off(LnForm* f, const Rational* k, const Rational* v) {
+    Rational c = rat_from_int(f->sign * f->power), a, one = rat_one_val();
+    rat_init(&a);
+    rat_mul(&c, &c, k);
+    rat_abs(&a, v);
+    if (rat_cmp(&a, &one) < 0) { mpq_inv(a.val, a.val); rat_neg(&c, &c); }
+    Rational power = rat_from_int(perfect_root(&a));      // ln(697²) = 2·ln(697)
+    rat_mul(&c, &c, &power);
+    rat_clear(&power);
+    if (!rat_eq(&a, &one)) {
+        Expr* t = create_mul(create_const_rat(&c), create_ln(create_const_rat(&a)));
+        f->acc = f->acc ? create_add(f->acc, t) : t;
+    }
+    rat_clear(&c); rat_clear(&a); rat_clear(&one);
+}
+
+static bool integral(const Rational* r) { return mpz_cmp_ui(mpq_denref(r->val), 1) == 0; }
+
+static bool below_one(const QSurd* g) {
+    QSurd one, d;
+    qs_init(&one); qs_init(&d);
+    rat_set_si(&one.p, 1, 1);
+    qs_sub(&d, g, &one);
+    bool below = qs_sign(&d) < 0;
+    qs_clear(&one); qs_clear(&d);
+    return below;
+}
+
+// g/√m = q + (p/m)·√m when m divides the integer p: ln|g| = 1/2·ln(m) + ln|g/√m|
+static bool split_sqrt_m(QSurd* g, LnForm* f) {
+    bool divides = integral(&g->p) && mpz_divisible_ui_p(mpq_numref(g->p.val), (unsigned long)g->m);
+    if (!divides) return false;
+    Rational half = rat_from_si(1, 2), m = rat_from_int(g->m), p;
+    rat_init_set(&p, &g->p);
+    split_off(f, &half, &m);
+    rat_set(&g->p, &g->q);
+    rat_div(&g->q, &p, &m);
+    if (rat_is_zero(&g->q)) g->m = 0;
+    rat_clear(&half); rat_clear(&m); rat_clear(&p);
+    return true;
+}
+
+// with g > 1 but p or q negative, ln g = ln|N| - ln|conj(g)|, N = p² - q²·m, and
+// |conj(g)| = |p| + |q|·√m: conjugate arguments (1 + 3√2, -1 + 3√2) print alike
+static bool split_conjugate(QSurd* g, LnForm* f) {
+    if (mpq_sgn(g->p.val) > 0 && mpq_sgn(g->q.val) > 0) return false;
+    Rational n, t, one = rat_one_val(), mm = rat_from_int(g->m);
+    rat_init(&n); rat_init(&t);
+    rat_mul(&n, &g->p, &g->p);
+    rat_mul(&t, &g->q, &g->q);
+    rat_mul(&t, &t, &mm);
+    rat_sub(&n, &n, &t);
+    split_off(f, &one, &n);
+    f->sign = -f->sign;
+    rat_abs(&g->p, &g->p);
+    rat_abs(&g->q, &g->q);
+    rat_clear(&n); rat_clear(&t); rat_clear(&one); rat_clear(&mm);
+    return true;
+}
+
+// reduce a surd g to the canonical log argument: positive, > 1, content 1, no factor √m
+// (each split lowers |norm|, so the loop ends), both parts positive (conjugate swap,
+// at most once per norm), then square roots taken while g is a
+// perfect square: ln|2 - sqrt(2)| = 1/2·ln(2) - ln(1 + sqrt(2)), ln(3 + 2·sqrt(2)) =
+// 2·ln(1 + sqrt(2)). Returns the number of rewrites (0: g was canonical already).
+static int canon_ln(QSurd* g, LnForm* f) {
+    int steps = 0;
+    Rational r, one = rat_one_val();
+    rat_init(&r);
+    while (g->m) {
+        if (qs_sign(g) < 0) { rat_neg(&g->p, &g->p); rat_neg(&g->q, &g->q); steps++; }
+        if (below_one(g)) { QSurd u; qs_init(&u); rat_set_si(&u.p, 1, 1); qs_div(g, &u, g); qs_clear(&u); f->sign = -f->sign; steps++; }
+        content(&r, g);
+        if (!rat_is_one(&r)) { split_off(f, &one, &r); rat_div(&g->p, &g->p, &r); rat_div(&g->q, &g->q, &r); steps++; }
+        if (split_sqrt_m(g, f)) { steps++; continue; }
+        if (split_conjugate(g, f)) { steps++; continue; }
+        QSurd h;
+        qs_init(&h);
+        bool square = qs_sqrt(&h, g);
+        if (square) { qs_set(g, &h); f->power *= 2; steps++; }
+        qs_clear(&h);
+        if (!square) break;
+    }
+    if (!g->m) { rat_abs(&g->p, &g->p); split_off(f, &one, &g->p); rat_set_si(&g->p, 1, 1); steps++; }
+    rat_clear(&r); rat_clear(&one);
+    return steps;
+}
+
+// g is already the canonical argument of its log
+static bool ln_normal(const QSurd* g) {
+    QSurd c;
+    qs_init(&c);
+    qs_set(&c, g);
+    LnForm f = { NULL, 1, 1 };
+    bool normal = canon_ln(&c, &f) == 0;
+    free_expr(f.acc);
+    qs_clear(&c);
+    return normal;
+}
+
+// ln|g| for g in Q(sqrt(m)): the split-off rational logs plus sign·power·ln(canonical g)
+static Expr* ln_surd(QSurd* g) {
+    LnForm f = { NULL, 1, 1 };
+    if (!g->m) {                                          // a rational: ln|v| with |v| > 1
+        Rational one = rat_one_val();
+        split_off(&f, &one, &g->p);
+        rat_clear(&one);
+        return f.acc ? f.acc : create_const(0);
+    }
+    canon_ln(g, &f);
+    Expr* main = NULL;
+    if (g->m) main = create_mul(create_const(f.sign * f.power), create_ln(qs_expr(g)));
+    if (!f.acc) return main ? main : create_const(0);
+    return main ? create_add(f.acc, main) : f.acc;
+}
+
+// q·ln|u| + p·ln|v| = ln|u^q·v^p|
+static Expr* ln_merge(const FnPair* pr) {
+    QSurd g;
+    qs_init(&g);
+    rat_set_si(&g.p, 1, 1);
+    bool ok = mul_pow(&g, &pr->a->arg, pr->q) && mul_pow(&g, &pr->b->arg, pr->p);
+    Expr* e = ok && qs_sign(&g) ? ln_surd(&g) : NULL;
+    qs_clear(&g);
+    return e;
+}
+
+// an angle atan(w) + n·π/2, built up exactly
+typedef struct {
+    QSurd w;
+    long n;
+} Angle;
+
+// angle += atan(v): atan(w) + atan(v) = atan((w + v)/(1 - wv)), plus sign(w)·π when
+// 1 - wv < 0; exactly sign(w)·π/2 (w = 0, n += sign(w)) when 1 - wv = 0
+static bool add_atan(Angle* A, const QSurd* v) {
+    QSurd wv, d, one;
+    qs_init(&wv); qs_init(&d); qs_init(&one);
+    rat_set_si(&one.p, 1, 1);
+    int sw = qs_sign(&A->w);
+    bool ok = qs_mul(&wv, &A->w, v) && qs_sub(&d, &one, &wv) && qs_add(&A->w, &A->w, v);
+    int sd = ok ? qs_sign(&d) : 1;
+    if (ok && sd == 0) { rat_set_si(&A->w.p, 0, 1); rat_set_si(&A->w.q, 0, 1); A->w.m = 0; A->n += sw; }
+    else if (ok) { ok = qs_div(&A->w, &A->w, &d); if (sd < 0) A->n += 2 * sw; }
+    qs_clear(&wv); qs_clear(&d); qs_clear(&one);
+    return ok;
+}
+
+// q·atan(u) + p·atan(v) by repeated addition (|p| + q <= 128 steps), as atan(w) + n·π/2
+static Expr* atan_merge(const FnPair* pr) {
+    Angle A = { .n = 0 };
+    QSurd v;
+    qs_init(&A.w); qs_init(&v);
+    qs_set(&v, &pr->b->arg);
+    if (pr->p < 0) { rat_neg(&v.p, &v.p); rat_neg(&v.q, &v.q); }   // p·atan(v) = |p|·atan(-v)
+    bool ok = true;
+    for (long i = 0; ok && i < pr->q; i++) ok = add_atan(&A, &pr->a->arg);
+    for (long i = 0; ok && i < labs(pr->p); i++) ok = add_atan(&A, &v);
+    Expr* e = NULL;
+    if (ok) {
+        Rational turns = rat_from_si(A.n, 2);
+        e = create_add(fold_atan(qs_expr(&A.w)), create_mul(create_const_rat(&turns), create_pi()));
+        rat_clear(&turns);
+    }
+    qs_clear(&A.w); qs_clear(&v);
+    return e;
+}
+
+// terms i and j folded into one when they are like ln or atan terms; true if they were
+static bool try_merge(Sum* S, int i, int j) {
+    if (rat_is_zero(&S->t[i].c) || rat_is_zero(&S->t[j].c)) return false;
+    FnTerm a, b;
+    if (!fn_term(S->t[i].body, &a)) return false;
+    bool both = fn_term(S->t[j].body, &b);
+    Expr* part = NULL;
+    FnPair pr = { &a, &b, 0, 1 };
+    if (both && a.type == b.type && strcmp(a.key, b.key) == 0 && small_ratio(&S->t[i].c, &S->t[j].c, &pr.p, &pr.q)) {
+        bool same_kind = !a.arg.m == !b.arg.m;          // a merged surd log splits off rational logs,
+        bool exact_ln = !a.arg.m || pr.q == 1;            // so mixing kinds would cycle; a surd log
+        if (a.type == EXPR_LN && same_kind && exact_ln) part = ln_merge(&pr); // needs an integer ratio
+        else if (a.type == EXPR_ATAN) part = atan_merge(&pr);
+    }
+    if (part) {
+        Rational c = rat_from_si(1, pr.q);                // (c/q)·R·(q·fn(u) + p·fn(v))
+        rat_mul(&c, &c, &S->t[i].c);
+        Expr* e = scaled(&c, create_mul(expr_copy(a.rest), part));
+        rat_clear(&c);
+        rat_set_si(&S->t[i].c, 0, 1);
+        rat_set_si(&S->t[j].c, 0, 1);
+        add_all(S, e, 1);
+        free_expr(e);
+    }
+    fn_term_free(&a);
+    if (both) fn_term_free(&b);
+    return part != NULL;
+}
+
+static bool is_power(const Rational* v) {
+    mpz_t n, d;
+    mpz_init(n); mpz_init(d);
+    bool p = root_degree(v, n, d) > 0;
+    mpz_clear(n); mpz_clear(d);
+    return p;
+}
+
+// term i rewritten when it is a log not in canonical form: a surd as canon_ln makes it
+// (ln|1 - sqrt(2)| = -ln(1 + sqrt(2))), a rational as v > 1; true if it was
+static bool try_normalize(Sum* S, int i) {
+    if (rat_is_zero(&S->t[i].c)) return false;
+    FnTerm a;
+    if (!fn_term(S->t[i].body, &a)) return false;
+    Rational one = rat_one_val();
+    bool rational_ok = !a.arg.m && rat_cmp(&a.arg.p, &one) > 0 && !is_power(&a.arg.p); // ln(17), not ln(1/17), ln(289)
+    rat_clear(&one);
+    bool go = a.type == EXPR_LN && (a.arg.m ? !ln_normal(&a.arg) : !rational_ok);
+    if (go) {
+        Expr* e = scaled(&S->t[i].c, create_mul(expr_copy(a.rest), ln_surd(&a.arg)));
+        rat_set_si(&S->t[i].c, 0, 1);
+        add_all(S, e, 1);
+        free_expr(e);
+    }
+    fn_term_free(&a);
+    return go;
+}
+
+// normalize logs, then merge like ln and atan terms pairwise until none combine. This
+// ends: nothing creates an unnormalized log or a new surd log, each surd-log merge removes
+// one surd log (it may add rational logs), and rational-log and atan merges each remove a
+// term of their own kind without adding any other.
+static void combine_fns(Sum* S) {
+    for (int i = 0; i < S->nt; i++) try_normalize(S, i);  // appended terms are normal already
+    for (bool again = true; again;) {
+        again = false;
+        for (int i = 0; i < S->nt && !again; i++)
+            for (int j = 0; j < S->nt && !again; j++)     // both orders: surd logs need
+                again = j != i && try_merge(S, i, j);     // c_j/c_i to be an integer
+    }
+}
+
+// a product has a factor of this type (TRIG_NONE alone for π, when type is EXPR_TRIG)
+static bool has_factor(const Expr* e, ExprType type) {
+    if (e->type == type) return type != EXPR_TRIG || e->trig.kind == TRIG_NONE;
+    return e->type == EXPR_BINOP && e->binop.op == OP_MUL && (has_factor(e->binop.left, type) || has_factor(e->binop.right, type));
+}
+
+// print order of a sum's terms: logs, atans, the rest, then multiples of π
+static int term_rank(const Expr* body) {
+    if (has_factor(body, EXPR_TRIG)) return 3;
+    if (has_factor(body, EXPR_LN)) return 0;
+    return has_factor(body, EXPR_ATAN) ? 1 : 2;
+}
+
+// by rank, then by printed form, so equal sums print alike whatever their build order
+static int term_cmp(const void* x, const void* y) {
+    const SumTerm *a = *(SumTerm* const*)x, *b = *(SumTerm* const*)y;
+    int ra = term_rank(a->body), rb = term_rank(b->body);
+    return ra != rb ? ra - rb : strcmp(a->key, b->key);
+}
+
 // the folded sum; the rational part goes first when rational_first, else last
 static Expr* sum_expr(Sum* S, bool rational_first) {
+    combine_fns(S);
     merge_logs(S);
     Expr* e = NULL;
     bool rat = !rat_is_zero(&S->rational);
     if (rat && rational_first) e = create_const_rat(&S->rational);
+    SumTerm** order = malloc((size_t)(S->nt + 1) * sizeof(SumTerm*));
+    int n = 0;
+    for (int i = 0; i < S->nt; i++) if (!rat_is_zero(&S->t[i].c)) order[n++] = &S->t[i];
+    qsort(order, (size_t)n, sizeof(SumTerm*), term_cmp);   // the same terms print alike
+    for (int i = 0; i < n; i++) {
+        e = append(e, scaled(&order[i]->c, order[i]->body));
+        order[i]->body = NULL;                            // now owned by e
+    }
+    free(order);
     for (int i = 0; i < S->nt; i++) {
-        if (!rat_is_zero(&S->t[i].c)) e = append(e, scaled(&S->t[i].c, S->t[i].body));
-        else free_expr(S->t[i].body);
+        free_expr(S->t[i].body);
         free(S->t[i].key);
         rat_clear(&S->t[i].c);
     }
     for (int i = 0; i < S->nl; i++) {
+        Rational k = rat_from_int(perfect_root(&S->lv[i]));   // ln(4) = 2·ln(2)
+        rat_mul(&S->lc[i], &S->lc[i], &k);
+        rat_clear(&k);
         if (!rat_is_zero(&S->lc[i])) e = append(e, scaled(&S->lc[i], create_ln(create_const_rat(&S->lv[i]))));
         rat_clear(&S->lc[i]);
         rat_clear(&S->lv[i]);
@@ -379,8 +757,34 @@ static bool atan_value(const Rational* c, const Factors* F, Rational* turns) {
     return found;
 }
 
+// atan(±(sqrt(2) ∓ 1)) and atan(±(2 ∓ sqrt(3))): tan of π/8, 3π/8, π/12, 5π/12
+static bool atan_surd_value(const Expr* a, Rational* turns) {
+    QSurd u;
+    qs_init(&u);
+    bool found = qs_parse(a, &u) && u.m && (u.m == 2 || u.m == 3);
+    int sign = found ? qs_sign(&u) : 0;
+    if (sign < 0) { rat_neg(&u.p, &u.p); rat_neg(&u.q, &u.q); }
+    long p = 0, q = 0;                                    // u = p + q·sqrt(m) with small integers
+    if (found) found = mpz_cmp_ui(mpq_denref(u.p.val), 1) == 0 && mpz_cmp_ui(mpq_denref(u.q.val), 1) == 0
+                    && mpz_cmpabs_ui(mpq_numref(u.p.val), 2) <= 0 && mpz_cmpabs_ui(mpq_numref(u.q.val), 1) <= 0;
+    if (found) { p = mpz_get_si(mpq_numref(u.p.val)); q = mpz_get_si(mpq_numref(u.q.val)); }
+    long n = 0, d = 0;
+    if (u.m == 2 && q == 1 && labs(p) == 1) { n = p < 0 ? 1 : 3; d = 8; }
+    if (u.m == 3 && p == 2 && labs(q) == 1) { n = q < 0 ? 1 : 5; d = 12; }
+    found = found && d;
+    if (found) rat_set_si(turns, sign * n, d);
+    qs_clear(&u);
+    return found;
+}
+
 // atan(a), exact where tabulated, with atan(-u) = -atan(u); takes a
 static Expr* fold_atan(Expr* a) {
+    Rational t;
+    rat_init(&t);
+    bool known = atan_surd_value(a, &t);
+    if (known) { free_expr(a); a = scaled(&t, create_pi()); }
+    rat_clear(&t);
+    if (known) return a;
     if (is_sum(a) && leading_negative(a))
         return fold_product(create_const(-1), fold_atan(fold_sum2(create_const(0), a, -1)));
     Rational c = rat_one_val(), turns;

@@ -20,6 +20,7 @@
 #include "rootform.h"
 #include "definite.h"
 #include "constfold.h"
+#include "qsurd.h"
 #include <complex.h>
 
 static bool derivative_is(const Expr* F, const Polynomial* num, const Polynomial* den);
@@ -254,7 +255,15 @@ static void test_reg_integrate_definite(void) {
         { "1/(x^2+1)^2", "0", "1", "1/8 * pi + 1/4" },
         { "(x^2+1)/(x^4+3x^2+1)", "-1", "1", "1/5 * sqrt(5) * pi" },     // atan(N/(sqrt(5)·x)) jumps at 0
         { "(x^2+1)/(x^4+4x^2+1)", "0", "1", "1/12 * sqrt(6) * pi" },     // that pole at a bound
-        { "1/(x^2-2)", "-1", "1", "1/2 * sqrt(2) * ln(abs(1 - sqrt(2))) - 1/2 * sqrt(2) * ln(abs(1 + sqrt(2)))" }, // |-1 - sqrt(2)|
+        { "1/(x^2-2)", "-1", "1", "-sqrt(2) * ln(1 + sqrt(2))" },             // ln|1-√2| - ln|1+√2| = -2·ln(1+√2)
+        { "1/(x^4+1)", "0", "1", "1/4 * sqrt(2) * ln(1 + sqrt(2)) + 1/8 * sqrt(2) * pi" }, // atan(1±√2) pair → π/2
+        { "1/(x^4+1)", "-1", "0", "1/4 * sqrt(2) * ln(1 + sqrt(2)) + 1/8 * sqrt(2) * pi" }, // pair with u < 0: -π/2
+        { "1/(x^6+1)", "0", "1", "1/6 * sqrt(3) * ln(2 + sqrt(3)) + 1/6 * pi" },           // 7+4√3 = (2+√3)²
+        { "(x+1)/(x^4+1)", "0", "1", "1/4 * sqrt(2) * ln(1 + sqrt(2)) + 1/8 * sqrt(2) * pi + 1/8 * pi" },
+        { "1/(x^2-8)", "0", "2", "-1/4 * sqrt(2) * ln(1 + sqrt(2))" },        // |2-2√2| = 2·√2·(√2-1)
+        { "1/(x^4+1)", "-2", "-1", "-1/4 * sqrt(2) * ln(1 + 3 * sqrt(2)) + 1/8 * sqrt(2) * ln(17) - 1/4 * sqrt(2) * atan(2/3 * sqrt(2)) + 1/8 * sqrt(2) * pi" }, // ln(-1+3√2) = ln 17 - ln(1+3√2)
+        { "1/(x^4+1)", "-3", "-1/2", "-1/4 * sqrt(2) * ln(5 + 19 * sqrt(2)) + 1/8 * sqrt(2) * ln(697) - 1/4 * sqrt(2) * atan(25/12 * sqrt(2)) + 1/4 * sqrt(2) * pi" }, // ln(697²)/16
+        { "1/(x^2-3)", "2", "3", "1/3 * sqrt(3) * ln(1 + sqrt(3)) - 1/6 * sqrt(3) * ln(2)" },   // ln 4 = 2 ln 2
         { "x^2", "0", "3", "9" },
         { "x", "2", "2", "0" },
         { "1/(x^4+1)", "-inf", "inf", "1/2 * sqrt(2) * pi" },          // infinite bounds
@@ -321,6 +330,84 @@ static void test_reg_expr_lead(void) {
     check_lead(create_sub(create_mul(sqrt_of(2), expr_copy(x)), create_mul(sqrt_of(2), expr_copy(x))), NULL, 0);
     free_expr(x);
     printf("  test_reg_expr_lead PASSED (7 cases)\n");
+}
+
+// Q(sqrt(m)) arithmetic: parse, the four operations, exact signs at near-ties, printing
+static void qs_of(QSurd* a, long p, long q, long m) {
+    Expr* e = create_add(create_const(p), create_mul(create_const(q), sqrt_of(m)));
+    assert(qs_parse(e, a));
+    free_expr(e);
+}
+
+static char* expr_to_string_free(Expr* e) {
+    char* s = expr_to_string(e);
+    free_expr(e);
+    return s;
+}
+
+static void expect_qs(const QSurd* a, const char* s) {
+    Expr* e = qs_expr(a);
+    expect_str(expr_to_string(e), s);
+    free_expr(e);
+}
+
+static void test_reg_qsurd(void) {
+    QSurd a, b, r;
+    qs_init(&a); qs_init(&b); qs_init(&r);
+    qs_of(&a, 2, 1, 2); qs_of(&b, 2, -1, 2);
+    assert(qs_div(&r, &a, &b)); expect_qs(&r, "3 + 2 * sqrt(2)");     // (2+√2)/(2-√2)
+    assert(qs_mul(&r, &a, &b)); expect_qs(&r, "2");                   // norm
+    assert(qs_sub(&r, &a, &b)); expect_qs(&r, "2 * sqrt(2)");
+    qs_of(&a, 1, -1, 2); assert(qs_sign(&a) < 0);                     // 1 - √2
+    qs_of(&a, 7, -4, 3); assert(qs_sign(&a) > 0);                     // 49 > 48
+    qs_of(&a, -7, 4, 3); assert(qs_sign(&a) < 0);
+    qs_of(&b, 1, 1, 3);
+    qs_of(&a, 1, 1, 2); assert(!qs_mul(&r, &a, &b));                  // different fields
+    Expr* e = create_div(create_mul(create_const(3), sqrt_of(5)), create_const(4));
+    assert(qs_parse(e, &a)); expect_qs(&a, "3/4 * sqrt(5)");
+    free_expr(e);
+    e = create_mul(sqrt_of(2), sqrt_of(3));                           // two radicals: not one field
+    assert(!qs_parse(e, &a));
+    free_expr(e);
+    qs_of(&a, 3, 2, 2); assert(qs_sqrt(&r, &a)); expect_qs(&r, "1 + sqrt(2)");   // (1+√2)²
+    qs_of(&a, 7, -4, 3); assert(qs_sqrt(&r, &a)); expect_qs(&r, "2 - sqrt(3)");  // positive root
+    qs_of(&a, 2, 1, 2); assert(!qs_sqrt(&r, &a));
+    const long atans[][3] = { { -1, 1, 2 }, { 1, 1, 2 }, { 2, -1, 3 }, { 2, 1, 3 }, { -2, -1, 3 } };
+    const char* turns[] = { "1/8 * pi", "3/8 * pi", "1/12 * pi", "5/12 * pi", "-5/12 * pi" };
+    Rational zero = rat_zero_val();
+    for (int i = 0; i < 5; i++) {                                     // tan of π/8, 3π/8, π/12, 5π/12
+        Expr* t = create_atan(create_add(create_const(atans[i][0]), create_mul(create_const(atans[i][1]), sqrt_of(atans[i][2]))));
+        Expr* v = expr_at(t, &zero);
+        expect_str(expr_to_string(v), turns[i]);
+        free_expr(t); free_expr(v);
+    }
+    rat_clear(&zero);
+    qs_of(&a, 9, -4, 2); assert(qs_sqrt(&r, &a)); expect_qs(&r, "-1 + 2 * sqrt(2)"); // not 1 - 2√2
+    qs_clear(&a); qs_clear(&b); qs_clear(&r);
+    Expr* sums[][2] = {
+        { create_atan(create_const(-2)), create_atan(create_div(create_const(-1), create_const(2))) }, // 1 - uv = 0, u < 0
+        { create_atan(create_const(2)), create_atan(create_const(3)) },            // 1 - uv < 0: + π
+        { create_mul(sqrt_of(2), create_pi()), create_mul(sqrt_of(2), create_ln(create_const(3))) },
+    };
+    const char* folded[] = { "-1/2 * pi", "3/4 * pi", "sqrt(2) * ln(3) + sqrt(2) * pi" };
+    for (int i = 0; i < 3; i++) expect_str(expr_to_string_free(const_fold_sum(sums[i], 2)), folded[i]);
+    Expr* lone[][1] = {
+        { create_ln(create_add(create_const(3), create_mul(create_const(2), sqrt_of(2)))) },   // (1+√2)²
+        { create_ln(create_add(create_const(-1), create_mul(create_const(3), sqrt_of(2)))) },  // conjugate
+    };
+    const char* canon[] = { "2 * ln(1 + sqrt(2))", "-ln(1 + 3 * sqrt(2)) + ln(17)" };
+    for (int i = 0; i < 2; i++) expect_str(expr_to_string_free(const_fold_sum(lone[i], 1)), canon[i]);
+    Expr* ratio[] = {                                                 // c_j/c_i = -1/2: merged as j, i
+        create_mul(create_div(sqrt_of(2), create_const(2)), create_ln(create_add(create_const(1), sqrt_of(2)))),
+        create_mul(create_div(sqrt_of(2), create_const(-4)), create_ln(create_add(create_const(1), create_mul(create_const(3), sqrt_of(2))))),
+    };
+    expect_str(expr_to_string_free(const_fold_sum(ratio, 2)), "-1/4 * sqrt(2) * ln(17) + 1/4 * sqrt(2) * ln(9 + 7 * sqrt(2))");
+    Expr* rest[] = { create_mul(sqrt_of(2), create_pi()), sqrt_of(3) };   // π multiples last
+    expect_str(expr_to_string_free(const_fold_sum(rest, 2)), "sqrt(3) + sqrt(2) * pi");
+    e = create_ln(create_add(create_const(1), create_mul(create_const(-1), sqrt_of(2))));
+    expect_str(expr_to_string(e), "ln(abs(1 - sqrt(2)))");            // negative: keeps abs
+    free_expr(e);
+    printf("  test_reg_qsurd PASSED\n");
 }
 
 // lrt_log_part on its own, including reducible square-free d where R(t) has repeated
@@ -1178,6 +1265,41 @@ static void test_prop_integrate_infinite(void) {
     printf("  test_prop_integrate_infinite PASSED (%d trials: %d exact, %d RootSum numeric)\n", TRIALS, exact, numeric);
 }
 
+// canonical definite values: an even integrand p(x²)/q(x²) prints the same on [a, b] and
+// [-b, -a] (the antiderivative's terms arrive in another order with other arguments)
+static void test_prop_definite_symmetric(void) {
+    int compared = 0;
+    for (int trial = 0; trial < TRIALS; trial++) {
+        int k = (int)rnd(1, 4);
+        long dc[9] = { 0 }, nc[9] = { 0 };
+        dc[2 * k] = 1;
+        dc[0] = rnd(-8, 8);
+        if (rnd(0, 1)) dc[k] = rnd(-3, 3);                    // x^2k + b·x^k + c with k even below
+        if (k % 2) dc[k] = 0;
+        nc[0] = rnd(1, 4);
+        if (k > 1 && rnd(0, 1)) nc[2] = rnd(-3, 3);
+        Polynomial *num = poly_si(nc, k > 1 ? 2 : 0), *den = poly_si(dc, 2 * k);
+        Expr* f = create_div(create_poly_expr(num), create_poly_expr(den));
+        Rational a, b, na, nb;
+        rat_init(&a); rat_init(&b); rat_init(&na); rat_init(&nb);
+        rat_set_si(&a, rnd(0, 6), rnd(1, 3));
+        rat_set_si(&b, rnd(7, 12), rnd(1, 3));
+        rat_neg(&na, &a); rat_neg(&nb, &b);
+        DefiniteResult r1 = integrate_definite(f, &(Bounds){ { &a, 0 }, { &b, 0 } });
+        DefiniteResult r2 = integrate_definite(f, &(Bounds){ { &nb, 0 }, { &na, 0 } });
+        if (r1.exact && r2.exact) {
+            char *s1 = expr_to_string(r1.exact), *s2 = expr_to_string(r2.exact);
+            if (strcmp(s1, s2) != 0) { fprintf(stderr, "    asymmetric:\n    %s\n    %s\n", s1, s2); assert(0); }
+            free(s1); free(s2);
+            compared++;
+        }
+        definite_free(&r1); definite_free(&r2);
+        rat_clear(&a); rat_clear(&b); rat_clear(&na); rat_clear(&nb);
+        free_expr(f);
+    }
+    printf("  test_prop_definite_symmetric PASSED (%d trials, %d exact pairs equal as strings)\n", TRIALS, compared);
+}
+
 static Matrix* random_matrix(int n) {
     Matrix* A = matrix_create(n, n);
     for (int i = 0; i < n * n; i++) rat_set_si(&A->data[i], rnd(-20, 20), rnd(1, 4));
@@ -1260,6 +1382,7 @@ void run_property_tests(void) {
     test_reg_integrate_radicals();
     test_reg_integrate_definite();
     test_reg_expr_lead();
+    test_reg_qsurd();
     test_lrt_direct();
     printf("\nProperty Tests (seed %s):\n", env ? env : "default");
     test_prop_factor_roundtrip();
@@ -1272,4 +1395,5 @@ void run_property_tests(void) {
     test_prop_exact_roots();
     test_prop_integrate_definite();
     test_prop_integrate_infinite();
+    test_prop_definite_symmetric();
 }
