@@ -13,8 +13,12 @@ typedef enum {
     EXPR_LN,
     EXPR_ATAN,
     EXPR_SQRT,
-    EXPR_ROOTSUM
+    EXPR_ROOTSUM,
+    EXPR_TRIG
 } ExprType;
+
+// exact trig constants at rational multiples of π (EXPR_TRIG)
+typedef enum { TRIG_NONE, TRIG_COS, TRIG_SIN, TRIG_COT, TRIG_CSC } TrigKind;
 
 typedef enum {
     OP_ADD,
@@ -47,6 +51,10 @@ typedef struct Expr {
             Polynomial** s;        //   S = Σ s[k](t)·x^k, each s[k] of degree < deg q
             int s_deg;
         } rootsum;
+        struct {                   // EXPR_TRIG: cos/sin/cot/csc(angle·π)
+            TrigKind kind;
+            Rational angle;
+        } trig;
     };
 } Expr;
 
@@ -67,6 +75,7 @@ Expr* create_ln(Expr* arg);
 Expr* create_atan(Expr* arg);
 Expr* create_sqrt(Expr* arg);
 Expr* create_rootsum(Polynomial* q, Polynomial** s, int s_deg); // takes ownership
+Expr* create_trig(TrigKind kind, const Rational* angle);        // trig(angle·π)
 
 // operations
 Expr* canonicalize(Expr* expr);
@@ -74,6 +83,7 @@ Expr* simplify(Expr* expr);
 Expr* factor(Expr* expr);
 Expr* differentiate(Expr* expr, const char* variable);
 Expr* integrate(Expr* expr, const char* variable); // integrate.c
+Expr* integrate_rootsum(Expr* expr, const char* variable); // same, but RootSum is never expanded
 const char* integrate_error(void);                  // reason for the last NULL from integrate
 
 // numeric value at x (for verification); *ok becomes false on a pole or domain error

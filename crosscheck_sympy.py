@@ -11,7 +11,9 @@ Checks, per random input:
              SymPy real root; real and non-real root counts (with multiplicity) match
   integrate  SymPy confirms d/dx(printed antiderivative) - f == 0 symbolically; answers
              containing RootSum(q, t -> t * ln(S)) are checked at 60 significant digits
-             (Σ over the roots of q of t·S_x/S, plus the derivative of the other terms)
+             (Σ over the roots of q of t·S_x/S, plus the derivative of the other terms),
+             and so are answers with radicals and cos/sin(kπ/N) constants, including a
+             second stream of binomial/cyclotomic denominators (c·x^n ± e, x^(sN) ± b^N)
   det/inv    exact agreement with SymPy's Matrix
 """
 import argparse
@@ -43,7 +45,8 @@ def to_sympy(text):
     cannot simplify the sign(u) terms that differentiating Abs would introduce."""
     text = re.sub(r"ln\|([^|]*)\|", r"log(\1)", text).replace("^", "**")
     return parse_expr(text, local_dict={"x": x, "t": t, "atan": sp.atan, "sqrt": sp.sqrt,
-                                        "log": sp.log, "Abs": sp.Abs},
+                                        "log": sp.log, "Abs": sp.Abs, "pi": sp.pi, "cos": sp.cos,
+                                        "sin": sp.sin, "cot": sp.cot, "csc": sp.csc},
                       transformations=TRANSFORMS)
 
 
@@ -120,15 +123,38 @@ def rootsum_ok(f, out):
     return True
 
 
-def check_integrate(rng):
+def numeric_ok(f, out):
+    """d/dx F == f at 60 digits, for answers with radicals and trig constants."""
+    dF = sp.diff(to_sympy(out), x)
+    for x0 in (sp.Rational(-33, 10), sp.Rational(-3, 5), sp.Rational(1, 7), sp.Rational(29, 10)):
+        fx = sp.N(f.subs(x, x0), 60)
+        if abs(sp.N(dF.subs(x, x0), 60) - fx) > sp.Float("1e-40") * (1 + abs(fx)):
+            return False
+    return True
+
+
+def binomial_den(rng):
+    """c·x^n ± e, or x^(sN) ± b^N (rescaled cyclotomic factors), maybe times x - k."""
+    if rng.random() < 0.5:
+        den = rng.randint(1, 4) * x**rng.randint(3, 9) + rng.choice([-1, 1]) * rng.randint(1, 7)
+    else:
+        s, N, b = rng.randint(1, 2), rng.randint(3, 6), rng.randint(1, 3)
+        den = x**(s * N) + rng.choice([-1, 1]) * b**N
+    return den * (x - rng.randint(-3, 3)) if rng.random() < 0.3 else den
+
+
+def check_integrate(rng, den=None):
     num = sum(rng.randint(-5, 5) * x**i for i in range(rng.randint(0, 3))) or sp.Integer(1)
-    den = random_poly(rng, coeff=5)
+    den = den if den is not None else random_poly(rng, coeff=5)
     f = sp.cancel(num / den)
     code, out, err = run_cli("integrate", to_cli(f))
     assert code == 0, f"integrate failed for f={f}: {err}"
     if "RootSum" in out:
         assert rootsum_ok(f, out), f"d/dx F != f (60 digits) for f={f}, F={out}"
         return "rootsum"
+    if "^(" in out or "pi" in out:
+        assert numeric_ok(f, out), f"d/dx F != f (60 digits) for f={f}, F={out}"
+        return "radical"
     F = to_sympy(out)
     d = sp.cancel(sp.together(sp.diff(F, x) - f))  # cheap first; simplify only if needed
     if d != 0:
@@ -151,16 +177,21 @@ def main():
     ap.add_argument("--seed", type=int, default=20261113)
     args = ap.parse_args()
     rng = random.Random(args.seed)
-    rootsums = 0
+    rng_bin = random.Random(args.seed + 1)  # separate stream: the main inputs stay unchanged
+    rootsums = radicals = 0
     for t in range(args.trials):
         p = random_poly(rng)
         check_factor(p)
         check_solve(p)
         rootsums += check_integrate(rng) == "rootsum"
+        kind = check_integrate(rng_bin, binomial_den(rng_bin))
+        rootsums += kind == "rootsum"
+        radicals += kind == "radical"
         check_matrix(rng)
         print(f"  trial {t + 1}/{args.trials} ok", flush=True)
     print(f"crosscheck OK: {args.trials} trials (factor, solve, integrate, det); "
-          f"{rootsums} antiderivatives contained RootSum terms (checked to 60 digits)")
+          f"{rootsums} antiderivatives contained RootSum terms and {radicals} radical/trig forms "
+          f"(both checked to 60 digits)")
 
 
 if __name__ == "__main__":

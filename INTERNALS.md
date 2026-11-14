@@ -978,6 +978,33 @@ A final pass merges like terms (`c1·f + c2·f`), so cancelling arctangents disa
 - A `RootSum`'s derivative at a rational point `x0` is `Σ α·S_x(α,x0)/S(α,x0)`. That equals the trace `Tr(t·S_x·S⁻¹ mod M)`, computed exactly from Newton power sums, so `RootSum` answers are also compared exactly at six rational points.
 - `crosscheck_sympy.py` rechecks every `RootSum` answer at 60 digits.
 
+### 11.4 Expanding RootSum when the roots are known (`rootform.c`, `surd.c`)
+
+`RootSum` is exact but unfamiliar, so `integrate()` rewrites it into real `ln`/`atan` terms with radicals whenever the roots of the denominator factor `P` are known exactly. `integrate_rootsum()` skips this step and is what the exact tests use.
+
+**When.** After LRT, only for a factor whose result contains a `RootSum`, so compact LRT answers such as `∫ x/(x^4+1) = 1/2 * atan(x^2)` are kept. `P` must be one of two shapes:
+- **binomial** `p·x^n + q`: the roots are `ρ·e^(iπj/n)` with `ρ = |q/p|^(1/n)`, and `j` even or odd by the sign of `−q/p`;
+- **rescaled cyclotomic in `x^s`**: `P(x) = Q(x^s)` with `Q = q_m·b^m·Φ_N(y/b)` and `b` rational. The roots are every `s`-th root of every `b·ζ_N^k` with `gcd(k, N) = 1`. Examples: `x^5 − 1`, `x^6 + 1`, `x^4 + 2x^2 + 4 = 4Φ_3(x^2/2)` (from `x^6 − 8`), and `x^6 + 3x^3 + 9`.
+
+Anything else stays `RootSum`. For example, `x^5 + x + 3` has Galois group S5, so its roots have no radical form, and the Capelli factors `x^4 ± 2x^2 + 2` of `x^8 + 4` hold only some of the roots of a binomial.
+
+**How.** For `h = a·(P')⁻¹ mod P`, `∫ a/P = Σ_r h(r)·ln(x − r)`:
+- **Real root `r = ±ρ`:** gives `h(r)·ln|x − r|`.
+- **Conjugate pair `r = ρe^(±iθ)`, `0 < θ < π`:** with `h(r) = H_re + i·H_im`, gives `H_re·ln(x² − 2ρcosθ·x + ρ²) − 2·H_im·atan(cscθ/ρ·x − cotθ)`. The atan argument is a polynomial in `x`, so it is continuous and needs no Rioboo step.
+- **`H_re` and `H_im`:** both are `Σ_k h_k·ρ^k·cos/sin(kθ)`, sums of exact monomials.
+
+**Exact constants (`surd.c`).** A `Mono` is `c · m^e · sqrt(s) · trig(angle·π)`:
+- `R^e` is put in canonical form by extracting perfect powers, so `(1/1492992)^(1/6) = 2^(1/6)/12`.
+- Trig values at multiples of π/6 and π/4 come from a table, so `cos(π/6) = sqrt(3)/2`. Other angles stay symbolic, folded into `(0, π/2)`, and print as `cos(2*pi/5)`. They are an `EXPR_TRIG` node.
+- Like monomials are merged.
+
+**How it is verified.**
+- The C tests can't recognize radical and trig forms exactly, so they check these answers in double precision instead. The derivative is a 5-point stencil, taken only at points where two step sizes agree, which skips points near poles.
+- `test_reg_integrate_radicals` pins five outputs.
+- `test_prop_integrate_radicals` draws random `c·x^n ± e` and `x^(sN) ± b^N` denominators.
+- `test_prop_integrate_derivative` checks `integrate_rootsum` exactly and `integrate` numerically.
+- `crosscheck_sympy.py` adds a stream of binomial and cyclotomic integrands and checks them at 60 digits.
+
 ---
 
 ## 12. CLI Pipeline

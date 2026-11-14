@@ -104,6 +104,14 @@ Expr* create_rootsum(Polynomial* q, Polynomial** s, int s_deg) {
 }
 Expr* create_sqrt(Expr* arg) { return create_unary_fn(EXPR_SQRT, arg); }
 
+Expr* create_trig(TrigKind kind, const Rational* angle) {
+    Expr* e = malloc(sizeof(Expr));
+    e->type = EXPR_TRIG;
+    e->trig.kind = kind;
+    rat_init_set(&e->trig.angle, angle);
+    return e;
+}
+
 // --- memory ---
 
 void free_expr(Expr* expr) {
@@ -137,6 +145,9 @@ void free_expr(Expr* expr) {
             free_polynomial(expr->rootsum.q);
             for (int k = 0; k <= expr->rootsum.s_deg; k++) free_polynomial(expr->rootsum.s[k]);
             free(expr->rootsum.s);
+            break;
+        case EXPR_TRIG:
+            rat_clear(&expr->trig.angle);
             break;
         case EXPR_CONST:
             rat_clear(&expr->constant);
@@ -285,7 +296,21 @@ static void emit_pow(const Expr* base, const Expr* exp, StrBuf* sb) {
     expr_to_string_impl(base, sb);
     if (needs_parens) sb_append(sb, ")");
     sb_append(sb, "^");
+    bool frac = exp->type == EXPR_CONST && mpz_cmp_ui(mpq_denref(exp->constant.val), 1) != 0; // 2^(1/6), not 2^1/6
+    if (frac) sb_append(sb, "(");
     expr_to_string_impl(exp, sb);
+    if (frac) sb_append(sb, ")");
+}
+
+// cos(pi/7), sin(3*pi/10), ...
+static void emit_trig(const Expr* e, StrBuf* sb) {
+    static const char* names[] = { "", "cos", "sin", "cot", "csc" };
+    const mpq_t* a = &e->trig.angle.val;
+    sb_appendf(sb, "%s(", names[e->trig.kind]);
+    if (mpz_cmp_ui(mpq_numref(*a), 1) != 0) { sb_append_owned(sb, mpz_get_str(NULL, 10, mpq_numref(*a))); sb_append(sb, "*"); }
+    sb_append(sb, "pi");
+    if (mpz_cmp_ui(mpq_denref(*a), 1) != 0) { sb_append(sb, "/"); sb_append_owned(sb, mpz_get_str(NULL, 10, mpq_denref(*a))); }
+    sb_append(sb, ")");
 }
 
 // one x^k term of a bivariate S(t, x) whose coefficient c is a polynomial in t
@@ -381,6 +406,9 @@ static void expr_to_string_impl(const Expr* expr, StrBuf* sb) {
             break;
         case EXPR_ROOTSUM:
             emit_rootsum(expr, sb);
+            break;
+        case EXPR_TRIG:
+            emit_trig(expr, sb);
             break;
     }
 }
@@ -640,6 +668,7 @@ Expr* canonicalize(Expr* expr) {
         case EXPR_ATAN:
         case EXPR_SQRT:
         case EXPR_ROOTSUM:
+        case EXPR_TRIG:
             return NULL;
     }
     return NULL;
@@ -793,6 +822,17 @@ double expr_eval(const Expr* e, double x, bool* ok) {
             return sqrt(v);
         }
         case EXPR_ROOTSUM: return eval_rootsum(e, x, ok);
+        case EXPR_TRIG: {
+            double a = rat_to_double(&e->trig.angle) * M_PI;
+            switch (e->trig.kind) {
+                case TRIG_COS: return cos(a);
+                case TRIG_SIN: return sin(a);
+                case TRIG_COT: return cos(a) / sin(a);
+                case TRIG_CSC: return 1.0 / sin(a);
+                case TRIG_NONE: break;
+            }
+            break;
+        }
     }
     *ok = false;
     return 0.0;

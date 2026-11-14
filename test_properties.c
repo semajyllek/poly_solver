@@ -20,6 +20,33 @@
 
 static bool derivative_is(const Expr* F, const Polynomial* num, const Polynomial* den);
 
+typedef struct { double x0, h; } Stencil;
+
+// 5-point central difference of F at st.x0 with step st.h
+static double stencil(const Expr* F, Stencil st, bool* ok) {
+    double x0 = st.x0, h = st.h;
+    return (-expr_eval(F, x0 + 2 * h, ok) + 8 * expr_eval(F, x0 + h, ok)
+            - 8 * expr_eval(F, x0 - h, ok) + expr_eval(F, x0 - 2 * h, ok)) / (12 * h);
+}
+
+// F' == num/den in double precision at sample points where the difference quotient has
+// converged (two step sizes agree, i.e. no pole nearby); for answers with radicals and trig
+// constants, which the exact recognizer does not model
+static bool numeric_derivative_is(const Expr* F, const Polynomial* num, const Polynomial* den) {
+    const double xs[] = { -2.7, -1.3, -0.45, 0.35, 1.15, 2.45, -3.9, 3.7 };
+    int checked = 0;
+    for (size_t i = 0; i < sizeof xs / sizeof xs[0]; i++) {
+        double x0 = xs[i], d = poly_evaluate(den, x0);
+        bool ok = d != 0;
+        double f = poly_evaluate(num, x0) / d, d1 = stencil(F, (Stencil){ x0, 1e-3 }, &ok),
+               d2 = stencil(F, (Stencil){ x0, 5e-4 }, &ok);
+        if (!ok || fabs(d1 - d2) > 1e-9 * (1 + fabs(f))) continue; // not converged: pole nearby
+        if (fabs(d2 - f) > 1e-7 * (1 + fabs(f))) return false;
+        checked++;
+    }
+    return checked >= 3;
+}
+
 #define SEED 20261113ULL
 #define TRIALS 60
 
@@ -56,13 +83,17 @@ static char* factor_str(const char* in) {
     return s;
 }
 
-static Expr* integrate_str(const char* in) {
+typedef Expr* (*IntegrateFn)(Expr*, const char*);
+
+static Expr* integrate_with(IntegrateFn fn, const char* in) {
     Expr* e = parse_and_simplify(in);
     assert(e);
-    Expr* r = integrate(e, "x");
+    Expr* r = fn(e, "x");
     free_expr(e);
     return r;
 }
+
+static Expr* integrate_str(const char* in) { return integrate_with(integrate, in); }
 
 static void expect_str(char* got, const char* want) {
     if (strcmp(got, want) != 0) {
@@ -139,7 +170,7 @@ static void test_reg_rejects_non_polynomials(void) {
 }
 
 // trailing or malformed input is an error, never a silently shortened expression
-// Lazard–Rioboo–Trager: irreducible denominator factors of degree >= 3
+// Lazard–Rioboo–Trager: irreducible denominator factors of degree >= 3 (RootSum kept)
 static void test_reg_integrate_lrt(void) {
     struct { const char* f; const char* F; } cases[] = {
         { "1/(x^3-2)", "RootSum(108t^3 - 1, t -> t * ln(x - 6t))" },        // used to be refused
@@ -153,12 +184,38 @@ static void test_reg_integrate_lrt(void) {
         { "x^3/(x^8+5)", "1/20 * sqrt(5) * atan(x^4 / sqrt(5))" },
     };
     for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
-        Expr* r = integrate_str(cases[i].f);
+        Expr* r = integrate_with(integrate_rootsum, cases[i].f);
         assert(r != NULL);
         expect_str(expr_to_string(r), cases[i].F);
         free_expr(r);
     }
     printf("  test_reg_integrate_lrt PASSED\n");
+}
+
+// RootSum expanded into radicals, cos/sin(kπ/N) and real ln/atan when the roots are known
+// (binomials and rescaled cyclotomics); every string was checked to 60 digits with SymPy
+static void test_reg_integrate_radicals(void) {
+    struct { const char* f; const char* F; } cases[] = {
+        { "1/(x^3-2)", // real root + one pair
+          "1/6 * 2^(1/3) * ln|x - 2^(1/3)| - 1/12 * 2^(1/3) * ln|x^2 + 2^(1/3) * x + 2^(2/3)| - 1/6 * 2^(1/3) * sqrt(3) * atan(1/3 * 2^(2/3) * sqrt(3) * x + 1/3 * sqrt(3))" },
+        { "1/(x^4+1)", // textbook sqrt(2) form
+          "-1/8 * sqrt(2) * ln|x^2 - sqrt(2) * x + 1| + 1/4 * sqrt(2) * atan(sqrt(2) * x - 1) + 1/8 * sqrt(2) * ln|x^2 + sqrt(2) * x + 1| + 1/4 * sqrt(2) * atan(sqrt(2) * x + 1)" },
+        { "1/(x^6+1)", // cyclotomic factors, table angles
+          "1/3 * atan(x) - 1/12 * sqrt(3) * ln|x^2 - sqrt(3) * x + 1| + 1/6 * atan(2 * x - sqrt(3)) + 1/12 * sqrt(3) * ln|x^2 + sqrt(3) * x + 1| + 1/6 * atan(2 * x + sqrt(3))" },
+        { "1/(x^5-1)", // cyclotomic, symbolic cos(2*pi/5)
+          "1/5 * ln|x - 1| + 1/5 * cos(2*pi/5) * ln|x^2 - 2 * cos(2*pi/5) * x + 1| - 2/5 * sin(2*pi/5) * atan(csc(2*pi/5) * x - cot(2*pi/5)) - 1/5 * cos(pi/5) * ln|x^2 + 2 * cos(pi/5) * x + 1| - 2/5 * sin(pi/5) * atan(csc(pi/5) * x + cot(pi/5))" },
+        { "1/(x^6-8)", // Q(x^2) = 4·Φ_3(x^2/2)
+          "1/48 * sqrt(2) * ln|(x - sqrt(2)) / (x + sqrt(2))| + 1/96 * sqrt(2) * ln|x^2 - sqrt(2) * x + 2| - 1/48 * sqrt(2) * sqrt(3) * atan(1/3 * sqrt(2) * sqrt(3) * x - 1/3 * sqrt(3)) - 1/96 * sqrt(2) * ln|x^2 + sqrt(2) * x + 2| - 1/48 * sqrt(2) * sqrt(3) * atan(1/3 * sqrt(2) * sqrt(3) * x + 1/3 * sqrt(3))" },
+    };
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        Expr* f = parse_and_simplify(cases[i].f);
+        Expr* r = integrate_str(cases[i].f);
+        assert(r != NULL && f && f->type == EXPR_RATIONAL_FN);
+        assert(numeric_derivative_is(r, f->ratfn.num, f->ratfn.den));
+        expect_str(expr_to_string(r), cases[i].F);
+        free_expr(r); free_expr(f);
+    }
+    printf("  test_reg_integrate_radicals PASSED (%zu cases)\n", sizeof cases / sizeof cases[0]);
 }
 
 // lrt_log_part on its own, including reducible square-free d where R(t) has repeated
@@ -675,9 +732,23 @@ static bool derivative_is(const Expr* F, const Polynomial* num, const Polynomial
     return ok;
 }
 
+// integrate()'s user-facing answer: numerically checked when RootSum was expanded; true if so
+static bool check_expanded(Expr* integrand, const Polynomial* num, const Polynomial* den) {
+    Expr* G = integrate(integrand, "x");
+    char* Gs = expr_to_string(G);
+    bool radical = !strstr(Gs, "RootSum") && (strstr(Gs, "^(") || strstr(Gs, "pi"));
+    if (radical && !numeric_derivative_is(G, num, den)) {
+        fprintf(stderr, "    expanded antiderivative wrong: %s\n", Gs);
+        assert(0);
+    }
+    free(Gs);
+    free_expr(G);
+    return radical;
+}
+
 // backward generation: integrands built from known irreducible factors (incl. cubics -> LRT)
 static void test_prop_integrate_derivative(void) {
-    int with_rootsum = 0;
+    int with_rootsum = 0, expanded = 0;
     for (int trial = 0; trial < TRIALS; trial++) {
         Generated g = generate_product();
         long nc[6];
@@ -687,7 +758,7 @@ static void test_prop_integrate_derivative(void) {
         nc[nd] = nc[nd] ? nc[nd] : 1;
         Polynomial* num = poly_si(nc, nd);
         Expr* integrand = create_div(create_poly_expr(poly_copy(num)), create_poly_expr(poly_copy(g.product)));
-        Expr* F = integrate(integrand, "x");
+        Expr* F = integrate_rootsum(integrand, "x");      // exact form, checked exactly below
         if (!F) fprintf(stderr, "    integrate failed: %s\n", integrate_error());
         assert(F != NULL);
         char* Fs0 = expr_to_string(F);
@@ -699,12 +770,14 @@ static void test_prop_integrate_derivative(void) {
             free(fs); free(Fs);
             assert(0);
         }
+        expanded += check_expanded(integrand, num, g.product);
         free_expr(F);
         free_expr(integrand);
         free_polynomial(num);
         free_generated(&g);
     }
-    printf("  test_prop_integrate_derivative PASSED (%d trials, %d with RootSum terms)\n", TRIALS, with_rootsum);
+    printf("  test_prop_integrate_derivative PASSED (%d trials, %d with RootSum terms, %d expanded)\n",
+           TRIALS, with_rootsum, expanded);
 }
 
 // random (a, d) with deg d in 2..7; when step > 1 both use only powers r + step·k, a
@@ -768,6 +841,65 @@ static void test_prop_subres_chain(void) {
     }
     printf("  test_prop_subres_chain PASSED (%zu fixed, %d trials, %d defective)\n",
            sizeof fixed / sizeof fixed[0], TRIALS, defective);
+}
+
+// c·x^n ± e or x^(sN) ± b^N, sometimes times (x - k) or (x^2 + k)
+static Polynomial* radical_denominator(void) {
+    long dc[13] = { 0 }, sign = rnd(0, 1) ? 1 : -1;
+    int n;
+    if (rnd(0, 1)) {
+        n = (int)rnd(3, 9);
+        dc[n] = rnd(1, 4);
+        dc[0] = sign * rnd(1, 7);
+    } else {                                              // splits into rescaled cyclotomics
+        int s = (int)rnd(1, 2), N = (int)rnd(3, 6);
+        long b = rnd(1, 3), bN = 1;
+        for (int i = 0; i < N; i++) bN *= b;
+        n = s * N;
+        dc[n] = 1;
+        dc[0] = sign * bN;
+    }
+    Polynomial* d = poly_si(dc, n);
+    long extra[3] = { rnd(-3, 3), rnd(0, 1), 0 };
+    int shape = (int)rnd(0, 2);                           // 0: none, 1: x - k, 2: x^2 + k
+    if (shape == 0) return d;
+    if (shape == 1) extra[1] = 1;
+    else { extra[0] = rnd(1, 5); extra[1] = 0; extra[2] = 1; }
+    Polynomial* e = poly_si(extra, shape);
+    Polynomial* p = poly_multiply(d, e);
+    free_polynomial(d); free_polynomial(e);
+    return p;
+}
+
+// denominators whose roots are known exactly: integrate() must expand RootSum, and the
+// answer is checked numerically (exactly, when a RootSum is left)
+static void test_prop_integrate_radicals(void) {
+    int expanded = 0, kept = 0;
+    for (int trial = 0; trial < TRIALS; trial++) {
+        Polynomial* den = radical_denominator();
+        long nc[8];
+        int nd = (int)rnd(0, 6);
+        for (int i = 0; i <= nd; i++) nc[i] = rnd(-5, 5);
+        nc[nd] = nc[nd] ? nc[nd] : 1;
+        Polynomial* num = poly_si(nc, nd);
+        Expr* integrand = create_div(create_poly_expr(poly_copy(num)), create_poly_expr(poly_copy(den)));
+        Expr* G = integrate(integrand, "x");
+        assert(G != NULL);
+        char* Gs = expr_to_string(G);
+        bool has_rs = strstr(Gs, "RootSum") != NULL;
+        bool ok = has_rs ? derivative_is(G, num, den) : numeric_derivative_is(G, num, den);
+        if (!ok) {
+            char* fs = expr_to_string(integrand);
+            fprintf(stderr, "    d/dx F != f\n    f = %s\n    F = %s\n", fs, Gs);
+            assert(0);
+        }
+        kept += has_rs;
+        expanded += !has_rs && (strstr(Gs, "^(") || strstr(Gs, "pi"));
+        free(Gs); free_expr(G); free_expr(integrand);
+        free_polynomial(num); free_polynomial(den);
+    }
+    printf("  test_prop_integrate_radicals PASSED (%d trials, %d expanded, %d RootSum kept)\n",
+           TRIALS, expanded, kept);
 }
 
 static Matrix* random_matrix(int n) {
@@ -848,6 +980,7 @@ void run_property_tests(void) {
     test_reg_solve_irrational_exact();
     test_reg_integrate_complete();
     test_reg_integrate_lrt();
+    test_reg_integrate_radicals();
     test_lrt_direct();
     printf("\nProperty Tests (seed %s):\n", env ? env : "default");
     test_prop_factor_roundtrip();
@@ -856,4 +989,5 @@ void run_property_tests(void) {
     test_prop_linear_systems();
     test_prop_print_parse_roundtrip();
     test_prop_subres_chain();
+    test_prop_integrate_radicals();
 }
