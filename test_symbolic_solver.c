@@ -1364,18 +1364,18 @@ void test_fmt_add_negative_rhs() {
 }
 
 void test_fmt_mul_coeff_one() {
-    // 1 * ln|x| → "ln|x|"
+    // 1 * ln(abs(x)) → "ln(abs(x))"
     assert_expr_str(
         create_mul(create_const(1), create_ln(create_var("x"))),
-        "ln|x|");
+        "ln(abs(x))");
     printf("  test_fmt_mul_coeff_one PASSED\n");
 }
 
 void test_fmt_mul_coeff_neg_one() {
-    // -1 * ln|x| → "-ln|x|"
+    // -1 * ln(abs(x)) → "-ln(abs(x))"
     assert_expr_str(
         create_mul(create_const(-1), create_ln(create_var("x"))),
-        "-ln|x|");
+        "-ln(abs(x))");
     printf("  test_fmt_mul_coeff_neg_one PASSED\n");
 }
 
@@ -1440,8 +1440,8 @@ void test_fmt_chained_add_negatives() {
 
 void test_fmt_integration_output() {
     // build the tree that integrate produces for (2x+3)/(x^2-1):
-    // 5/2 * ln|x - 1| + (-1/2) * ln|x + 1|
-    // should render as: "5/2 * ln|x - 1| - 1/2 * ln|x + 1|"
+    // 5/2 * ln(abs(x - 1)) + (-1/2) * ln(abs(x + 1))
+    // should render as: "5/2 * ln(abs(x - 1)) - 1/2 * ln(abs(x + 1))"
     Polynomial* p1 = create_polynomial();
     Rational one = rat_one_val(), neg1r = rat_from_int(-1);
     add_term(p1, &one, 1);
@@ -1457,7 +1457,7 @@ void test_fmt_integration_output() {
     Expr* term2 = create_mul(create_const_rat(&coeff2), create_ln(create_poly_expr(p2)));
     assert_expr_str(
         create_add(term1, term2),
-        "5/2 * ln|x - 1| - 1/2 * ln|x + 1|");
+        "5/2 * ln(abs(x - 1)) - 1/2 * ln(abs(x + 1))");
     rat_clear(&one); rat_clear(&neg1r); rat_clear(&one2);
     rat_clear(&coeff1); rat_clear(&coeff2);
     printf("  test_fmt_integration_output PASSED\n");

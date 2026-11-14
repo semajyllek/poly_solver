@@ -178,8 +178,8 @@ static void test_reg_integrate_lrt(void) {
         { "x/(x^4+1)", "1/2 * atan(x^2)" },                                 // complex pair, LogToAtan
         { "x^2/(x^6+1)", "1/3 * atan(x^3)" },                               // like terms merged
         { "(x^2+1)/(x^4-x^2+1)", "atan(x^3) + atan(x)" },                   // continuous atans
-        { "x/(x^4-2)", "-1/8 * sqrt(2) * ln|(x^2 + sqrt(2)) / (x^2 - sqrt(2))|" }, // real pair
-        { "3x^2/(x^3-2)", "ln|x^3 - 2|" },                                  // rational log coefficient
+        { "x/(x^4-2)", "-1/8 * sqrt(2) * ln(abs((x^2 + sqrt(2)) / (x^2 - sqrt(2))))" }, // real pair
+        { "3x^2/(x^3-2)", "ln(abs(x^3 - 2))" },                                  // rational log coefficient
         { "x/(x^4+3)", "1/6 * sqrt(3) * atan(x^2 / sqrt(3))" },             // complex pair, irrational i-part
         { "x^3/(x^8+5)", "1/20 * sqrt(5) * atan(x^4 / sqrt(5))" },
     };
@@ -197,15 +197,15 @@ static void test_reg_integrate_lrt(void) {
 static void test_reg_integrate_radicals(void) {
     struct { const char* f; const char* F; } cases[] = {
         { "1/(x^3-2)", // real root + one pair
-          "1/6 * 2^(1/3) * ln|x - 2^(1/3)| - 1/12 * 2^(1/3) * ln|x^2 + 2^(1/3) * x + 2^(2/3)| - 1/6 * 2^(1/3) * sqrt(3) * atan(1/3 * 2^(2/3) * sqrt(3) * x + 1/3 * sqrt(3))" },
+          "1/6 * 2^(1/3) * ln(abs(x - 2^(1/3))) - 1/12 * 2^(1/3) * ln(abs(x^2 + 2^(1/3) * x + 2^(2/3))) - 1/6 * 2^(1/3) * sqrt(3) * atan(1/3 * 2^(2/3) * sqrt(3) * x + 1/3 * sqrt(3))" },
         { "1/(x^4+1)", // textbook sqrt(2) form
-          "-1/8 * sqrt(2) * ln|x^2 - sqrt(2) * x + 1| + 1/4 * sqrt(2) * atan(sqrt(2) * x - 1) + 1/8 * sqrt(2) * ln|x^2 + sqrt(2) * x + 1| + 1/4 * sqrt(2) * atan(sqrt(2) * x + 1)" },
+          "-1/8 * sqrt(2) * ln(abs(x^2 - sqrt(2) * x + 1)) + 1/4 * sqrt(2) * atan(sqrt(2) * x - 1) + 1/8 * sqrt(2) * ln(abs(x^2 + sqrt(2) * x + 1)) + 1/4 * sqrt(2) * atan(sqrt(2) * x + 1)" },
         { "1/(x^6+1)", // cyclotomic factors, table angles
-          "1/3 * atan(x) - 1/12 * sqrt(3) * ln|x^2 - sqrt(3) * x + 1| + 1/6 * atan(2 * x - sqrt(3)) + 1/12 * sqrt(3) * ln|x^2 + sqrt(3) * x + 1| + 1/6 * atan(2 * x + sqrt(3))" },
+          "1/3 * atan(x) - 1/12 * sqrt(3) * ln(abs(x^2 - sqrt(3) * x + 1)) + 1/6 * atan(2 * x - sqrt(3)) + 1/12 * sqrt(3) * ln(abs(x^2 + sqrt(3) * x + 1)) + 1/6 * atan(2 * x + sqrt(3))" },
         { "1/(x^5-1)", // cyclotomic, symbolic cos(2*pi/5)
-          "1/5 * ln|x - 1| + 1/5 * cos(2*pi/5) * ln|x^2 - 2 * cos(2*pi/5) * x + 1| - 2/5 * sin(2*pi/5) * atan(csc(2*pi/5) * x - cot(2*pi/5)) - 1/5 * cos(pi/5) * ln|x^2 + 2 * cos(pi/5) * x + 1| - 2/5 * sin(pi/5) * atan(csc(pi/5) * x + cot(pi/5))" },
+          "1/5 * ln(abs(x - 1)) + 1/5 * cos(2*pi/5) * ln(abs(x^2 - 2 * cos(2*pi/5) * x + 1)) - 2/5 * sin(2*pi/5) * atan(csc(2*pi/5) * x - cot(2*pi/5)) - 1/5 * cos(pi/5) * ln(abs(x^2 + 2 * cos(pi/5) * x + 1)) - 2/5 * sin(pi/5) * atan(csc(pi/5) * x + cot(pi/5))" },
         { "1/(x^6-8)", // Q(x^2) = 4·Φ_3(x^2/2)
-          "1/48 * sqrt(2) * ln|(x - sqrt(2)) / (x + sqrt(2))| + 1/96 * sqrt(2) * ln|x^2 - sqrt(2) * x + 2| - 1/48 * sqrt(2) * sqrt(3) * atan(1/3 * sqrt(2) * sqrt(3) * x - 1/3 * sqrt(3)) - 1/96 * sqrt(2) * ln|x^2 + sqrt(2) * x + 2| - 1/48 * sqrt(2) * sqrt(3) * atan(1/3 * sqrt(2) * sqrt(3) * x + 1/3 * sqrt(3))" },
+          "1/48 * sqrt(2) * ln(abs((x - sqrt(2)) / (x + sqrt(2)))) + 1/96 * sqrt(2) * ln(abs(x^2 - sqrt(2) * x + 2)) - 1/48 * sqrt(2) * sqrt(3) * atan(1/3 * sqrt(2) * sqrt(3) * x - 1/3 * sqrt(3)) - 1/96 * sqrt(2) * ln(abs(x^2 + sqrt(2) * x + 2)) - 1/48 * sqrt(2) * sqrt(3) * atan(1/3 * sqrt(2) * sqrt(3) * x + 1/3 * sqrt(3))" },
     };
     for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
         Expr* f = parse_and_simplify(cases[i].f);
@@ -307,10 +307,10 @@ static void test_reg_solve_irrational_exact(void) {
 
 static void test_reg_integrate_complete(void) {
     Expr* r = integrate_str("1/((x-1)(x^2+1))"); // used to silently drop two terms
-    expect_str(expr_to_string(r), "1/2 * ln|x - 1| - 1/4 * ln|x^2 + 1| - 1/2 * atan(x)");
+    expect_str(expr_to_string(r), "1/2 * ln(abs(x - 1)) - 1/4 * ln(abs(x^2 + 1)) - 1/2 * atan(x)");
     free_expr(r);
     r = integrate_str("1/(2x^2 - 3x + 1)");      // used to come out doubled
-    expect_str(expr_to_string(r), "-ln|2x - 1| + ln|x - 1|");
+    expect_str(expr_to_string(r), "-ln(abs(2x - 1)) + ln(abs(x - 1))");
     free_expr(r);
     r = integrate_str("1/(x^2+1)^2");
     expect_str(expr_to_string(r), "1/2x / (x^2 + 1) + 1/2 * atan(x)");

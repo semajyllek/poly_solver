@@ -41,9 +41,9 @@ def run_cli(*args):
 def to_sympy(text):
     """Parse CLI output syntax (implicit products, ^) into SymPy.
 
-    ln|u| becomes log(u): d/dx ln|u| = u'/u = d/dx log(u) on every branch, and SymPy
+    ln(abs(u)) becomes log((u)): d/dx ln|u| = u'/u = d/dx log(u) on every branch, and SymPy
     cannot simplify the sign(u) terms that differentiating Abs would introduce."""
-    text = re.sub(r"ln\|([^|]*)\|", r"log(\1)", text).replace("^", "**")
+    text = text.replace("ln(abs(", "log((").replace("^", "**")
     return parse_expr(text, local_dict={"x": x, "t": t, "atan": sp.atan, "sqrt": sp.sqrt,
                                         "log": sp.log, "Abs": sp.Abs, "pi": sp.pi, "cos": sp.cos,
                                         "sin": sp.sin, "cot": sp.cot, "csc": sp.csc},

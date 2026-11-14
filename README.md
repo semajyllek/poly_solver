@@ -40,9 +40,9 @@ make sanitize && ./test_symbolic_solver   # AddressSanitizer + UBSan build of th
 | `factor`        | `./poly_solver factor "x^4 + 4"`                 | `(x^2 - 2x + 2)(x^2 + 2x + 2)`     |
 | `differentiate` | `./poly_solver differentiate "3x^2 + 4x + 2"`    | `6x + 4`                           |
 | `integrate`     | `./poly_solver integrate "6x^2 + 4x"`            | `2x^3 + 2x^2`                      |
-| `integrate`     | `./poly_solver integrate "1/((x-1)(x^2+1))"`     | `1/2 * ln\|x - 1\| - 1/4 * ln\|x^2 + 1\| - 1/2 * atan(x)` |
+| `integrate`     | `./poly_solver integrate "1/((x-1)(x^2+1))"`     | `1/2 * ln(abs(x - 1)) - 1/4 * ln(abs(x^2 + 1)) - 1/2 * atan(x)` |
 | `integrate`     | `./poly_solver integrate "x/(x^4+1)"`            | `1/2 * atan(x^2)`                  |
-| `integrate`     | `./poly_solver integrate "1/(x^4+1)"`            | `-1/8 * sqrt(2) * ln\|x^2 - sqrt(2) * x + 1\| + 1/4 * sqrt(2) * atan(sqrt(2) * x - 1) + 1/8 * sqrt(2) * ln\|x^2 + sqrt(2) * x + 1\| + 1/4 * sqrt(2) * atan(sqrt(2) * x + 1)` |
+| `integrate`     | `./poly_solver integrate "1/(x^4+1)"`            | `-1/8 * sqrt(2) * ln(abs(x^2 - sqrt(2) * x + 1)) + 1/4 * sqrt(2) * atan(sqrt(2) * x - 1) + 1/8 * sqrt(2) * ln(abs(x^2 + sqrt(2) * x + 1)) + 1/4 * sqrt(2) * atan(sqrt(2) * x + 1)` |
 | `solve`         | `./poly_solver solve "x^3 - 6x^2 + 11x - 6"`    | `x = 1, x = 2, x = 3`             |
 | `solve`         | `./poly_solver solve "x^2 - x - 1"`              | `x = 1/2 - 1/2*sqrt(5) ~ -0.6180339887, x = 1/2 + 1/2*sqrt(5) ~ 1.6180339887` |
 | `solve`         | `./poly_solver solve "x^3 - 2"`                  | `x ~ 1.2599210498, 2 non-real roots of (x^3 - 2)` |

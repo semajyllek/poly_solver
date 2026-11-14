@@ -949,9 +949,14 @@ For `N/D`:
    - `deg P ≥ 3`: Lazard–Rioboo–Trager (`logpart.c`, `subres.c`); see §11.3.
 
 ```
-∫ 1/((x-1)(x^2+1)) = 1/2 * ln|x - 1| - 1/4 * ln|x^2 + 1| - 1/2 * atan(x)
+∫ 1/((x-1)(x^2+1)) = 1/2 * ln(abs(x - 1)) - 1/4 * ln(abs(x^2 + 1)) - 1/2 * atan(x)
 ∫ 1/(x^2+1)^2      = 1/2x / (x^2 + 1) + 1/2 * atan(x)
-∫ 1/(x^2-2)        = 1/4 * sqrt(2) * ln|(x - sqrt(2)) / (x + sqrt(2))|
+∫ 1/(x^2-2)        = 1/4 * sqrt(2) * ln(abs((x - sqrt(2)) / (x + sqrt(2))))
+```
+
+The formulas here write `ln|u|`; the program prints it as `ln(abs(u))`, which nests and is easy for other tools to parse.
+
+```
 ∫ 1/(x^3-2)        = RootSum(108t^3 - 1, t -> t * ln(x - 6t))
 ∫ x/(x^4+1)        = 1/2 * atan(x^2)
 ```

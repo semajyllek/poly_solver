@@ -187,7 +187,7 @@ static bool is_negative_term(const Expr* e) {
 
 static void expr_to_string_impl(const Expr* expr, StrBuf* sb);
 
-// emit a term with its sign flipped: -1/2 * ln|x| → 1/2 * ln|x|
+// emit a term with its sign flipped: -1/2 * ln(abs(x)) → 1/2 * ln(abs(x))
 static void emit_negated_term(const Expr* expr, StrBuf* sb) {
     if (is_neg_const(expr)) {
         Rational pos; rat_init(&pos);
@@ -394,9 +394,9 @@ static void expr_to_string_impl(const Expr* expr, StrBuf* sb) {
             break;
         }
         case EXPR_LN:
-            sb_append(sb, "ln|");
+            sb_append(sb, "ln(abs(");
             expr_to_string_impl(expr->ln_arg, sb);
-            sb_append(sb, "|");
+            sb_append(sb, "))");
             break;
         case EXPR_ATAN:
         case EXPR_SQRT:

@@ -44,7 +44,7 @@ typedef struct Expr {
             Polynomial* num;
             Polynomial* den;
         } ratfn;
-        struct Expr* ln_arg;       // EXPR_LN: ln|arg|
+        struct Expr* ln_arg;       // EXPR_LN: ln(abs(arg))
         struct Expr* fn_arg;       // EXPR_ATAN: atan(arg), EXPR_SQRT: sqrt(arg)
         struct {                   // EXPR_ROOTSUM: Σ over roots t of q of t·ln(S(t, x))
             Polynomial* q;         //   univariate in t, irreducible over Q
