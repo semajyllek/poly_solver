@@ -269,12 +269,6 @@ static Expr* integrate_quadratic(const Polynomial* num, const Polynomial* P) {
 
 static bool expand_roots = true; // integrate_rootsum turns this off
 
-static bool has_rootsum(const Expr* e) {
-    if (!e) return false;
-    if (e->type == EXPR_ROOTSUM) return true;
-    return e->type == EXPR_BINOP && (has_rootsum(e->binop.left) || has_rootsum(e->binop.right));
-}
-
 static Expr* integrate_simple(const Polynomial* num, const Polynomial* P) {
     if (poly_is_zero(num)) return NULL;
     int d = polynomial_degree(P);
@@ -290,7 +284,7 @@ static Expr* integrate_simple(const Polynomial* num, const Polynomial* P) {
     }
     if (d == 2) return integrate_quadratic(num, P);
     Expr* e = lrt_log_part(num, P);                      // Lazard–Rioboo–Trager
-    if (!expand_roots || !has_rootsum(e)) return e;
+    if (!expand_roots || !e || !expr_has_rootsum(e)) return e;
     Expr* r = root_log_part(num, P);                     // RootSum -> radicals when P's roots are known
     if (!r) return e;
     free_expr(e);

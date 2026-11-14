@@ -890,7 +890,9 @@ The method is Vincent–Collins–Akritas bisection driven by Descartes' rule of
 
 - Rational roots: `x = 3/2`.
 - Quadratic factors print exact radicals: `x = 1/2 - 1/2*sqrt(5) ~ -0.6180339887`, or `x = -1/2 +/- 1/2*sqrt(3)*i` for complex roots.
-- Higher-degree factors print their real roots as `x ~ 1.2599210498` and the number of non-real roots: `2 non-real roots of (x^3 - 2)`. Complex roots of degree ≥ 3 factors are counted, not located.
+- Binomial and rescaled-cyclotomic factors (`known_roots`, §11.4) print every root exactly: real ones as `x = 2^(1/3) ~ 1.2599210498`, conjugate pairs as `x = ρcosθ +/- ρsinθ * i ~ (a +/- bi)`, e.g. `x = cos(2*pi/5) +/- sin(2*pi/5) * i` for `x^5 - 1`. The real approximations come from the certified intervals; the complex ones are evaluated in double precision, for display only.
+- Other higher-degree factors print their real roots as `x ~ -0.6823278038` and the number of non-real roots: `2 non-real roots of (x^3 + x + 1)`.
+- Isolation can return an interval whose endpoint is a neighbouring exact root (`(0, 4)` beside `[0, 0]` for `x(x-1)(x+1)`). `refine_root` then takes the sign just right of `lo` from `f'(lo)`, which is nonzero because `f` is square-free.
 
 For compatibility, `Solutions` still exposes `irrational_roots` (doubles from the certified intervals) and `irreducible_factors` (factors that have non-real roots).
 
@@ -1009,6 +1011,22 @@ Anything else stays `RootSum`. For example, `x^5 + x + 3` has Galois group S5, s
 - `test_prop_integrate_radicals` draws random `c·x^n ± e` and `x^(sN) ± b^N` denominators.
 - `test_prop_integrate_derivative` checks `integrate_rootsum` exactly and `integrate` numerically.
 - `crosscheck_sympy.py` adds a stream of binomial and cyclotomic integrands and checks them at 60 digits.
+
+### 11.5 Definite integrals (`definite.c`, `constfold.c`)
+
+`./poly_solver integrate "f" a b` with rational bounds:
+
+1. **Divergence.** If the denominator has a root in `[a, b]`, the integral diverges (every pole of a rational function has order ≥ 1). This is decided exactly: zero tests at `a` and `b`, then isolating intervals refined until each root is clearly inside or outside.
+2. **Antiderivative.** `F = integrate(f)`. If it contains a `RootSum`, only the numeric value is given: its complex logarithms have branch cuts, so `F(b) − F(a)` would not be trustworthy.
+3. **Evaluation.** `expr_at` substitutes `x = a` and `x = b` and folds the constants exactly (`constfold.c`):
+   - products collect their rational factor, and `sqrt(m)·sqrt(m) = m`;
+   - sums collect their rational part and merge like terms;
+   - `ln|c·m^e·…|` splits into logs of rationals, which merge when their coefficients are integer multiples (`-ln(3) + 2ln(2) = ln(4/3)`);
+   - `atan` takes its exact values at `0`, `±1`, `±sqrt(3)` and `±1/sqrt(3)`, and `atan(−u) = −atan(u)`.
+4. **atan jumps.** LRT can produce `atan(N/(c·W))`, for example `∫ (x²+1)/(x⁴+3x²+1) = 1/5·sqrt(5)·atan((x² − 1)/(sqrt(5)·x))`. This jumps by `±π` where `W` crosses zero. Each root of `W` inside `(a, b)` is isolated exactly, and the jump's direction is read from the sign of the argument on either side. The correction is `∓π` times the term's coefficient. A root of `W` at a bound uses the one-sided limit `±π/2`.
+5. **Check.** The exact value is evaluated in double precision and compared with adaptive Simpson quadrature of `f`: 64 starting pieces, relative tolerance 1e-10, and a cap of 4,000,000 evaluations, which is enough to resolve an integrand rising steeply next to a pole just outside the bounds. If they disagree by more than 1e-8 (relative), only the number is reported, with a note. The test suite asserts that this never happens on generated inputs.
+
+Example: `∫_{-1}^{1} (x²+1)/(x⁴+3x²+1) dx = 1/5 * sqrt(5) * pi`. The naive `F(1) − F(−1)` would be 0, because the atan jump at `x = 0` would be missed.
 
 ---
 

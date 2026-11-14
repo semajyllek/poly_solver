@@ -17,6 +17,9 @@
 #include "matrix.h"
 #include "logpart.h"
 #include "test_subres_ref.h"
+#include "rootform.h"
+#include "definite.h"
+#include <complex.h>
 
 static bool derivative_is(const Expr* F, const Polynomial* num, const Polynomial* den);
 
@@ -218,6 +221,50 @@ static void test_reg_integrate_radicals(void) {
     printf("  test_reg_integrate_radicals PASSED (%zu cases)\n", sizeof cases / sizeof cases[0]);
 }
 
+// definite integrals: exact values (folded constants, atan jump corrections, a pole of an
+// atan argument at a bound), divergence on a pole in [a, b], and the RootSum fallback
+static DefiniteResult definite_str(const char* f, const char* a, const char* b) {
+    Expr *e = parse_and_simplify(f), *ea = parse_and_simplify(a), *eb = parse_and_simplify(b);
+    Rational ra, rb;
+    rat_init(&ra); rat_init(&rb);
+    poly_coeff(&ra, ea->poly, 0);
+    poly_coeff(&rb, eb->poly, 0);
+    Bounds ab = { &ra, &rb };
+    DefiniteResult r = integrate_definite(e, &ab);
+    rat_clear(&ra); rat_clear(&rb);
+    free_expr(e); free_expr(ea); free_expr(eb);
+    return r;
+}
+
+static void test_reg_integrate_definite(void) {
+    const char* cases[][4] = {
+        { "1/(x+1)", "0", "1", "ln(2)" },
+        { "1/(x^2+1)", "1", "0", "-1/4 * pi" },
+        { "1/((x+1)(x+2))", "0", "1", "ln(4/3)" },
+        { "1/(x^2+x+1)", "0", "1", "1/9 * sqrt(3) * pi" },
+        { "1/(x^4+x^2+1)", "-1", "1", "1/6 * sqrt(3) * pi + 1/2 * ln(3)" },
+        { "1/(x^2+1)^2", "0", "1", "1/8 * pi + 1/4" },
+        { "(x^2+1)/(x^4+3x^2+1)", "-1", "1", "1/5 * sqrt(5) * pi" },     // atan(N/(sqrt(5)·x)) jumps at 0
+        { "(x^2+1)/(x^4+4x^2+1)", "0", "1", "1/12 * sqrt(6) * pi" },     // that pole at a bound
+        { "1/(x^2-2)", "-1", "1", "1/2 * sqrt(2) * ln(abs(1 - sqrt(2))) - 1/2 * sqrt(2) * ln(abs(1 + sqrt(2)))" }, // |-1 - sqrt(2)|
+        { "x^2", "0", "3", "9" },
+        { "x", "2", "2", "0" },
+    };
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        DefiniteResult r = definite_str(cases[i][0], cases[i][1], cases[i][2]);
+        assert(!r.error && r.exact);
+        expect_str(expr_to_string(r.exact), cases[i][3]);
+        definite_free(&r);
+    }
+    DefiniteResult d = definite_str("1/x", "-1", "1");               // pole inside
+    assert(d.error && !d.exact);
+    d = definite_str("1/(x-1)^2", "1", "2");                         // pole at a bound
+    assert(d.error && !d.exact);
+    d = definite_str("1/(x^5+x+3)", "0", "1");                       // RootSum: number only
+    assert(!d.error && !d.exact && d.note && fabs(d.approx - 0.2777409846) < 1e-9);
+    printf("  test_reg_integrate_definite PASSED (%zu exact, 3 special)\n", sizeof cases / sizeof cases[0]);
+}
+
 // lrt_log_part on its own, including reducible square-free d where R(t) has repeated
 // roots (x^3 - x with a = 1: coefficients -1, 1/2, 1/2 force S_2 = a - t·d')
 static void test_lrt_direct(void) {
@@ -286,6 +333,30 @@ static void test_reg_cyclotomic_counts(void) {
     printf("  test_reg_cyclotomic_counts PASSED\n");
 }
 
+// isolation may hand back an interval whose endpoint is a neighbouring exact root, e.g.
+// (0, 4) beside [0, 0] for x(x-1)(x+1); refinement must still close in on the inner root
+static void test_reg_refine_shared_endpoint(void) {
+    const char* polys[] = { "x(x-1)(x+1)", "(x-1)(x-2)(x^2-3)", "x(x^2-2)", "(x-1)(x^3-2)" };
+    Rational w = rat_from_si(1, 1000000), vlo, vhi;
+    rat_init(&vlo); rat_init(&vhi);
+    for (size_t i = 0; i < sizeof polys / sizeof polys[0]; i++) {
+        Expr* e = parse_and_simplify(polys[i]);
+        RootIntervalList L = isolate_real_roots(e->poly);
+        for (int k = 0; k < L.count; k++) {
+            refine_root(&L.items[k], e->poly, &w);
+            poly_eval_rat(&vlo, e->poly, &L.items[k].lo);
+            poly_eval_rat(&vhi, e->poly, &L.items[k].hi);
+            bool exact = rat_eq(&L.items[k].lo, &L.items[k].hi) && rat_is_zero(&vlo);
+            bool narrow = rat_to_double(&L.items[k].hi) - rat_to_double(&L.items[k].lo) <= 1e-6;
+            assert(exact || (narrow && mpq_sgn(vlo.val) * mpq_sgn(vhi.val) < 0));
+        }
+        root_interval_list_free(&L);
+        free_expr(e);
+    }
+    rat_clear(&w); rat_clear(&vlo); rat_clear(&vhi);
+    printf("  test_reg_refine_shared_endpoint PASSED\n");
+}
+
 static void test_reg_solve_irrational_exact(void) {
     Expr* e = parse_and_simplify("x^3 - 2");
     Solutions* s = solve_polynomial(e->poly);
@@ -293,7 +364,8 @@ static void test_reg_solve_irrational_exact(void) {
     double lo = rat_to_double(&s->irr[0].real[0].lo), hi = rat_to_double(&s->irr[0].real[0].hi);
     assert(lo <= cbrt(2.0) && cbrt(2.0) <= hi && hi - lo < 1e-11);
     char* str = solutions_to_string(s);
-    assert(strstr(str, "x ~ 1.2599210498") && strstr(str, "2 non-real roots"));
+    assert(strstr(str, "x = 2^(1/3) ~ 1.2599210498"));                    // exact, plus the decimal
+    assert(strstr(str, "x = -1/2 * 2^(1/3) +/- 1/2 * 2^(1/3) * sqrt(3) * i"));
     free(str);
     free_solutions(s);
     free_expr(e);
@@ -302,6 +374,20 @@ static void test_reg_solve_irrational_exact(void) {
     expect_str(solutions_to_string(s), "x = -1/2 +/- 1/2*sqrt(3)*i");
     free_solutions(s);
     free_expr(q);
+    const char* known[][2] = {                                              // binomial, cyclotomic
+        { "x^6 + 2", "x = 1/2 * 2^(1/6) * sqrt(3) +/- 1/2 * 2^(1/6) * i ~ (0.9720806486 +/- 0.5612310242i), "
+                     "x = +/- 2^(1/6) * i ~ (0.0000000000 +/- 1.1224620483i), "
+                     "x = -1/2 * 2^(1/6) * sqrt(3) +/- 1/2 * 2^(1/6) * i ~ (-0.9720806486 +/- 0.5612310242i)" },
+        { "x^5 - 1", "x = 1, x = cos(2*pi/5) +/- sin(2*pi/5) * i ~ (0.3090169944 +/- 0.9510565163i), "
+                     "x = -cos(pi/5) +/- sin(pi/5) * i ~ (-0.8090169944 +/- 0.5877852523i)" },
+    };
+    for (size_t i = 0; i < sizeof known / sizeof known[0]; i++) {
+        q = parse_and_simplify(known[i][0]);
+        s = solve_polynomial(q->poly);
+        expect_str(solutions_to_string(s), known[i][1]);
+        free_solutions(s);
+        free_expr(q);
+    }
     printf("  test_reg_solve_irrational_exact PASSED\n");
 }
 
@@ -902,6 +988,93 @@ static void test_prop_integrate_radicals(void) {
            TRIALS, expanded, kept);
 }
 
+// P(z) in complex double precision
+static double _Complex poly_at(const Polynomial* P, double _Complex z) {
+    double _Complex v = 0;
+    for (int k = polynomial_degree(P); k >= 0; k--) {
+        Rational c;
+        rat_init(&c);
+        poly_coeff(&c, P, k);
+        v = v * z + rat_to_double(&c);
+        rat_clear(&c);
+    }
+    return v;
+}
+
+// every exact root that solve prints for a binomial/cyclotomic factor is a root of it,
+// and there are exactly deg P of them (conjugate pairs counted twice)
+static void test_prop_exact_roots(void) {
+    int factors = 0;
+    for (int trial = 0; trial < TRIALS; trial++) {
+        Polynomial* d = radical_denominator();
+        Solutions* s = solve_polynomial(d);
+        for (int i = 0; i < s->num_irr; i++) {
+            const Polynomial* P = s->irr[i].factor;
+            RootSet rs;
+            if (!known_roots(P, &rs)) continue;
+            double scale = 0;
+            for (const Term* t = P->head; t; t = t->next) scale += fabs(rat_to_double(&t->coeff));
+            int roots = 0;
+            for (int j = 0; j < rs.count; j++) {
+                Rational theta = rat_from_si(rs.js[j], rs.L);
+                Expr *re = root_part(&rs, &theta, TRIG_COS), *im = root_part(&rs, &theta, TRIG_SIN);
+                bool ok = true;
+                double a = re ? expr_eval(re, 0, &ok) : 0, b = im ? expr_eval(im, 0, &ok) : 0;
+                assert(ok && cabs(poly_at(P, a + b * I)) < 1e-9 * scale);
+                roots++;
+                if (re) free_expr(re);
+                if (im) free_expr(im);
+                rat_clear(&theta);
+            }
+            assert(roots == polynomial_degree(P));
+            root_set_free(&rs);
+            factors++;
+        }
+        char* str = solutions_to_string(s);                   // and the printer copes with all of them
+        assert(!strstr(str, "non-real roots of (") || strstr(str, "x^4"));  // only Capelli quartics left
+        free(str);
+        free_solutions(s);
+        free_polynomial(d);
+    }
+    printf("  test_prop_exact_roots PASSED (%d trials, %d factors with exact roots)\n", TRIALS, factors);
+}
+
+// random rational bound p/q with |p| <= 12, q <= 4
+static void random_bound(Rational* r) { rat_set_si(r, rnd(-12, 12), rnd(1, 4)); }
+
+// definite integrals of generated integrands over random bounds: the exact value must always
+// pass the built-in quadrature check (a failure leaves only the number and a note)
+static void test_prop_integrate_definite(void) {
+    int exact = 0, poles = 0, numeric = 0;
+    for (int trial = 0; trial < TRIALS; trial++) {
+        Generated g = generate_product();
+        long nc[4];
+        int nd = (int)rnd(0, 3);
+        for (int i = 0; i <= nd; i++) nc[i] = rnd(-9, 9);
+        nc[nd] = nc[nd] ? nc[nd] : 1;
+        Polynomial* num = poly_si(nc, nd);
+        Expr* f = create_div(create_poly_expr(poly_copy(num)), create_poly_expr(poly_copy(g.product)));
+        Rational a, b;
+        rat_init(&a); rat_init(&b);
+        random_bound(&a);
+        random_bound(&b);
+        DefiniteResult r = integrate_definite(f, &(Bounds){ &a, &b });
+        if (r.note && strstr(r.note, "internal")) {
+            char* fs = expr_to_string(f);
+            fprintf(stderr, "    definite integral check failed: %s on [%g, %g]\n", fs, rat_to_double(&a), rat_to_double(&b));
+            assert(0);
+        }
+        exact += r.exact != NULL;
+        poles += r.error != NULL;
+        numeric += !r.error && !r.exact;
+        definite_free(&r);
+        rat_clear(&a); rat_clear(&b);
+        free_expr(f); free_polynomial(num); free_generated(&g);
+    }
+    printf("  test_prop_integrate_definite PASSED (%d trials: %d exact, %d RootSum numeric, %d divergent)\n",
+           TRIALS, exact, numeric, poles);
+}
+
 static Matrix* random_matrix(int n) {
     Matrix* A = matrix_create(n, n);
     for (int i = 0; i < n * n; i++) rat_set_si(&A->data[i], rnd(-20, 20), rnd(1, 4));
@@ -978,9 +1151,11 @@ void run_property_tests(void) {
     test_reg_factor_beyond_rational_roots();
     test_reg_cyclotomic_counts();
     test_reg_solve_irrational_exact();
+    test_reg_refine_shared_endpoint();
     test_reg_integrate_complete();
     test_reg_integrate_lrt();
     test_reg_integrate_radicals();
+    test_reg_integrate_definite();
     test_lrt_direct();
     printf("\nProperty Tests (seed %s):\n", env ? env : "default");
     test_prop_factor_roundtrip();
@@ -990,4 +1165,6 @@ void run_property_tests(void) {
     test_prop_print_parse_roundtrip();
     test_prop_subres_chain();
     test_prop_integrate_radicals();
+    test_prop_exact_roots();
+    test_prop_integrate_definite();
 }

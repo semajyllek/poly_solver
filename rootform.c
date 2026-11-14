@@ -10,15 +10,6 @@
 #include "surd.h"
 #include <stdlib.h>
 
-// the roots are R^(1/n)·e^(iπ·j/L) for j in js
-typedef struct {
-    Rational R;
-    int n;
-    int L;
-    int* js;
-    int count;
-} RootSet;
-
 // ρ = R^(1/n) is set by the caller; room for `roots` angles
 static void root_set_init(RootSet* rs, const Rational* R, int roots) {
     rat_init_set(&rs->R, R);
@@ -26,7 +17,7 @@ static void root_set_init(RootSet* rs, const Rational* R, int roots) {
     rs->count = 0;
 }
 
-static void root_set_free(RootSet* rs) {
+void root_set_free(RootSet* rs) {
     rat_clear(&rs->R);
     free(rs->js);
 }
@@ -260,9 +251,21 @@ static Expr* pair_term(const RootAt* at) {
     return e;
 }
 
+bool known_roots(const Polynomial* P, RootSet* rs) {
+    return polynomial_degree(P) >= 3 && (binomial_roots(P, rs) || cyclotomic_roots(P, rs));
+}
+
+Expr* root_part(const RootSet* rs, const Rational* theta, TrigKind kind) {
+    RootAt at = { rs, NULL, *theta };                     // shares theta's value, not cleared here
+    RealConst k = rho_term(&at, (RhoSpec){ 1, 1, kind });
+    Expr* e = rc_add_terms(NULL, &k, -1);
+    rc_clear(&k);
+    return e;
+}
+
 Expr* root_log_part(const Polynomial* a, const Polynomial* P) {
     RootSet rs;
-    if (polynomial_degree(P) < 3 || (!binomial_roots(P, &rs) && !cyclotomic_roots(P, &rs))) return NULL;
+    if (!known_roots(P, &rs)) return NULL;
     Polynomial* h = residues(a, P);
     Rational one = rat_one_val();
     Expr* result = NULL;

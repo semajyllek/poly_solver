@@ -112,6 +112,40 @@ Expr* create_trig(TrigKind kind, const Rational* angle) {
     return e;
 }
 
+Expr* create_pi(void) {
+    Rational one = rat_one_val();
+    Expr* e = create_trig(TRIG_NONE, &one);
+    rat_clear(&one);
+    return e;
+}
+
+Expr* expr_copy(const Expr* e) {
+    switch (e->type) {
+        case EXPR_CONST: return create_const_rat(&e->constant);
+        case EXPR_VAR: return create_var(e->var_name);
+        case EXPR_BINOP: return create_binop(e->binop.op, expr_copy(e->binop.left), expr_copy(e->binop.right));
+        case EXPR_NEG: return create_neg(expr_copy(e->operand));
+        case EXPR_POLY: return create_poly_expr(poly_copy(e->poly));
+        case EXPR_RATIONAL_FN: return create_rational_fn(poly_copy(e->ratfn.num), poly_copy(e->ratfn.den));
+        case EXPR_LN: return create_ln(expr_copy(e->ln_arg));
+        case EXPR_ATAN: return create_atan(expr_copy(e->fn_arg));
+        case EXPR_SQRT: return create_sqrt(expr_copy(e->fn_arg));
+        case EXPR_TRIG: return create_trig(e->trig.kind, &e->trig.angle);
+        case EXPR_ROOTSUM: {
+            Polynomial** s = malloc((size_t)(e->rootsum.s_deg + 1) * sizeof(Polynomial*));
+            for (int k = 0; k <= e->rootsum.s_deg; k++) s[k] = poly_copy(e->rootsum.s[k]);
+            return create_rootsum(poly_copy(e->rootsum.q), s, e->rootsum.s_deg);
+        }
+    }
+    return NULL;
+}
+
+bool expr_has_rootsum(const Expr* e) {
+    if (e->type == EXPR_ROOTSUM) return true;
+    if (e->type == EXPR_BINOP) return expr_has_rootsum(e->binop.left) || expr_has_rootsum(e->binop.right);
+    return e->type == EXPR_NEG && expr_has_rootsum(e->operand);
+}
+
 // --- memory ---
 
 void free_expr(Expr* expr) {
@@ -305,6 +339,7 @@ static void emit_pow(const Expr* base, const Expr* exp, StrBuf* sb) {
 // cos(pi/7), sin(3*pi/10), ...
 static void emit_trig(const Expr* e, StrBuf* sb) {
     static const char* names[] = { "", "cos", "sin", "cot", "csc" };
+    if (e->trig.kind == TRIG_NONE) { sb_append(sb, "pi"); return; } // create_pi: angle 1
     const mpq_t* a = &e->trig.angle.val;
     sb_appendf(sb, "%s(", names[e->trig.kind]);
     if (mpz_cmp_ui(mpq_numref(*a), 1) != 0) { sb_append_owned(sb, mpz_get_str(NULL, 10, mpq_numref(*a))); sb_append(sb, "*"); }
@@ -394,6 +429,12 @@ static void expr_to_string_impl(const Expr* expr, StrBuf* sb) {
             break;
         }
         case EXPR_LN:
+            if (expr->ln_arg->type == EXPR_CONST && mpq_sgn(expr->ln_arg->constant.val) > 0) {
+                sb_append(sb, "ln(");                    // ln(3/2): no abs for a positive number
+                expr_to_string_impl(expr->ln_arg, sb);
+                sb_append(sb, ")");
+                break;
+            }
             sb_append(sb, "ln(abs(");
             expr_to_string_impl(expr->ln_arg, sb);
             sb_append(sb, "))");
@@ -829,7 +870,7 @@ double expr_eval(const Expr* e, double x, bool* ok) {
                 case TRIG_SIN: return sin(a);
                 case TRIG_COT: return cos(a) / sin(a);
                 case TRIG_CSC: return 1.0 / sin(a);
-                case TRIG_NONE: break;
+                case TRIG_NONE: return a;
             }
             break;
         }

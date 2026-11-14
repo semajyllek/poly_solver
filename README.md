@@ -8,7 +8,8 @@ A fast C library and CLI for symbolic polynomial algebra and linear systems with
 - **Simplification**: canonicalizes expressions by combining like terms and reducing rational functions.
 - **Complete factoring over Q**: Yun square-free decomposition plus Berlekamp–Zassenhaus (Cantor–Zassenhaus mod p, Hensel lifting, recombination), e.g. `x^4 + 4 = (x^2 - 2x + 2)(x^2 + 2x + 2)`.
 - **Differentiation & integration**: every rational function over Q can be integrated. Hermite reduction gives the rational part. Linear and quadratic factors get `ln`/`atan` closed forms. Higher-degree factors use **Lazard–Rioboo–Trager**: rational and quadratic log coefficients come out as `ln`/`atan` (Rioboo's continuous arctangents). When the factor's roots are known exactly (binomials `x^n ± c` and rescaled cyclotomics, such as `x^5 - 1` or `x^4 + 2x^2 + 4`), the answer is written with radicals and real `ln`/`atan`, using `cos(kπ/N)` constants where no square-root form exists. Otherwise it is an exact `RootSum`.
-- **Equation solving**: exact rational roots, exact radicals for quadratic factors (including complex roots), and certified real-root intervals (Descartes/VCA bisection) for higher degrees.
+- **Equation solving**: exact rational roots, exact radicals for quadratic factors (including complex roots), and every root exactly (real and complex) for binomial and cyclotomic-type factors such as `x^6 + 2` or `x^5 - 1`. Other higher-degree factors get certified real-root intervals (Descartes/VCA bisection) and a count of their non-real roots.
+- **Definite integrals**: `integrate "f" a b` gives the exact value with constants folded (`ln(4/3)`, `1/9 * sqrt(3) * pi`) plus a decimal, reports divergence when the denominator vanishes in `[a, b]`, and checks every exact value against numeric quadrature at run time.
 - **Linear systems**: solve Ax=b, determinant, inverse, rank and RREF with exact rational arithmetic.
 
 ## Build
@@ -29,6 +30,7 @@ make sanitize && ./test_symbolic_solver   # AddressSanitizer + UBSan build of th
 
 ```bash
 ./poly_solver <action> "<expression>"
+./poly_solver integrate "<expression>" <a> <b>   # definite integral; bounds are rationals like 1/2
 ```
 
 ### Polynomial Actions
@@ -42,10 +44,13 @@ make sanitize && ./test_symbolic_solver   # AddressSanitizer + UBSan build of th
 | `integrate`     | `./poly_solver integrate "6x^2 + 4x"`            | `2x^3 + 2x^2`                      |
 | `integrate`     | `./poly_solver integrate "1/((x-1)(x^2+1))"`     | `1/2 * ln(abs(x - 1)) - 1/4 * ln(abs(x^2 + 1)) - 1/2 * atan(x)` |
 | `integrate`     | `./poly_solver integrate "x/(x^4+1)"`            | `1/2 * atan(x^2)`                  |
+| `integrate`     | `./poly_solver integrate "1/(x^2+x+1)" 0 1`       | `1/9 * sqrt(3) * pi ~ 0.6045997881` |
+| `integrate`     | `./poly_solver integrate "1/x" -1 1`              | `Error: the integrand has a pole in [a, b], so the integral diverges.` |
 | `integrate`     | `./poly_solver integrate "1/(x^4+1)"`            | `-1/8 * sqrt(2) * ln(abs(x^2 - sqrt(2) * x + 1)) + 1/4 * sqrt(2) * atan(sqrt(2) * x - 1) + 1/8 * sqrt(2) * ln(abs(x^2 + sqrt(2) * x + 1)) + 1/4 * sqrt(2) * atan(sqrt(2) * x + 1)` |
 | `solve`         | `./poly_solver solve "x^3 - 6x^2 + 11x - 6"`    | `x = 1, x = 2, x = 3`             |
 | `solve`         | `./poly_solver solve "x^2 - x - 1"`              | `x = 1/2 - 1/2*sqrt(5) ~ -0.6180339887, x = 1/2 + 1/2*sqrt(5) ~ 1.6180339887` |
-| `solve`         | `./poly_solver solve "x^3 - 2"`                  | `x ~ 1.2599210498, 2 non-real roots of (x^3 - 2)` |
+| `solve`         | `./poly_solver solve "x^3 - 2"`                  | `x = 2^(1/3) ~ 1.2599210498, x = -1/2 * 2^(1/3) +/- 1/2 * 2^(1/3) * sqrt(3) * i ~ (-0.6299605249 +/- 1.0911236360i)` |
+| `solve`         | `./poly_solver solve "x^3 + x + 1"`              | `x ~ -0.6823278038, 2 non-real roots of (x^3 + x + 1)` |
 
 ### Linear Algebra Actions
 
@@ -72,7 +77,8 @@ Matrix entries can be integers, fractions or decimals of any size (`1/3`, `-5/7`
 ### Limits
 
 - When a logarithm's coefficient is an algebraic number of degree 3 or more, the answer is an exact `RootSum(q(t), t -> t * ln(S(t, x)))`: the sum of `t·ln(S(t, x))` over the roots of `q`. This happens only when the roots aren't known in closed form. Example: `1/(x^5+x+3)`, whose roots can't be written with radicals at all (its Galois group is S5).
-- Complex roots of irreducible factors of degree 3 or more are counted but not located.
+- Complex roots of other irreducible factors of degree 3 or more (for example `x^3 + x + 1`, or the Capelli factors `x^4 ± 2x^2 + 2` of `x^8 + 4`) are counted but not located.
+- Definite integrals take rational bounds only (no infinite bounds). When the antiderivative has a `RootSum`, only the numeric value is given. Exact values are folded but not fully simplified: `atan(-1 + sqrt(2)) + atan(1 + sqrt(2))` is left as is rather than rewritten as `pi/2`.
 
 ## Tests
 
@@ -86,6 +92,8 @@ make && ./test_symbolic_solver
   - `content · Π factors == input` exactly
   - each root interval brackets a sign change
   - the exact derivative of every antiderivative equals the integrand (for `RootSum` terms, compared exactly at rational points via traces over Q(α)); answers with radicals and trig constants are checked numerically in double precision, and to 60 digits by the SymPy cross-check
+  - every exact root printed for a binomial/cyclotomic factor satisfies the factor
+  - every exact definite integral agrees with adaptive quadrature (the run-time check never fails)
   - `A·solve(A, A·x) == A·x`
   - parse(print(p)) == p
 
@@ -97,7 +105,7 @@ A differential check against SymPy is also available. It is optional and needs `
 make cli && python3 crosscheck_sympy.py --trials 40   # about a minute; --seed N for others
 ```
 
-It confirms each factorization multiplies back, each root and root count, and each antiderivative by differentiating it. Answers containing `RootSum`, radicals or trig constants are checked at 60 significant digits, including on a separate stream of binomial and cyclotomic denominators.
+It confirms each factorization multiplies back, each root and root count (every exactly printed root is substituted back at 50 digits), each antiderivative by differentiating it, and each definite integral against `mpmath.quad` at 40 digits. Answers containing `RootSum`, radicals or trig constants are checked at 60 significant digits, including on a separate stream of binomial and cyclotomic denominators.
 
 ## Architecture
 
@@ -108,8 +116,9 @@ It confirms each factorization multiplies back, each root and root count, and ea
 5. **Parser** (`token.c`, `parser.c`): shunting-yard with implicit multiplication and unary minus
 6. **Factoring** (`factor.c`, `zx_factor.c`): Yun square-free decomposition + Berlekamp–Zassenhaus
 7. **Roots and solver** (`roots.c`, `solver.c`): Descartes/VCA isolation, exact refinement, radicals
-8. **Integration** (`integrate.c`, `partial_frac.c`): Hermite reduction, log/atan terms, partial fractions
-9. **Linear algebra** (`matrix.c`): Gaussian elimination over exact rationals
+8. **Integration** (`integrate.c`, `logpart.c`, `subres.c`, `rootform.c`, `surd.c`, `partial_frac.c`): Hermite reduction, log/atan terms, Lazard–Rioboo–Trager, radical forms, partial fractions
+9. **Definite integrals** (`definite.c`, `constfold.c`): pole detection, exact evaluation with atan jump corrections, constant folding, quadrature check
+10. **Linear algebra** (`matrix.c`): Gaussian elimination over exact rationals
 
 See [INTERNALS.md](INTERNALS.md) for how each algorithm works.
 

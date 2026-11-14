@@ -7,6 +7,7 @@
 #include "factor.h"
 #include "solver.h"
 #include "matrix.h"
+#include "definite.h"
 
 static void print_usage(const char* program_name) {
     fprintf(stderr, "Usage: %s <action> \"<expression>\"\n", program_name);
@@ -14,7 +15,7 @@ static void print_usage(const char* program_name) {
     fprintf(stderr, "  simplify      - Simplify the expression\n");
     fprintf(stderr, "  factor        - Factor the expression\n");
     fprintf(stderr, "  differentiate - Differentiate the expression\n");
-    fprintf(stderr, "  integrate     - Integrate the expression\n");
+    fprintf(stderr, "  integrate     - Integrate the expression (add bounds a b for a definite integral)\n");
     fprintf(stderr, "  solve         - Solve polynomial equation (= 0)\n");
     fprintf(stderr, "  solve_system  - Solve linear system: solve_system \"[[A]]\" \"[b]\"\n");
     fprintf(stderr, "  det           - Determinant of a matrix\n");
@@ -73,6 +74,39 @@ static int handle_matrix_action(const char* action, const char* input) {
     return 0;
 }
 
+// a bound such as "1/2" or "-3": a constant expression with a rational value
+static bool parse_bound(Rational* out, const char* text) {
+    Expr* e = parse_and_simplify(text);
+    bool ok = e && e->type == EXPR_POLY && polynomial_degree(e->poly) <= 0;
+    if (ok) poly_coeff(out, e->poly, 0);
+    if (e) free_expr(e);
+    return ok;
+}
+
+// "exact ~ decimal", or "~ decimal (reason)" when only the number is available
+static int handle_definite(const char* f_text, const char* a_text, const char* b_text) {
+    Rational a, b;
+    rat_init(&a); rat_init(&b);
+    Expr* f = parse_and_simplify(f_text);
+    int rc = 1;
+    if (!f) fprintf(stderr, "Error: not a polynomial or rational function.\n");
+    else if (!parse_bound(&a, a_text) || !parse_bound(&b, b_text)) fprintf(stderr, "Error: bounds must be rational numbers.\n");
+    else {
+        Bounds ab = { &a, &b };
+        DefiniteResult r = integrate_definite(f, &ab);
+        if (r.error) fprintf(stderr, "Error: %s.\n", r.error);
+        else {
+            if (r.exact) { char* s = expr_to_string(r.exact); printf("%s ~ %.10g\n", s, r.approx); free(s); }
+            else printf("~ %.10g (%s)\n", r.approx, r.note);
+            rc = 0;
+        }
+        definite_free(&r);
+    }
+    if (f) free_expr(f);
+    rat_clear(&a); rat_clear(&b);
+    return rc;
+}
+
 int main(int argc, char* argv[]) {
     if (argc < 2) {
         print_usage(argv[0]);
@@ -120,6 +154,9 @@ int main(int argc, char* argv[]) {
         }
         return handle_matrix_action(action, argv[2]);
     }
+
+    // definite integral: integrate "<f>" a b
+    if (strcmp(action, "integrate") == 0 && argc == 5) return handle_definite(argv[2], argv[3], argv[4]);
 
     // polynomial actions require exactly 3 args
     if (argc != 3) {

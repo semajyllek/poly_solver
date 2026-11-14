@@ -7,13 +7,16 @@ Requires SymPy (pip install sympy). Usage:
 Checks, per random input:
   factor     product of the printed factors expands to the input, and the factor
              count/multiplicities match sympy.factor_list
-  solve      claimed rational roots are exact roots; each "x ~ d" is within 1e-9 of a
-             SymPy real root; real and non-real root counts (with multiplicity) match
+  solve      claimed rational roots are exact roots; every exactly printed root (radicals,
+             cos/sin(kπ/N), complex pairs) is a root at 50 digits; each "x ~ d" is within
+             1e-9 of a SymPy real root; real and non-real root counts (with multiplicity) match
   integrate  SymPy confirms d/dx(printed antiderivative) - f == 0 symbolically; answers
              containing RootSum(q, t -> t * ln(S)) are checked at 60 significant digits
              (Σ over the roots of q of t·S_x/S, plus the derivative of the other terms),
              and so are answers with radicals and cos/sin(kπ/N) constants, including a
              second stream of binomial/cyclotomic denominators (c·x^n ± e, x^(sN) ± b^N)
+  definite   integrate f a b agrees with mpmath.quad to 40 digits, and reports divergence
+             exactly when the denominator has a real root in [a, b]
   det/inv    exact agreement with SymPy's Matrix
 """
 import argparse
@@ -45,7 +48,7 @@ def to_sympy(text):
     cannot simplify the sign(u) terms that differentiating Abs would introduce."""
     text = text.replace("ln(abs(", "log((").replace("^", "**")
     return parse_expr(text, local_dict={"x": x, "t": t, "atan": sp.atan, "sqrt": sp.sqrt,
-                                        "log": sp.log, "Abs": sp.Abs, "pi": sp.pi, "cos": sp.cos,
+                                        "log": sp.log, "ln": sp.log, "Abs": sp.Abs, "pi": sp.pi, "cos": sp.cos,
                                         "sin": sp.sin, "cot": sp.cot, "csc": sp.csc},
                       transformations=TRANSFORMS)
 
@@ -84,10 +87,29 @@ def root_counts(out):
     """(real, non-real) root counts claimed by the CLI output, with multiplicity."""
     nonreal = sum(int(n) * mult_of(m) for n, m in
                   re.findall(r"(\d+) non-real roots of \([^)]*\)(?: \(multiplicity (\d+)\))?", out))
-    nonreal += sum(2 * mult_of(m) for m in re.findall(r"\+/- [^,]*?i(?: \(multiplicity (\d+)\))?(?:,|$)", out))
+    nonreal += sum(2 * mult_of(m) for m in re.findall(r"\+/- [^,]*?i\)?(?: \(multiplicity (\d+)\))?(?:,|$)", out))
     real = len(re.findall(r"x = -?\d+(?:/\d+)?(?:,|$)", out))
     real += sum(mult_of(m) for m in re.findall(r"~ -?\d+\.\d+(?: \(multiplicity (\d+)\))?", out))
     return real, nonreal
+
+
+def exact_roots(out):
+    """Every exactly printed root: 'x = a', 'x = a ~ d', 'x = a +/- b*i [~ (...)]'."""
+    roots = []
+    for entry in re.split(r", (?=x |\d+ non-real)", out):
+        entry = re.sub(r" \(multiplicity \d+\)$", "", entry)
+        if not entry.startswith("x = "):
+            continue
+        body = entry[4:].split(" ~ ")[0]
+        if "+/-" in body:
+            re_part, im_part = body.split("+/-")
+            im_part = re.sub(r"\s*\*?\s*i$", "", im_part.strip()) or "1"
+            a = to_sympy(re_part) if re_part.strip() else sp.Integer(0)
+            b = to_sympy(im_part)
+            roots += [a + sp.I * b, a - sp.I * b]
+        else:
+            roots.append(to_sympy(body))
+    return roots
 
 
 def check_solve(p):
@@ -102,6 +124,9 @@ def check_solve(p):
         assert any(abs(float(r) - a) < 1e-9 for r in real), f"approx root {a} not a root: {out}"
     for e in exact:
         assert p.subs(x, e) == 0, f"claimed root {e} is not a root"
+    scale = sum(abs(c) for c in sp.Poly(p, x).all_coeffs())
+    for r in exact_roots(out):                     # radicals and cos/sin(kπ/N), at 50 digits
+        assert abs(sp.N(p.subs(x, r), 50)) < sp.Float("1e-35") * scale, f"claimed root {r} is not a root: {out}"
 
 
 def rootsum_ok(f, out):
@@ -163,6 +188,32 @@ def check_integrate(rng, den=None):
     return "ok"
 
 
+def check_definite(rng):
+    """integrate f a b: the exact value matches mpmath.quad at 40 digits; 'diverges' exactly
+    when the denominator has a real root in [a, b]; RootSum answers give the number only."""
+    num = sum(rng.randint(-5, 5) * x**i for i in range(rng.randint(0, 3))) or sp.Integer(1)
+    den = binomial_den(rng) if rng.random() < 0.3 else random_poly(rng, coeff=5)
+    f = sp.cancel(num / den)
+    a, b = (sp.Rational(rng.randint(-12, 12), rng.randint(1, 4)) for _ in range(2))
+    code, out, err = run_cli("integrate", to_cli(f), str(a), str(b))
+    lo, hi = min(a, b), max(a, b)
+    poles = [r for r in sp.Poly(sp.denom(f), x).real_roots() if lo <= r <= hi]
+    if code != 0:
+        assert "diverges" in err and poles, f"refused f={f} on [{a}, {b}]: {err}"
+        return "pole"
+    assert not poles, f"missed a pole of f={f} in [{a}, {b}]: {out}"
+    fl = sp.lambdify(x, f, "mpmath")
+    with mp.workdps(45):
+        ref = mp.quad(fl, mp.linspace(mp.mpf(a.p) / a.q, mp.mpf(b.p) / b.q, 9))
+    if out.startswith("~"):
+        assert "RootSum" in out and abs(float(out.split()[1]) - float(ref)) < 1e-8 * (1 + abs(float(ref))), out
+        return "numeric"
+    value = out.split(" ~ ")[0].replace("ln(abs(", "log(Abs(")  # a value: keep the |.|
+    v = sp.N(to_sympy(value), 40)
+    assert abs(v - sp.Float(str(ref), 40)) < sp.Float("1e-28") * (1 + abs(v)), f"f={f} on [{a}, {b}]: {out} vs {ref}"
+    return "exact"
+
+
 def check_matrix(rng):
     n = rng.randint(1, 4)
     M = sp.Matrix(n, n, lambda i, j: sp.Rational(rng.randint(-9, 9), rng.randint(1, 4)))
@@ -177,21 +228,26 @@ def main():
     ap.add_argument("--seed", type=int, default=20261113)
     args = ap.parse_args()
     rng = random.Random(args.seed)
-    rng_bin = random.Random(args.seed + 1)  # separate stream: the main inputs stay unchanged
+    rng_bin = random.Random(args.seed + 1)  # separate streams: the main inputs stay unchanged
+    rng_def = random.Random(args.seed + 2)
     rootsums = radicals = 0
+    definite = {"exact": 0, "numeric": 0, "pole": 0}
     for t in range(args.trials):
         p = random_poly(rng)
         check_factor(p)
         check_solve(p)
         rootsums += check_integrate(rng) == "rootsum"
+        check_solve(sp.expand(binomial_den(rng_bin)))
         kind = check_integrate(rng_bin, binomial_den(rng_bin))
         rootsums += kind == "rootsum"
         radicals += kind == "radical"
+        definite[check_definite(rng_def)] += 1
         check_matrix(rng)
         print(f"  trial {t + 1}/{args.trials} ok", flush=True)
     print(f"crosscheck OK: {args.trials} trials (factor, solve, integrate, det); "
           f"{rootsums} antiderivatives contained RootSum terms and {radicals} radical/trig forms "
-          f"(both checked to 60 digits)")
+          f"(both checked to 60 digits); definite integrals: {definite['exact']} exact (40 digits), "
+          f"{definite['numeric']} numeric-only, {definite['pole']} divergent")
 
 
 if __name__ == "__main__":

@@ -17,7 +17,7 @@ typedef enum {
     EXPR_TRIG
 } ExprType;
 
-// exact trig constants at rational multiples of π (EXPR_TRIG)
+// exact trig constants at rational multiples of π (EXPR_TRIG); TRIG_NONE is angle·π itself
 typedef enum { TRIG_NONE, TRIG_COS, TRIG_SIN, TRIG_COT, TRIG_CSC } TrigKind;
 
 typedef enum {
@@ -51,7 +51,7 @@ typedef struct Expr {
             Polynomial** s;        //   S = Σ s[k](t)·x^k, each s[k] of degree < deg q
             int s_deg;
         } rootsum;
-        struct {                   // EXPR_TRIG: cos/sin/cot/csc(angle·π)
+        struct {                   // EXPR_TRIG: cos/sin/cot/csc(angle·π), or angle·π (TRIG_NONE)
             TrigKind kind;
             Rational angle;
         } trig;
@@ -76,6 +76,9 @@ Expr* create_atan(Expr* arg);
 Expr* create_sqrt(Expr* arg);
 Expr* create_rootsum(Polynomial* q, Polynomial** s, int s_deg); // takes ownership
 Expr* create_trig(TrigKind kind, const Rational* angle);        // trig(angle·π)
+Expr* create_pi(void);                                          // π
+Expr* expr_copy(const Expr* e);                                 // deep copy
+bool  expr_has_rootsum(const Expr* e);                          // a RootSum among the terms
 
 // operations
 Expr* canonicalize(Expr* expr);

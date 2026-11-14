@@ -1,5 +1,6 @@
 #include "solver.h"
 #include "factor.h"
+#include "rootform.h"
 #include "strbuf.h"
 #include <stdlib.h>
 #include <string.h>
@@ -141,7 +142,70 @@ static void append_quadratic(StrBuf* sb, const IrrationalFactor* e, bool* first)
     quad_roots_clear(&q);
 }
 
+// an exact root part as text, parenthesized when it is a sum
+static void append_part(StrBuf* sb, const Expr* e) {
+    bool sum = e->type == EXPR_BINOP && (e->binop.op == OP_ADD || e->binop.op == OP_SUB);
+    if (sum) sb_append(sb, "(");
+    sb_append_owned(sb, expr_to_string(e));
+    if (sum) sb_append(sb, ")");
+}
+
+// position of θ (units of π) among the roots: 0 for -ρ (θ = 1), 1 for +ρ (θ = 0),
+// 2 for the upper member of a conjugate pair (0 < θ < 1), 3 for the lower member
+static int root_class(const Rational* theta) {
+    Rational one = rat_one_val();
+    int c = rat_cmp(theta, &one);
+    rat_clear(&one);
+    if (c == 0) return 0;
+    if (rat_is_zero(theta)) return 1;
+    return c < 0 ? 2 : 3;
+}
+
+// "x = 2^(1/3) ~ 1.2599210498" with the approximation from the certified interval
+static void append_known_real(StrBuf* sb, const RootSet* rs, const Rational* theta) {
+    Expr* x = root_part(rs, theta, TRIG_COS);
+    sb_append(sb, "x = ");
+    append_part(sb, x);
+    free_expr(x);
+}
+
+// "x = a +/- b * i ~ (1.0911 +/- 0.6300i)" for the pair ρ·e^(±iπθ); the decimals are display only
+static void append_known_pair(StrBuf* sb, const RootSet* rs, const Rational* theta) {
+    Expr *re = root_part(rs, theta, TRIG_COS), *im = root_part(rs, theta, TRIG_SIN);
+    bool ok = true;
+    double a = re ? expr_eval(re, 0, &ok) : 0, b = expr_eval(im, 0, &ok);
+    sb_append(sb, "x = ");
+    if (re) { append_part(sb, re); sb_append(sb, " +/- "); }
+    else sb_append(sb, "+/- ");
+    if (!(im->type == EXPR_CONST && rat_is_one(&im->constant))) { append_part(sb, im); sb_append(sb, " * "); }
+    sb_append(sb, "i");
+    sb_appendf(sb, " ~ (%.10f +/- %.10fi)", a, b);
+    if (re) free_expr(re);
+    free_expr(im);
+}
+
+// every root of a binomial or rescaled-cyclotomic factor exactly; false for other factors
+static bool append_known(StrBuf* sb, const IrrationalFactor* e, bool* first) {
+    RootSet rs;
+    if (!known_roots(e->factor, &rs)) return false;
+    int real = 0;
+    for (int cls = 0; cls <= 2; cls++)                  // -ρ, +ρ (ascending), then the pairs
+        for (int i = 0; i < rs.count; i++) {
+            Rational theta = rat_from_si(rs.js[i], rs.L);
+            if (root_class(&theta) == cls) {
+                separator(sb, first);
+                if (cls < 2) { append_known_real(sb, &rs, &theta); append_approx(sb, &e->real[real++]); }
+                else append_known_pair(sb, &rs, &theta);
+                append_multiplicity(sb, e->multiplicity);
+            }
+            rat_clear(&theta);
+        }
+    root_set_free(&rs);
+    return true;
+}
+
 static void append_general(StrBuf* sb, const IrrationalFactor* e, bool* first) {
+    if (append_known(sb, e, first)) return;
     for (int i = 0; i < e->num_real; i++) {
         separator(sb, first);
         sb_append(sb, "x");

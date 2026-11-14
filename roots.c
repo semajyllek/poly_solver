@@ -194,8 +194,16 @@ void refine_root(RootInterval* r, const Polynomial* f, const Rational* width) {
     rat_init(&v); rat_init(&mid); rat_init(&w);
     poly_eval_rat(&v, f, &r->lo);
     int sign_lo = mpq_sgn(v.val);
+    if (sign_lo == 0 && !rat_eq(&r->lo, &r->hi)) {
+        // lo is a neighbouring exact root (isolation can share an endpoint with one); f is
+        // square-free, so just right of lo it has the sign of f'(lo), which is nonzero
+        Polynomial* d = poly_derivative(f);
+        poly_eval_rat(&v, d, &r->lo);
+        sign_lo = mpq_sgn(v.val);
+        free_polynomial(d);
+    }
     rat_sub(&w, &r->hi, &r->lo);
-    // endpoints of an isolating interval are never roots, so f changes sign across it
+    // bisect against the sign just right of lo: exactly one root lies in (lo, hi)
     while (sign_lo != 0 && rat_cmp(&w, width) > 0) {
         rat_add(&mid, &r->lo, &r->hi);
         mpq_div_2exp(mid.val, mid.val, 1);
