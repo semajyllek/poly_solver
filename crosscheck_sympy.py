@@ -214,6 +214,40 @@ def check_definite(rng):
     return "exact"
 
 
+def check_infinite(rng):
+    """integrate f with an infinite bound: refused exactly when the integral diverges (a real
+    pole in the range, or deg den < deg num + 2); otherwise the exact value matches mpmath.quad."""
+    k = rng.randint(1, 3)
+    q = x**k + sum(rng.randint(-4, 4) * x**i for i in range(k))  # monic, so q² + c has degree 2k
+    den = sp.expand(binomial_den(rng) if rng.random() < 0.5 else q**2 + rng.randint(1, 6))
+    deg = sp.degree(den, x)
+    num = sum(rng.randint(-5, 5) * x**i for i in range(rng.randint(1, deg))) or sp.Integer(1)
+    f = sp.cancel(num / den)
+    c = sp.Rational(rng.randint(-12, 12), rng.randint(1, 4))
+    a, b = rng.choice([("-inf", "inf"), (c, "inf"), ("-inf", c), ("inf", c)])
+    code, out, err = run_cli("integrate", to_cli(f), str(a), str(b))
+    ext = {"-inf": -mp.inf, "inf": mp.inf}
+    lo, hi = sorted([ext.get(a, a), ext.get(b, b)], key=lambda v: float(v))
+    n, d = sp.fraction(f)
+    poles = [r for r in sp.Poly(d, x).real_roots() if float(lo) <= float(r) <= float(hi)]
+    if poles or sp.degree(d, x) < sp.degree(n, x) + 2:
+        assert code != 0 and "diverges" in err, f"accepted divergent f={f} on [{a}, {b}]: {out}"
+        return "divergent"
+    assert code == 0, f"refused f={f} on [{a}, {b}]: {err}"
+    fl = sp.lambdify(x, f, "mpmath")
+    to_mp = lambda v: ext[v] if v in ext else mp.mpf(v.p) / v.q
+    with mp.workdps(45):                     # breakpoints where the poles' peaks can be (|root| < 7)
+        ends = sorted([to_mp(a), to_mp(b)])
+        cuts = [mp.mpf(k) / 2 for k in range(-14, 15) if ends[0] < mp.mpf(k) / 2 < ends[1]]
+        ref = mp.quad(fl, [ends[0]] + cuts + [ends[1]]) * (1 if to_mp(a) < to_mp(b) else -1)
+    if out.startswith("~"):
+        assert "RootSum" in out and abs(float(out.split()[1]) - float(ref)) < 1e-8 * (1 + abs(float(ref))), out
+        return "numeric"
+    v = sp.N(to_sympy(out.split(" ~ ")[0].replace("ln(abs(", "log(Abs(")), 40)
+    assert abs(v - sp.Float(str(ref), 40)) < sp.Float("1e-25") * (1 + abs(v)), f"f={f} on [{a}, {b}]: {out} vs {ref}"
+    return "exact"
+
+
 def check_matrix(rng):
     n = rng.randint(1, 4)
     M = sp.Matrix(n, n, lambda i, j: sp.Rational(rng.randint(-9, 9), rng.randint(1, 4)))
@@ -230,8 +264,10 @@ def main():
     rng = random.Random(args.seed)
     rng_bin = random.Random(args.seed + 1)  # separate streams: the main inputs stay unchanged
     rng_def = random.Random(args.seed + 2)
+    rng_inf = random.Random(args.seed + 3)
     rootsums = radicals = 0
     definite = {"exact": 0, "numeric": 0, "pole": 0}
+    infinite = {"exact": 0, "numeric": 0, "divergent": 0}
     for t in range(args.trials):
         p = random_poly(rng)
         check_factor(p)
@@ -242,12 +278,15 @@ def main():
         rootsums += kind == "rootsum"
         radicals += kind == "radical"
         definite[check_definite(rng_def)] += 1
+        infinite[check_infinite(rng_inf)] += 1
         check_matrix(rng)
         print(f"  trial {t + 1}/{args.trials} ok", flush=True)
     print(f"crosscheck OK: {args.trials} trials (factor, solve, integrate, det); "
           f"{rootsums} antiderivatives contained RootSum terms and {radicals} radical/trig forms "
           f"(both checked to 60 digits); definite integrals: {definite['exact']} exact (40 digits), "
-          f"{definite['numeric']} numeric-only, {definite['pole']} divergent")
+          f"{definite['numeric']} numeric-only, {definite['pole']} divergent; "
+          f"infinite bounds: {infinite['exact']} exact, {infinite['numeric']} numeric-only, "
+          f"{infinite['divergent']} divergent")
 
 
 if __name__ == "__main__":

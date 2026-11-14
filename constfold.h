@@ -13,4 +13,8 @@ Expr* expr_at(const Expr* e, const Rational* x0);
 // then the multiple of π, then the rational part
 Expr* const_fold_sum(Expr** terms, int n);
 
+// the leading coefficient c and degree of e as x → ∞ (e ~ c·x^deg), c a folded constant; NULL
+// when e is not built from x, constants and + − · / integer powers, or its leading terms cancel
+Expr* expr_lead(const Expr* e, int* deg);
+
 #endif

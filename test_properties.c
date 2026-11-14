@@ -19,6 +19,7 @@
 #include "test_subres_ref.h"
 #include "rootform.h"
 #include "definite.h"
+#include "constfold.h"
 #include <complex.h>
 
 static bool derivative_is(const Expr* F, const Polynomial* num, const Polynomial* den);
@@ -223,16 +224,23 @@ static void test_reg_integrate_radicals(void) {
 
 // definite integrals: exact values (folded constants, atan jump corrections, a pole of an
 // atan argument at a bound), divergence on a pole in [a, b], and the RootSum fallback
+// "inf" / "-inf" → ±1, else 0 with *r set to the rational
+static int bound_str(Rational* r, const char* text) {
+    if (strcmp(text, "inf") == 0 || strcmp(text, "-inf") == 0) return text[0] == '-' ? -1 : 1;
+    Expr* e = parse_and_simplify(text);
+    poly_coeff(r, e->poly, 0);
+    free_expr(e);
+    return 0;
+}
+
 static DefiniteResult definite_str(const char* f, const char* a, const char* b) {
-    Expr *e = parse_and_simplify(f), *ea = parse_and_simplify(a), *eb = parse_and_simplify(b);
+    Expr* e = parse_and_simplify(f);
     Rational ra, rb;
     rat_init(&ra); rat_init(&rb);
-    poly_coeff(&ra, ea->poly, 0);
-    poly_coeff(&rb, eb->poly, 0);
-    Bounds ab = { &ra, &rb };
+    Bounds ab = { { &ra, bound_str(&ra, a) }, { &rb, bound_str(&rb, b) } };
     DefiniteResult r = integrate_definite(e, &ab);
     rat_clear(&ra); rat_clear(&rb);
-    free_expr(e); free_expr(ea); free_expr(eb);
+    free_expr(e);
     return r;
 }
 
@@ -249,6 +257,21 @@ static void test_reg_integrate_definite(void) {
         { "1/(x^2-2)", "-1", "1", "1/2 * sqrt(2) * ln(abs(1 - sqrt(2))) - 1/2 * sqrt(2) * ln(abs(1 + sqrt(2)))" }, // |-1 - sqrt(2)|
         { "x^2", "0", "3", "9" },
         { "x", "2", "2", "0" },
+        { "1/(x^4+1)", "-inf", "inf", "1/2 * sqrt(2) * pi" },          // infinite bounds
+        { "1/(x^4+1)", "0", "inf", "1/4 * sqrt(2) * pi" },
+        { "x/(x^3+1)", "0", "inf", "2/9 * sqrt(3) * pi" },               // ln terms: lc ratio 1
+        { "1/(x^6+2)", "-inf", "inf", "1/3 * 2^(1/6) * pi" },
+        { "1/(x^2+2x+5)", "-inf", "1", "3/8 * pi" },
+        { "1/(x^2+1)", "inf", "0", "-1/2 * pi" },
+        { "1/((x-1)(x-2))", "3", "inf", "ln(2)" },                       // ln|x-2| - ln|x-1| → 0
+        { "1/(4x^2-1)", "1", "inf", "1/4 * ln(3)" },                     // lc ratio ln(2x-1)/(2x+1)
+        { "1/(x^2+1)^2", "0", "inf", "1/4 * pi" },                       // rational term → 0
+        { "x/(x^4+1)", "-inf", "0", "-1/4 * pi" },                       // atan(x^2) → +π/2 at -∞
+        { "(x^2+1)/(x^4+3x^2+1)", "-inf", "inf", "2/5 * sqrt(5) * pi" }, // atan jump over R
+        { "1/(x^2+1)", "inf", "inf", "0" },
+        { "1/((x-1000)^2+1)", "-inf", "inf", "pi" },                    // peak far from 0: cut there
+        { "1/((x-50)^2+1/10000)", "0", "100", "200 * atan(5000)" },     // narrow peak, no cancellation
+        { "-8/(9x^2+12x+9)", "-2/3", "inf", "-4/15 * sqrt(5) * pi" },  // critical point at a bound
     };
     for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
         DefiniteResult r = definite_str(cases[i][0], cases[i][1], cases[i][2]);
@@ -262,7 +285,42 @@ static void test_reg_integrate_definite(void) {
     assert(d.error && !d.exact);
     d = definite_str("1/(x^5+x+3)", "0", "1");                       // RootSum: number only
     assert(!d.error && !d.exact && d.note && fabs(d.approx - 0.2777409846) < 1e-9);
-    printf("  test_reg_integrate_definite PASSED (%zu exact, 3 special)\n", sizeof cases / sizeof cases[0]);
+    d = definite_str("x/(x^2+1)", "0", "inf");                       // decays only like 1/x
+    assert(d.error && strstr(d.error, "infinity"));
+    d = definite_str("1/(x^2-1)", "2", "-inf");                      // pole on the way to -∞
+    assert(d.error && strstr(d.error, "pole"));
+    d = definite_str("x^2", "inf", "inf");                           // still diverges, not 0
+    assert(d.error);
+    d = definite_str("x^2/(x^4+x^2+3)", "-inf", "inf");              // RootSum: number only
+    assert(!d.error && !d.exact && fabs(d.approx - 1.486903682) < 1e-8);
+    printf("  test_reg_integrate_definite PASSED (%zu exact, 7 special)\n", sizeof cases / sizeof cases[0]);
+}
+
+// expr_lead: the leading coefficient and degree of the expression shapes that appear in
+// antiderivatives (sums with the higher degree on either side, surd products, quotients,
+// x-free powers), and NULL when the leading terms cancel
+static Expr* sqrt_of(long m) { return create_sqrt(create_const(m)); }
+
+static void check_lead(Expr* e, const char* coef, int deg) {
+    int d;
+    Expr* c = expr_lead(e, &d);
+    if (!coef) assert(!c);
+    else { assert(c && d == deg); expect_str(expr_to_string(c), coef); free_expr(c); }
+    free_expr(e);
+}
+
+static void test_reg_expr_lead(void) {
+    Expr* x = create_var("x");
+    check_lead(create_sub(create_const(1), create_mul(sqrt_of(2), expr_copy(x))), "-sqrt(2)", 1);
+    check_lead(create_add(create_pow(expr_copy(x), create_const(2)), create_mul(sqrt_of(3), expr_copy(x))), "1", 2);
+    check_lead(create_div(create_sub(create_mul(create_const(2), expr_copy(x)), create_const(1)), sqrt_of(3)),
+               "2/3 * sqrt(3)", 1);
+    check_lead(create_div(create_const(5), create_add(expr_copy(x), create_const(1))), "5", -1);
+    check_lead(create_mul(create_pow(create_const(2), create_const_str("0.5")), expr_copy(x)), "2^(1/2)", 1);
+    check_lead(create_neg(create_pow(create_sub(create_const(3), expr_copy(x)), create_const(3))), "1", 3);
+    check_lead(create_sub(create_mul(sqrt_of(2), expr_copy(x)), create_mul(sqrt_of(2), expr_copy(x))), NULL, 0);
+    free_expr(x);
+    printf("  test_reg_expr_lead PASSED (7 cases)\n");
 }
 
 // lrt_log_part on its own, including reducible square-free d where R(t) has repeated
@@ -1058,7 +1116,7 @@ static void test_prop_integrate_definite(void) {
         rat_init(&a); rat_init(&b);
         random_bound(&a);
         random_bound(&b);
-        DefiniteResult r = integrate_definite(f, &(Bounds){ &a, &b });
+        DefiniteResult r = integrate_definite(f, &(Bounds){ { &a, 0 }, { &b, 0 } });
         if (r.note && strstr(r.note, "internal")) {
             char* fs = expr_to_string(f);
             fprintf(stderr, "    definite integral check failed: %s on [%g, %g]\n", fs, rat_to_double(&a), rat_to_double(&b));
@@ -1073,6 +1131,51 @@ static void test_prop_integrate_definite(void) {
     }
     printf("  test_prop_integrate_definite PASSED (%d trials: %d exact, %d RootSum numeric, %d divergent)\n",
            TRIALS, exact, numeric, poles);
+}
+
+// p² + c with c > 0: a denominator with no real roots, so an infinite range has no pole
+static Polynomial* positive_denominator(void) {
+    long pc[4];
+    int dp = (int)rnd(1, 3);
+    for (int i = 0; i <= dp; i++) pc[i] = rnd(-4, 4);
+    pc[dp] = pc[dp] ? pc[dp] : 1;
+    Polynomial *p = poly_si(pc, dp), *sq = poly_multiply(p, p), *c = poly_si((long[]){ rnd(1, 6) }, 0);
+    Polynomial* d = poly_add(sq, c);
+    free_polynomial(p); free_polynomial(sq); free_polynomial(c);
+    return d;
+}
+
+// infinite bounds on convergent integrands (deg num <= deg den - 2, no real pole) over
+// (-∞, ∞), [a, ∞) and (-∞, b]: the exact limit must always pass the quadrature check
+static void test_prop_integrate_infinite(void) {
+    int exact = 0, numeric = 0;
+    for (int trial = 0; trial < TRIALS; trial++) {
+        Polynomial* den = positive_denominator();
+        long nc[5];
+        int nd = (int)rnd(0, polynomial_degree(den) - 2);
+        for (int i = 0; i <= nd; i++) nc[i] = rnd(-9, 9);
+        Polynomial* num = poly_si(nc, nd);
+        Expr* f = create_div(create_poly_expr(num), create_poly_expr(den));
+        Rational a, b;
+        rat_init(&a); rat_init(&b);
+        random_bound(&a);
+        random_bound(&b);
+        int kind = trial % 3;                                 // both infinite, then each side alone
+        Bounds ab = { { &a, kind == 2 ? 0 : -1 }, { &b, kind == 1 ? 0 : 1 } };
+        DefiniteResult r = integrate_definite(f, &ab);
+        if (r.error || (r.note && strstr(r.note, "internal"))) {
+            char* fs = expr_to_string(f);
+            fprintf(stderr, "    infinite integral failed: %s (kind %d): %s\n", fs, kind, r.error ? r.error : r.note);
+            assert(0);
+        }
+        assert(r.exact || strstr(r.note, "RootSum"));      // the limits themselves are always found
+        exact += r.exact != NULL;
+        numeric += !r.exact;
+        definite_free(&r);
+        rat_clear(&a); rat_clear(&b);
+        free_expr(f);
+    }
+    printf("  test_prop_integrate_infinite PASSED (%d trials: %d exact, %d RootSum numeric)\n", TRIALS, exact, numeric);
 }
 
 static Matrix* random_matrix(int n) {
@@ -1156,6 +1259,7 @@ void run_property_tests(void) {
     test_reg_integrate_lrt();
     test_reg_integrate_radicals();
     test_reg_integrate_definite();
+    test_reg_expr_lead();
     test_lrt_direct();
     printf("\nProperty Tests (seed %s):\n", env ? env : "default");
     test_prop_factor_roundtrip();
@@ -1167,4 +1271,5 @@ void run_property_tests(void) {
     test_prop_integrate_radicals();
     test_prop_exact_roots();
     test_prop_integrate_definite();
+    test_prop_integrate_infinite();
 }

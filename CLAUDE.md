@@ -22,6 +22,7 @@ CLI usage:
 ./poly_solver differentiate "3x^2 + 4x + 2"
 ./poly_solver integrate "6x^2 + 4x"
 ./poly_solver integrate "1/(x^2+1)" 0 1            # definite: exact value ~ decimal
+./poly_solver integrate "1/(x^4+1)" -inf inf       # infinite bounds: inf, -inf (or oo, -oo)
 ./poly_solver solve "x^3 - 6x^2 + 11x - 6"
 ./poly_solver solve_system "[[1,2],[3,4]]" "[5,11]"
 ./poly_solver det "[[1,2],[3,4]]"
@@ -46,7 +47,7 @@ Symbolic algebra engine, layered bottom-up (INTERNALS.md has the details):
 
 6. **Expression tree and parser** (`expression.c/h`, `token.c`, `parser.c`): tagged union `Expr` (`CONST`, `VAR`, `BINOP`, `NEG`, `POLY`, `RATIONAL_FN`, `LN`, `ATAN`, `SQRT`, `ROOTSUM`, `TRIG` = cos/sin/cot/csc(kπ/N)). `canonicalize()` reduces to `EXPR_POLY` or `EXPR_RATIONAL_FN` and returns NULL for non-integer exponents or division by zero. Shunting-yard parser with implicit multiplication.
 
-7. **Calculus** (`integrate.c`, `logpart.c/h`, `subres.c/h`, `rootform.c/h`, `surd.c/h`, `partial_frac.c/h`): Hermite reduction (exactly self-checked), closed-form ln/atan for linear and quadratic factors, and Lazard–Rioboo–Trager for higher-degree factors (subresultant PRS chain over Q[t], checked against a determinant oracle in `test_subres_ref.c`; ln, Rioboo LogToAtan, or `EXPR_ROOTSUM`). `integrate()` then rewrites a RootSum into radicals and real ln/atan when the factor is a binomial or a rescaled cyclotomic in x^s (`rootform.c`; exact constants c·m^e·sqrt(s)·trig(kπ/N) in `surd.c`). `integrate_rootsum()` keeps the RootSum form, which is what the exact tests use. Like terms are merged. Partial fractions handle factors of any degree. Definite integrals (`definite.c`): exact pole check, `F(b) − F(a)` folded by `constfold.c`, atan jump corrections, and a run-time comparison with quadrature (numeric-only output when it fails or F has a RootSum).
+7. **Calculus** (`integrate.c`, `logpart.c/h`, `subres.c/h`, `rootform.c/h`, `surd.c/h`, `partial_frac.c/h`): Hermite reduction (exactly self-checked), closed-form ln/atan for linear and quadratic factors, and Lazard–Rioboo–Trager for higher-degree factors (subresultant PRS chain over Q[t], checked against a determinant oracle in `test_subres_ref.c`; ln, Rioboo LogToAtan, or `EXPR_ROOTSUM`). `integrate()` then rewrites a RootSum into radicals and real ln/atan when the factor is a binomial or a rescaled cyclotomic in x^s (`rootform.c`; exact constants c·m^e·sqrt(s)·trig(kπ/N) in `surd.c`). `integrate_rootsum()` keeps the RootSum form, which is what the exact tests use. Like terms are merged. Partial fractions handle factors of any degree. Definite integrals (`definite.c`): exact pole check, `F(b) − F(a)` folded by `constfold.c`, atan jump corrections, limits at ±∞ from each term's leading behaviour (`expr_lead`), and a run-time comparison with quadrature (numeric-only output when it fails or F has a RootSum).
 
 8. **Linear algebra** (`matrix.c/h`): dense row-major `Matrix` of `Rational`; Gaussian elimination to RREF; solve, det, inverse, rank; bracket-notation parser using the exact literal parser.
 
@@ -54,7 +55,7 @@ Symbolic algebra engine, layered bottom-up (INTERNALS.md has the details):
 
 - **Memory ownership**: Caller owns inputs. Every function returns new allocations. No function mutates or frees its inputs.
 - **Canonical forms**: All simplification reduces to `EXPR_POLY` or `EXPR_RATIONAL_FN`. Rational functions are GCD-reduced; constant denominators are folded into the polynomial.
-- **Exactness**: no `double` on any path that produces a symbolic answer. Doubles appear only in `poly_evaluate`/`expr_eval` (numeric checks), the legacy `Solutions.irrational_roots` view, the decimals printed beside exact complex roots, and `definite.c` (the quadrature check, and reading the side signs of an atan argument next to an exactly isolated pole, which that check backs up).
+- **Exactness**: no `double` on any path that produces a symbolic answer. Doubles appear only in `poly_evaluate`/`expr_eval` (numeric checks), the legacy `Solutions.irrational_roots` view, the decimals printed beside exact complex roots, and `definite.c` (the quadrature check, and reading the side signs of an atan argument next to an exactly isolated pole, or of its leading coefficient at ±∞, both backed up by that check).
 - **Never partial**: an operation that cannot finish returns NULL with a reason; it never returns a silently incomplete result.
 - **Single variable for now**: `Term.var_id` field exists for future multivariate but is always 0.
 

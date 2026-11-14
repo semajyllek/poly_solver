@@ -68,9 +68,25 @@ static void pair_sqrts(Rational* c, Factors* F) {
     F->n = k;
 }
 
-// c · Π F as an expression; takes F's factors
+// print order of a factor: radicals, trig values, π, then ln/atan and anything else
+static int factor_rank(const Expr* e) {
+    if (e->type == EXPR_SQRT || (e->type == EXPR_BINOP && e->binop.op == OP_POW)) return 0;
+    if (e->type == EXPR_TRIG) return e->trig.kind == TRIG_NONE ? 2 : 1;
+    return 3;
+}
+
+// stable insertion sort of the factors by rank
+static void order_factors(Factors* F) {
+    for (int i = 1; i < F->n; i++)
+        for (int j = i; j > 0 && factor_rank(F->f[j - 1]) > factor_rank(F->f[j]); j--) {
+            Expr* t = F->f[j]; F->f[j] = F->f[j - 1]; F->f[j - 1] = t;
+        }
+}
+
+// c · Π F as an expression, factors in print order; takes F's factors
 static Expr* make_product(const Rational* c, Factors* F) {
     if (rat_is_zero(c)) { free_factors(F); return create_const(0); }
+    order_factors(F);
     Expr* body = NULL;
     for (int i = F->n - 1; i >= 0; i--) body = body ? create_mul(F->f[i], body) : F->f[i];
     free(F->f);
@@ -466,4 +482,109 @@ Expr* const_fold_sum(Expr** terms, int n) {
         free_expr(terms[i]);
     }
     return sum_expr(&S, false);
+}
+
+// --- leading behaviour as x → ∞ ---
+
+typedef struct {
+    Expr* c; // e ~ c·x^deg, c a folded nonzero constant; NULL when not found
+    int deg;
+} Lead;
+
+static Lead lead_of(const Expr* e);
+
+static Lead lead_poly(const Polynomial* p) {
+    if (poly_is_zero(p)) return (Lead){ NULL, 0 };
+    Rational c;
+    rat_init(&c);
+    poly_coeff(&c, p, polynomial_degree(p));
+    Lead L = { create_const_rat(&c), polynomial_degree(p) };
+    rat_clear(&c);
+    return L;
+}
+
+static bool is_zero_const(const Expr* e) { return is_const(e) && rat_is_zero(&e->constant); }
+
+// the higher-degree side of l ± r; equal degrees add, failing when the leading terms cancel
+static Lead lead_sum(Lead l, Lead r, int sign) {
+    if (l.deg != r.deg) {
+        Lead hi = l.deg > r.deg ? l : r, lo = l.deg > r.deg ? r : l;
+        free_expr(lo.c);
+        if (hi.c == r.c && sign < 0) hi.c = fold_product(create_const(-1), hi.c);
+        return hi;
+    }
+    Lead s = { fold_sum2(l.c, r.c, sign), l.deg };
+    if (is_zero_const(s.c)) { free_expr(s.c); s.c = NULL; }
+    return s;
+}
+
+// x-power base^n for an integer constant n
+static Lead lead_pow(Lead b, const Expr* n) {
+    bool integer = is_const(n) && mpz_cmp_ui(mpq_denref(n->constant.val), 1) == 0;
+    if (!integer) { free_expr(b.c); return (Lead){ NULL, 0 }; }
+    long k = mpz_get_si(mpq_numref(n->constant.val));
+    return (Lead){ fold_pow(b.c, expr_copy(n)), b.deg * (int)k };
+}
+
+static Lead lead_binop(const Expr* e) {
+    Lead l = lead_of(e->binop.left);
+    if (!l.c) return l;
+    if (e->binop.op == OP_POW) return lead_pow(l, e->binop.right);
+    Lead r = lead_of(e->binop.right);
+    if (!r.c) { free_expr(l.c); return r; }
+    switch (e->binop.op) {
+        case OP_ADD: return lead_sum(l, r, 1);
+        case OP_SUB: return lead_sum(l, r, -1);
+        case OP_MUL: return (Lead){ fold_product(l.c, r.c), l.deg + r.deg };
+        default:     return (Lead){ fold_div(l.c, r.c), l.deg - r.deg };
+    }
+}
+
+static Lead lead_ratfn(const Expr* e) {
+    Lead n = lead_poly(e->ratfn.num), d = lead_poly(e->ratfn.den);
+    if (n.c && d.c) return (Lead){ fold_div(n.c, d.c), n.deg - d.deg };
+    free_expr(n.c); free_expr(d.c);
+    return (Lead){ NULL, 0 };
+}
+
+// e contains x
+static bool has_x(const Expr* e) {
+    switch (e->type) {
+        case EXPR_VAR: return true;
+        case EXPR_POLY: return polynomial_degree(e->poly) > 0;
+        case EXPR_RATIONAL_FN: return true;
+        case EXPR_BINOP: return has_x(e->binop.left) || has_x(e->binop.right);
+        case EXPR_NEG: return has_x(e->operand);
+        case EXPR_LN: return has_x(e->ln_arg);
+        case EXPR_ATAN: case EXPR_SQRT: return has_x(e->fn_arg);
+        default: return e->type == EXPR_ROOTSUM;
+    }
+}
+
+static Lead lead_of(const Expr* e) {
+    if (!has_x(e)) {                                      // a constant: itself, folded
+        Rational zero = rat_zero_val();
+        Lead L = { expr_at(e, &zero), 0 };
+        rat_clear(&zero);
+        if (is_zero_const(L.c)) { free_expr(L.c); L.c = NULL; }
+        return L;
+    }
+    switch (e->type) {
+        case EXPR_VAR: return (Lead){ create_const(1), 1 };
+        case EXPR_POLY: return lead_poly(e->poly);
+        case EXPR_RATIONAL_FN: return lead_ratfn(e);
+        case EXPR_BINOP: return lead_binop(e);
+        case EXPR_NEG: {
+            Lead L = lead_of(e->operand);
+            if (L.c) L.c = fold_product(create_const(-1), L.c);
+            return L;
+        }
+        default: return (Lead){ NULL, 0 };              // ln, atan, RootSum of x: not polynomial-like
+    }
+}
+
+Expr* expr_lead(const Expr* e, int* deg) {
+    Lead L = lead_of(e);
+    *deg = L.deg;
+    return L.c;
 }

@@ -9,7 +9,7 @@ A fast C library and CLI for symbolic polynomial algebra and linear systems with
 - **Complete factoring over Q**: Yun square-free decomposition plus Berlekamp–Zassenhaus (Cantor–Zassenhaus mod p, Hensel lifting, recombination), e.g. `x^4 + 4 = (x^2 - 2x + 2)(x^2 + 2x + 2)`.
 - **Differentiation & integration**: every rational function over Q can be integrated. Hermite reduction gives the rational part. Linear and quadratic factors get `ln`/`atan` closed forms. Higher-degree factors use **Lazard–Rioboo–Trager**: rational and quadratic log coefficients come out as `ln`/`atan` (Rioboo's continuous arctangents). When the factor's roots are known exactly (binomials `x^n ± c` and rescaled cyclotomics, such as `x^5 - 1` or `x^4 + 2x^2 + 4`), the answer is written with radicals and real `ln`/`atan`, using `cos(kπ/N)` constants where no square-root form exists. Otherwise it is an exact `RootSum`.
 - **Equation solving**: exact rational roots, exact radicals for quadratic factors (including complex roots), and every root exactly (real and complex) for binomial and cyclotomic-type factors such as `x^6 + 2` or `x^5 - 1`. Other higher-degree factors get certified real-root intervals (Descartes/VCA bisection) and a count of their non-real roots.
-- **Definite integrals**: `integrate "f" a b` gives the exact value with constants folded (`ln(4/3)`, `1/9 * sqrt(3) * pi`) plus a decimal, reports divergence when the denominator vanishes in `[a, b]`, and checks every exact value against numeric quadrature at run time.
+- **Definite integrals**: `integrate "f" a b` gives the exact value with constants folded (`ln(4/3)`, `1/9 * sqrt(3) * pi`) plus a decimal, accepts `inf`/`-inf` bounds (`integrate "1/(x^4+1)" -inf inf` gives `1/2 * sqrt(2) * pi`), reports divergence when the denominator vanishes in `[a, b]` or the integrand decays too slowly at infinity, and checks every exact value against numeric quadrature at run time.
 - **Linear systems**: solve Ax=b, determinant, inverse, rank and RREF with exact rational arithmetic.
 
 ## Build
@@ -30,7 +30,7 @@ make sanitize && ./test_symbolic_solver   # AddressSanitizer + UBSan build of th
 
 ```bash
 ./poly_solver <action> "<expression>"
-./poly_solver integrate "<expression>" <a> <b>   # definite integral; bounds are rationals like 1/2
+./poly_solver integrate "<expression>" <a> <b>   # definite integral; bounds are rationals like 1/2, or inf/-inf
 ```
 
 ### Polynomial Actions
@@ -78,7 +78,7 @@ Matrix entries can be integers, fractions or decimals of any size (`1/3`, `-5/7`
 
 - When a logarithm's coefficient is an algebraic number of degree 3 or more, the answer is an exact `RootSum(q(t), t -> t * ln(S(t, x)))`: the sum of `t·ln(S(t, x))` over the roots of `q`. This happens only when the roots aren't known in closed form. Example: `1/(x^5+x+3)`, whose roots can't be written with radicals at all (its Galois group is S5).
 - Complex roots of other irreducible factors of degree 3 or more (for example `x^3 + x + 1`, or the Capelli factors `x^4 ± 2x^2 + 2` of `x^8 + 4`) are counted but not located.
-- Definite integrals take rational bounds only (no infinite bounds). When the antiderivative has a `RootSum`, only the numeric value is given. Exact values are folded but not fully simplified: `atan(-1 + sqrt(2)) + atan(1 + sqrt(2))` is left as is rather than rewritten as `pi/2`.
+- Definite integrals: when the antiderivative has a `RootSum`, only the numeric value is given. Exact values are folded but not fully simplified: `atan(-1 + sqrt(2)) + atan(1 + sqrt(2))` is left as is rather than rewritten as `pi/2`.
 
 ## Tests
 
@@ -93,7 +93,7 @@ make && ./test_symbolic_solver
   - each root interval brackets a sign change
   - the exact derivative of every antiderivative equals the integrand (for `RootSum` terms, compared exactly at rational points via traces over Q(α)); answers with radicals and trig constants are checked numerically in double precision, and to 60 digits by the SymPy cross-check
   - every exact root printed for a binomial/cyclotomic factor satisfies the factor
-  - every exact definite integral agrees with adaptive quadrature (the run-time check never fails)
+  - every exact definite integral agrees with adaptive quadrature (the run-time check never fails), including infinite bounds on generated convergent integrands
   - `A·solve(A, A·x) == A·x`
   - parse(print(p)) == p
 
@@ -105,7 +105,7 @@ A differential check against SymPy is also available. It is optional and needs `
 make cli && python3 crosscheck_sympy.py --trials 40   # about a minute; --seed N for others
 ```
 
-It confirms each factorization multiplies back, each root and root count (every exactly printed root is substituted back at 50 digits), each antiderivative by differentiating it, and each definite integral against `mpmath.quad` at 40 digits. Answers containing `RootSum`, radicals or trig constants are checked at 60 significant digits, including on a separate stream of binomial and cyclotomic denominators.
+It confirms each factorization multiplies back, each root and root count (every exactly printed root is substituted back at 50 digits), each antiderivative by differentiating it, and each definite integral against `mpmath.quad` at 40 digits. A separate stream uses infinite bounds and also checks that divergence is reported exactly when there is a real pole in range or the degree gap is below 2. Answers containing `RootSum`, radicals or trig constants are checked at 60 significant digits, including on a separate stream of binomial and cyclotomic denominators.
 
 ## Architecture
 

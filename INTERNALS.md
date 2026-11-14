@@ -1014,9 +1014,9 @@ Anything else stays `RootSum`. For example, `x^5 + x + 3` has Galois group S5, s
 
 ### 11.5 Definite integrals (`definite.c`, `constfold.c`)
 
-`./poly_solver integrate "f" a b` with rational bounds:
+`./poly_solver integrate "f" a b` with rational bounds, or `inf`/`-inf` (also `oo`/`-oo`):
 
-1. **Divergence.** If the denominator has a root in `[a, b]`, the integral diverges (every pole of a rational function has order ≥ 1). This is decided exactly: zero tests at `a` and `b`, then isolating intervals refined until each root is clearly inside or outside.
+1. **Divergence.** If the denominator has a root in `[a, b]`, the integral diverges (every pole of a rational function has order ≥ 1). This is decided exactly: zero tests at `a` and `b`, then isolating intervals refined until each root is clearly inside or outside. An infinite side imposes no condition on the roots there. With an infinite bound, the integral converges only when `deg den ≥ deg num + 2`, since `f ~ c·x^(deg num − deg den)` far out.
 2. **Antiderivative.** `F = integrate(f)`. If it contains a `RootSum`, only the numeric value is given: its complex logarithms have branch cuts, so `F(b) − F(a)` would not be trustworthy.
 3. **Evaluation.** `expr_at` substitutes `x = a` and `x = b` and folds the constants exactly (`constfold.c`):
    - products collect their rational factor, and `sqrt(m)·sqrt(m) = m`;
@@ -1024,9 +1024,18 @@ Anything else stays `RootSum`. For example, `x^5 + x + 3` has Galois group S5, s
    - `ln|c·m^e·…|` splits into logs of rationals, which merge when their coefficients are integer multiples (`-ln(3) + 2ln(2) = ln(4/3)`);
    - `atan` takes its exact values at `0`, `±1`, `±sqrt(3)` and `±1/sqrt(3)`, and `atan(−u) = −atan(u)`.
 4. **atan jumps.** LRT can produce `atan(N/(c·W))`, for example `∫ (x²+1)/(x⁴+3x²+1) = 1/5·sqrt(5)·atan((x² − 1)/(sqrt(5)·x))`. This jumps by `±π` where `W` crosses zero. Each root of `W` inside `(a, b)` is isolated exactly, and the jump's direction is read from the sign of the argument on either side. The correction is `∓π` times the term's coefficient. A root of `W` at a bound uses the one-sided limit `±π/2`.
-5. **Check.** The exact value is evaluated in double precision and compared with adaptive Simpson quadrature of `f`: 64 starting pieces, relative tolerance 1e-10, and a cap of 4,000,000 evaluations, which is enough to resolve an integrand rising steeply next to a pole just outside the bounds. If they disagree by more than 1e-8 (relative), only the number is reported, with a note. The test suite asserts that this never happens on generated inputs.
+5. **Infinite bounds.** A term's limit comes from the leading behaviour of its argument, `u ~ L·x^d`. `expr_lead` in `constfold.c` finds it structurally: it handles `+ − · /` and integer powers, folds x-free subtrees as constants, and fails if the leading terms cancel. Then:
+   - `c·atan(u)`: tends to `±c·π/2` when `d > 0`, with sign `sign(L)·(±1)^d`. It tends to `c·atan(L)` when `d = 0`, and to 0 when `d < 0`.
+   - `c·ln|u|`: tends to `c·ln|L| + c·d·ln|x|`. The `ln|x|` parts sum to `(Σ cᵢdᵢ)·ln|x|`, which must vanish because the integral converges. So each log contributes `c·ln|L|`, and the logs of `1/(x²−1)` on `[2, ∞)` leave `1/2·ln(3)`.
+   - A rational term from Hermite reduction is proper, so it tends to 0.
+   - The atan jump count uses every root of `W` on the infinite side.
+6. **Check.** The exact value is evaluated in double precision and compared with adaptive Simpson quadrature of `f`. The range is first cut at the real critical points of the denominator, the roots of `den'` isolated exactly. A complex pole close to the real axis makes a narrow peak at such a point. Without the cut, uniform pieces could step over the peak, or the half-line map could squeeze it to nothing: `1/((x−1000)²+1)` on the whole line was the failing case. Each piece is integrated in two halves, and each half has `f` Taylor-shifted exactly, in rationals, to its own end, so `f(o + u)` is evaluated with `u` small. Near the peak of `1/((x−50)² + 10⁻⁴)`, the expanded `x² − 100x + 2500.0001` would cancel catastrophically in double precision. Shifted, it becomes `u² + 1/10000`. A half-line beyond the outermost cut is mapped onto `t ∈ [0, 1]` by `u = ±(1−t)/t`, `du = dt/t²`. This is smooth because `|den|` is monotone there. It is bounded because `f = O(1/x²)`, and its value at `t = 0` is `lim x²f(x)`. With no cut, the whole line is split at 0. Every window starts from 64 pieces. The tolerance is relative 1e-10 of the summed rough estimate over all windows, not of each window, so a window where `f` is tiny is not driven into round-off. One budget of 4,000,000 evaluations is shared by all windows. If the exact and numeric values disagree by more than 1e-8 (relative), only the number is reported, with a note. The test suite asserts that this never happens on generated inputs.
+
+   Roots at a finite end of the range are divided out before isolation (`roots_in`). Bisection mids are dyadic, so a root such as `−2/3` sitting exactly on a bound would never be separated from it.
 
 Example: `∫_{-1}^{1} (x²+1)/(x⁴+3x²+1) dx = 1/5 * sqrt(5) * pi`. The naive `F(1) − F(−1)` would be 0, because the atan jump at `x = 0` would be missed.
+
+Infinite examples: `∫_{-∞}^{∞} 1/(x⁴+1) = 1/2 * sqrt(2) * pi`, `∫_0^∞ x/(x³+1) = 2/9 * sqrt(3) * pi`, `∫_{-∞}^{∞} 1/(x⁶+2) = 1/3 * 2^(1/6) * pi`.
 
 ---
 
