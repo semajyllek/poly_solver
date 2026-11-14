@@ -1072,6 +1072,40 @@ Example: `∫_{-1}^{1} (x²+1)/(x⁴+3x²+1) dx = 1/5 * sqrt(5) * pi`. The naive
 
 Infinite examples: `∫_{-∞}^{∞} 1/(x⁴+1) = 1/2 * sqrt(2) * pi`, `∫_0^∞ x/(x³+1) = 2/9 * sqrt(3) * pi`, `∫_{-∞}^{∞} 1/(x⁶+2) = 1/3 * 2^(1/6) * pi`.
 
+### 11.6 Integration with exp: the Risch algorithm (`expfield.c`, `risch.c`)
+
+**Setting.** The field is Q(x)(θ), with θ = exp(v) and v a nonconstant polynomial, so θ' = v'·θ and θ is transcendental over Q(x). The integrands are Laurent polynomials `f = Σ a_k·θ^k` with `a_k ∈ Q(x)`.
+
+`exp_form` builds the setting from the parse tree:
+- It collects every `exp(u)` and canonicalizes each `u`, which must be a polynomial.
+- It checks that all the `u` are rational multiples of the first argument w, and sets `v = w/l`, where l is the lcm of the ratios' denominators. Every `u` is then an integer multiple `k·v`, and v is oriented so that `lc(v) > 0`.
+- It converts the tree: `+ − ·`, division by a single term `a·θ^k`, integer powers capped at 256, and `exp(k·v) → θ^k`.
+
+Anything else is reported as unsupported, with a reason: a sum in a denominator, independent exponentials, `exp` of a constant or a non-polynomial, and `ln`.
+
+**Theorem.** By Liouville's theorem, ∫ f is elementary iff `∫ f = ∫ a₀ + Σ_{k≠0} y_k·θ^k` with `y_k ∈ Q(x)` satisfying the Risch differential equation `y' + k·v'·y = a_k`. The solution is unique, because `y = C·θ^(−k)` is not rational. ∫ a₀ is the rational integration of §11.2–11.4.
+
+**Solving the equation.** Here f = k·v' is a polynomial.
+- **Poles.** Since `f` has no poles, at a pole p of y the term y' dominates, so `ν_p(y) = ν_p(a) + 1`. A simple pole of `a` therefore has no solution. This is the classic case: `∫ exp(x)/x` is not elementary.
+- **Denominator.** Otherwise, with `D = den(a)`, the denominator of y is `h = gcd(D, D')`, which is `Π p^(e−1)` over `D = Π p^e`. `D | h²` is checked by an exact remainder.
+- **Numerator.** `y = q/h`, where q is a polynomial with `h·q' + (f·h − h')·q = N·h²/D`. B = f·h − h' has degree `deg f + deg h`, which exceeds `deg(h·q') − deg q`. So the equation is triangular from the top: q is found term by term, and a nonzero remainder means there is no solution.
+
+**Outcomes.**
+- If every equation is solvable, the exp part is checked exactly: `d/dx Σ y_k θ^k = Σ_{k≠0} a_k θ^k`.
+- If one equation is not, the result is a proof that no elementary antiderivative exists, and the failing term `a_k·exp(k·v)` is printed.
+- Input outside the setting is "unsupported". It is never called non-elementary.
+
+**Examples.**
+- `∫ (x−1)·exp(x)/x² = exp(x)/x`: the denominator is h = x and q = 1.
+- `∫ (2x²+1)·exp(x²) = x·exp(x²)`.
+- `∫ exp(x²)`: here a = 1, h = 1 and B = 2x. The equation 2x·q + q' = 1 needs deg q = −1, so there is no solution.
+
+**Verification.**
+- **Pinned cases** in `test_reg_integrate_exp`: 12 exact results, 5 proofs, 8 unsupported inputs, and parser cases.
+- **Round trips** in `test_prop_integrate_exp`: integrating `d/dx F` returns F in canonical form. Each is also checked by a 5-point numeric derivative against the original input, which does not share the tower.
+- **Non-elementary by construction:** `c·exp(v)/(x − r)` is added to a solvable integrand, including with r on an existing double pole, so that the remainder test decides.
+- **SymPy:** the cross-check stream compares verdicts with SymPy's `risch_integrate`. For example, seed 20261113 gives 23 elementary results, which differentiate back exactly, and 16 proofs that SymPy confirms.
+
 ---
 
 ## 12. CLI Pipeline

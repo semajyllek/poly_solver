@@ -979,7 +979,7 @@ static bool has_x(const Expr* e) {
         case EXPR_BINOP: return has_x(e->binop.left) || has_x(e->binop.right);
         case EXPR_NEG: return has_x(e->operand);
         case EXPR_LN: return has_x(e->ln_arg);
-        case EXPR_ATAN: case EXPR_SQRT: return has_x(e->fn_arg);
+        case EXPR_ATAN: case EXPR_SQRT: case EXPR_EXP: return has_x(e->fn_arg);
         default: return e->type == EXPR_ROOTSUM;
     }
 }

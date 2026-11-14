@@ -49,7 +49,7 @@ def to_sympy(text):
     text = text.replace("ln(abs(", "log((").replace("^", "**")
     return parse_expr(text, local_dict={"x": x, "t": t, "atan": sp.atan, "sqrt": sp.sqrt,
                                         "log": sp.log, "ln": sp.log, "Abs": sp.Abs, "pi": sp.pi, "cos": sp.cos,
-                                        "sin": sp.sin, "cot": sp.cot, "csc": sp.csc},
+                                        "sin": sp.sin, "cot": sp.cot, "csc": sp.csc, "exp": sp.exp},
                       transformations=TRANSFORMS)
 
 
@@ -196,6 +196,9 @@ def check_definite(rng):
     f = sp.cancel(num / den)
     a, b = (sp.Rational(rng.randint(-12, 12), rng.randint(1, 4)) for _ in range(2))
     code, out, err = run_cli("integrate", to_cli(f), str(a), str(b))
+    if a == b:                               # an empty range: 0 by convention, even at a pole
+        assert code == 0 and out.startswith("0 ~"), f"f={f} on [{a}, {a}]: {out} {err}"
+        return "exact"
     lo, hi = min(a, b), max(a, b)
     poles = [r for r in sp.Poly(sp.denom(f), x).real_roots() if lo <= r <= hi]
     if code != 0:
@@ -248,6 +251,46 @@ def check_infinite(rng):
     return "exact"
 
 
+def random_coeff(rng):
+    """A random rational function: small numerator over (x - r)^m factors (m = 1 or 2)."""
+    num = sum(rng.randint(-4, 4) * x**i for i in range(rng.randint(1, 3))) or sp.Integer(1)
+    den = sp.Integer(1)
+    for _ in range(rng.randint(0, 2)):
+        den *= (x - rng.randint(-3, 3))**rng.randint(1, 2)
+    return num / den
+
+
+def check_exp(rng):
+    """integrate f = Σ a_k·exp(k·v): our verdict must match SymPy's risch_integrate. Half the
+    integrands are derivatives (always elementary); for those and every elementary answer, the
+    answer must differentiate back to f exactly. A NonElementaryIntegral from SymPy must meet
+    our proof, and vice versa."""
+    from sympy.integrals.risch import risch_integrate, NonElementaryIntegral
+    v = rng.randint(1, 3) * x**rng.randint(1, 2) * rng.choice([-1, 1]) + rng.randint(-2, 2) * x
+    ks = rng.sample([-2, -1, 1, 2], rng.randint(1, 2))
+    if rng.random() < 0.5:
+        F = sum(random_coeff(rng) * sp.exp(k * v) for k in ks)
+        f = sp.together(sp.diff(F, x))
+    else:
+        f = sum(random_coeff(rng) * sp.exp(k * v) for k in ks) + (random_coeff(rng) if rng.random() < 0.3 else 0)
+    code, out, err = run_cli("integrate", to_cli(f))
+    if code != 0:
+        assert "not supported" in err, f"failed on {f}: {err}"
+        return "unsupported"
+    try:
+        ref = risch_integrate(f, x)
+    except Exception:                        # SymPy's Risch can fail internally (SympifyError)
+        ref = None
+    nonelem_ref = ref is not None and (isinstance(ref, NonElementaryIntegral) or ref.has(NonElementaryIntegral))
+    if out.startswith("no elementary antiderivative"):
+        assert ref is None or nonelem_ref, f"we say non-elementary, SymPy integrates {f}: {ref}"
+        return "nonelementary" if ref is not None else "unconfirmed"
+    assert not nonelem_ref, f"SymPy proves {f} non-elementary, we gave {out}"
+    d = sp.simplify(sp.diff(to_sympy(out), x) - f)
+    assert d == 0, f"d/dx of our {out} differs from {f} by {d}"
+    return "elementary"
+
+
 def check_matrix(rng):
     n = rng.randint(1, 4)
     M = sp.Matrix(n, n, lambda i, j: sp.Rational(rng.randint(-9, 9), rng.randint(1, 4)))
@@ -265,9 +308,11 @@ def main():
     rng_bin = random.Random(args.seed + 1)  # separate streams: the main inputs stay unchanged
     rng_def = random.Random(args.seed + 2)
     rng_inf = random.Random(args.seed + 3)
+    rng_exp = random.Random(args.seed + 4)
     rootsums = radicals = 0
     definite = {"exact": 0, "numeric": 0, "pole": 0}
     infinite = {"exact": 0, "numeric": 0, "divergent": 0}
+    exps = {"elementary": 0, "nonelementary": 0, "unconfirmed": 0, "unsupported": 0}
     for t in range(args.trials):
         p = random_poly(rng)
         check_factor(p)
@@ -279,6 +324,7 @@ def main():
         radicals += kind == "radical"
         definite[check_definite(rng_def)] += 1
         infinite[check_infinite(rng_inf)] += 1
+        exps[check_exp(rng_exp)] += 1
         check_matrix(rng)
         print(f"  trial {t + 1}/{args.trials} ok", flush=True)
     print(f"crosscheck OK: {args.trials} trials (factor, solve, integrate, det); "
@@ -286,7 +332,9 @@ def main():
           f"(both checked to 60 digits); definite integrals: {definite['exact']} exact (40 digits), "
           f"{definite['numeric']} numeric-only, {definite['pole']} divergent; "
           f"infinite bounds: {infinite['exact']} exact, {infinite['numeric']} numeric-only, "
-          f"{infinite['divergent']} divergent")
+          f"{infinite['divergent']} divergent; exp integrals (vs SymPy's risch_integrate): "
+          f"{exps['elementary']} elementary, {exps['nonelementary']} proved non-elementary (SymPy agrees), "
+          f"{exps['unconfirmed']} non-elementary where SymPy's Risch failed, {exps['unsupported']} unsupported")
 
 
 if __name__ == "__main__":

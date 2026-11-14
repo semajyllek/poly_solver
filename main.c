@@ -8,6 +8,7 @@
 #include "solver.h"
 #include "matrix.h"
 #include "definite.h"
+#include "risch.h"
 
 static void print_usage(const char* program_name) {
     fprintf(stderr, "Usage: %s <action> \"<expression>\"\n", program_name);
@@ -118,6 +119,42 @@ static int handle_definite(const char* f_text, const char* a_text, const char* b
     return rc;
 }
 
+// print e and free it
+static int print_and_free(Expr* e) {
+    char* s = expr_to_string(e);
+    printf("%s\n", s);
+    free(s);
+    free_expr(e);
+    return 0;
+}
+
+// actions on an expression with exp(...): simplify, differentiate, integrate (Risch)
+static int handle_exp(const char* action, Expr* raw) {
+    const char* why = NULL;
+    Expr* out = NULL;
+    int rc = 1;
+    if (strcmp(action, "integrate") == 0) {
+        RischResult r = integrate_exp(raw);
+        if (r.status == RISCH_OK) rc = print_and_free(r.result);
+        else if (r.status == RISCH_NONELEMENTARY) {        // a proof, not an error
+            char* t = expr_to_string(r.result);
+            printf("no elementary antiderivative: the part %s %s\n", t, r.reason + strlen("has no elementary antiderivative "));
+            free(t);
+            free_expr(r.result);
+            rc = 0;
+        }
+        else fprintf(stderr, "Error: could not integrate: %s.\n", r.reason);
+    } else if (strcmp(action, "differentiate") == 0 || strcmp(action, "simplify") == 0) {
+        out = action[0] == 'd' ? differentiate_exp(raw, &why) : simplify_exp(raw, &why);
+        if (out) rc = print_and_free(out);
+        else fprintf(stderr, "Error: %s.\n", why);
+    } else {
+        fprintf(stderr, "Error: '%s' works on polynomials; exp(...) is supported by simplify, differentiate and integrate.\n", action);
+    }
+    free_expr(raw);
+    return rc;
+}
+
 int main(int argc, char* argv[]) {
     if (argc < 2) {
         print_usage(argv[0]);
@@ -176,7 +213,10 @@ int main(int argc, char* argv[]) {
     }
 
     const char* input = argv[2];
-    Expr* expr = parse_and_simplify(input);
+    Expr* raw = parse_input(input);
+    if (raw && (expr_has_exp(raw) || expr_has_ln(raw))) return handle_exp(action, raw);
+    Expr* expr = raw ? simplify(raw) : NULL;
+    free_expr(raw);
     if (expr == NULL) {
         fprintf(stderr, "Error: not a polynomial or rational function "
                         "(check syntax; exponents must be integers; division by zero is undefined).\n");

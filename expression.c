@@ -94,6 +94,7 @@ static Expr* create_unary_fn(ExprType type, Expr* arg) {
 }
 
 Expr* create_atan(Expr* arg) { return create_unary_fn(EXPR_ATAN, arg); }
+Expr* create_exp(Expr* arg) { return create_unary_fn(EXPR_EXP, arg); }
 
 Expr* create_rootsum(Polynomial* q, Polynomial** s, int s_deg) {
     Expr* e = malloc(sizeof(Expr));
@@ -130,6 +131,7 @@ Expr* expr_copy(const Expr* e) {
         case EXPR_RATIONAL_FN: return create_rational_fn(poly_copy(e->ratfn.num), poly_copy(e->ratfn.den));
         case EXPR_LN: return create_ln(expr_copy(e->ln_arg));
         case EXPR_ATAN: return create_atan(expr_copy(e->fn_arg));
+        case EXPR_EXP: return create_exp(expr_copy(e->fn_arg));
         case EXPR_SQRT: return create_sqrt(expr_copy(e->fn_arg));
         case EXPR_TRIG: return create_trig(e->trig.kind, &e->trig.angle);
         case EXPR_ROOTSUM: {
@@ -140,6 +142,21 @@ Expr* expr_copy(const Expr* e) {
     }
     return NULL;
 }
+
+// a node of this type anywhere in e
+static bool has_type(const Expr* e, ExprType t) {
+    if (e->type == t) return true;
+    switch (e->type) {
+        case EXPR_BINOP: return has_type(e->binop.left, t) || has_type(e->binop.right, t);
+        case EXPR_NEG: return has_type(e->operand, t);
+        case EXPR_LN: return has_type(e->ln_arg, t);
+        case EXPR_ATAN: case EXPR_SQRT: case EXPR_EXP: return has_type(e->fn_arg, t);
+        default: return false;
+    }
+}
+
+bool expr_has_exp(const Expr* e) { return has_type(e, EXPR_EXP); }
+bool expr_has_ln(const Expr* e) { return has_type(e, EXPR_LN); }
 
 bool expr_has_rootsum(const Expr* e) {
     if (e->type == EXPR_ROOTSUM) return true;
@@ -174,6 +191,7 @@ void free_expr(Expr* expr) {
             break;
         case EXPR_ATAN:
         case EXPR_SQRT:
+        case EXPR_EXP:
             free_expr(expr->fn_arg);
             break;
         case EXPR_ROOTSUM:
@@ -403,11 +421,14 @@ static void expr_to_string_impl(const Expr* expr, StrBuf* sb) {
         case EXPR_VAR:
             sb_append(sb, expr->var_name);
             break;
-        case EXPR_NEG:
-            sb_append(sb, "-(");
+        case EXPR_NEG: {
+            ExprType t = expr->operand->type;              // a function call needs no parentheses
+            bool call = t == EXPR_EXP || t == EXPR_LN || t == EXPR_ATAN || t == EXPR_SQRT || t == EXPR_TRIG;
+            sb_append(sb, call ? "-" : "-(");
             expr_to_string_impl(expr->operand, sb);
-            sb_append(sb, ")");
+            if (!call) sb_append(sb, ")");
             break;
+        }
         case EXPR_BINOP:
             switch (expr->binop.op) {
                 case OP_ADD: emit_add(expr->binop.left, expr->binop.right, sb); break;
@@ -452,7 +473,8 @@ static void expr_to_string_impl(const Expr* expr, StrBuf* sb) {
             break;
         case EXPR_ATAN:
         case EXPR_SQRT:
-            sb_append(sb, expr->type == EXPR_ATAN ? "atan(" : "sqrt(");
+        case EXPR_EXP:
+            sb_append(sb, expr->type == EXPR_ATAN ? "atan(" : expr->type == EXPR_SQRT ? "sqrt(" : "exp(");
             expr_to_string_impl(expr->fn_arg, sb);
             sb_append(sb, ")");
             break;
@@ -721,6 +743,7 @@ Expr* canonicalize(Expr* expr) {
         case EXPR_SQRT:
         case EXPR_ROOTSUM:
         case EXPR_TRIG:
+        case EXPR_EXP:                                    // not a rational function (risch.c)
             return NULL;
     }
     return NULL;
@@ -868,6 +891,7 @@ double expr_eval(const Expr* e, double x, bool* ok) {
             return log(v);
         }
         case EXPR_ATAN: return atan(expr_eval(e->fn_arg, x, ok));
+        case EXPR_EXP: return exp(expr_eval(e->fn_arg, x, ok));
         case EXPR_SQRT: {
             double v = expr_eval(e->fn_arg, x, ok);
             if (v < 0.0) *ok = false;

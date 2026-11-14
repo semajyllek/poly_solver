@@ -22,6 +22,8 @@
 #include "constfold.h"
 #include "qsurd.h"
 #include "modgcd.h"
+#include "risch.h"
+#include "expfield.h"
 #include <complex.h>
 
 static bool derivative_is(const Expr* F, const Polynomial* num, const Polynomial* den);
@@ -1410,6 +1412,149 @@ static void test_prop_modular_gcd(void) {
     printf("  test_prop_modular_gcd PASSED (%d trials, %d nontrivial gcds, %d inverses)\n", TRIALS, nontrivial, inverses);
 }
 
+// --- exp integration (Risch) ---
+
+static RischResult risch_str(const char* f) {
+    Expr* e = parse_input(f);
+    assert(e);
+    RischResult r = integrate_exp(e);
+    free_expr(e);
+    return r;
+}
+
+// pinned antiderivatives, proofs of non-elementarity, unsupported input, and the parser
+static void test_reg_integrate_exp(void) {
+    const char* ok[][2] = {
+        { "x*exp(x)", "(x - 1) * exp(x)" },
+        { "x^2*exp(3x)", "(1/3x^2 - 2/9x + 2/27) * exp(3x)" },
+        { "2x*exp(x^2)", "exp(x^2)" },
+        { "(2x^2+1)*exp(x^2)", "x * exp(x^2)" },
+        { "(x-1)*exp(x)/x^2", "exp(x) / x" },                     // a pole in the answer
+        { "exp(-x)", "-exp(-x)" },
+        { "exp(x)^2+exp(-x)", "-exp(-x) + 1/2 * exp(2x)" },
+        { "(1+x)exp(x)+1/x", "x * exp(x) + ln(abs(x))" },          // the θ-free part uses LRT/Hermite
+        { "exp(2x)*exp(x/2)", "2/5 * exp(5/2x)" },                 // one tower, θ = exp(x/2)
+        { "exp(x)/exp(x)", "x" },
+        { "x^3*exp(-x^2)", "(-1/2x^2 - 1/2) * exp(-x^2)" },
+        { "-exp(-x)+2exp(x)", "exp(-x) + 2 * exp(x)" },            // unary minus before a function
+    };
+    for (size_t i = 0; i < sizeof ok / sizeof ok[0]; i++) {
+        RischResult r = risch_str(ok[i][0]);
+        assert(r.status == RISCH_OK);
+        expect_str(expr_to_string(r.result), ok[i][1]);
+        free_expr(r.result);
+    }
+    const char* none[] = { "exp(x^2)", "exp(x)/x", "exp(x)/x^2", "exp(x)/(x^2+1)", "(x+1)*exp(x^2)" };
+    for (size_t i = 0; i < sizeof none / sizeof none[0]; i++) {
+        RischResult r = risch_str(none[i]);
+        assert(r.status == RISCH_NONELEMENTARY && r.result);
+        free_expr(r.result);
+    }
+    const char* outside[] = { "1/(1+exp(x))", "exp(x)*exp(x^2)", "exp(1/x)", "ln(x)", "exp(3)", "exp(exp(x))", "exp(x)^(1/2)", "(1+exp(x))^(-1)" };
+    for (size_t i = 0; i < sizeof outside / sizeof outside[0]; i++) {
+        RischResult r = risch_str(outside[i]);
+        assert(r.status == RISCH_UNSUPPORTED && !r.result && r.reason);
+    }
+    const char* parsed[][2] = {                                    // parse, then canonical form
+        { "x exp(x)", "x * exp(x)" }, { "2exp(x)", "2 * exp(x)" }, { "exp (x)^2", "exp(2x)" },
+        { "-exp(-x)", "-exp(-x)" }, { "exp(0)*x", "x" },
+    };
+    for (size_t i = 0; i < sizeof parsed / sizeof parsed[0]; i++) {
+        Expr* e = parse_input(parsed[i][0]);
+        const char* why = NULL;
+        Expr* c = simplify_exp(e, &why);
+        assert(c);
+        expect_str(expr_to_string(c), parsed[i][1]);
+        free_expr(e); free_expr(c);
+    }
+    printf("  test_reg_integrate_exp PASSED (%zu exact, %zu non-elementary, %zu unsupported)\n",
+           sizeof ok / sizeof ok[0], sizeof none / sizeof none[0], sizeof outside / sizeof outside[0]);
+}
+
+// a random rational function with denominator (x - r)^m or 1
+static Expr* random_coeff(void) {
+    long nc[4];
+    int nd = (int)rnd(0, 3);
+    for (int i = 0; i <= nd; i++) nc[i] = rnd(-5, 5);
+    Expr* num = create_poly_expr(poly_si(nc, nd));
+    if (rnd(0, 2) == 0) return num;
+    Polynomial* lin = poly_si((long[]){ -rnd(-3, 3), 1 }, 1);
+    Polynomial* den = poly_pow(lin, (unsigned)rnd(1, 2));
+    free_polynomial(lin);
+    return create_div(num, create_poly_expr(den));
+}
+
+// F = Σ y_k·exp(k·v) with k in [-2, 2] \ {0}; v = c·x or c·x² + d·x (returned in *vout)
+static Expr* random_exp_sum(Polynomial** vout) {
+    long vc[3] = { 0, rnd(1, 3) * (rnd(0, 1) ? 1 : -1), rnd(0, 1) ? rnd(-2, 2) : 0 };
+    Polynomial* v = poly_si(vc, vc[2] ? 2 : 1);
+    *vout = poly_copy(v);
+    Expr* F = NULL;
+    for (int k = -2; k <= 2; k++) {
+        if (k == 0 || rnd(0, 1)) continue;
+        Rational kk = rat_from_int(k);
+        Expr* t = create_mul(random_coeff(), create_exp(create_poly_expr(poly_scale(v, &kk))));
+        rat_clear(&kk);
+        F = F ? create_add(F, t) : t;
+    }
+    if (!F) F = create_mul(random_coeff(), create_exp(create_poly_expr(poly_copy(v))));
+    free_polynomial(v);
+    return F;
+}
+
+// equal as functions of x: the 5-point derivative of G against f, at points where two step
+// sizes agree (a pole nearby makes the stencil unreliable, so such points are skipped). This
+// check does not share the tower, so a wrong construction of v would show.
+static bool derivative_matches(const Expr* G, const Expr* f) {
+    const double xs[] = { -2.35, -1.85, -1.45, -1.15, -0.65, -0.35, 0.3, 0.6, 1.4, 1.7, 2.3, 0.85 };
+    int checked = 0;                                       // poles sit at integers; exp(c·x²) grows fast
+    for (size_t i = 0; i < sizeof xs / sizeof xs[0]; i++) {
+        bool ok = true;
+        double x0 = xs[i], v = expr_eval(f, x0, &ok), d1 = stencil(G, (Stencil){ x0, 1e-3 }, &ok),
+               d2 = stencil(G, (Stencil){ x0, 5e-4 }, &ok);
+        if (!ok || !isfinite(v) || fabs(v) > 1e8 || fabs(d1 - d2) > 1e-9 * (1 + fabs(v))) continue;
+        if (fabs(d2 - v) > 1e-7 * (1 + fabs(v))) return false;
+        checked++;
+    }
+    return checked >= 2;
+}
+
+// round trip: integrate(d/dx F) gives F's exp terms back exactly (the y_k are unique), and
+// adding c·exp(k·v)/(x - r) to a solvable integrand makes it non-elementary, also when r is
+// already a double pole of that coefficient (so the remainder test, not the simple-pole test, decides)
+static void test_prop_integrate_exp(void) {
+    int roundtrips = 0, rejected = 0;
+    for (int trial = 0; trial < TRIALS; trial++) {
+        Polynomial* v;
+        Expr* F = random_exp_sum(&v);
+        const char* why = NULL;
+        Expr* f = differentiate_exp(F, &why);
+        assert(f);
+        RischResult r = integrate_exp(f);
+        assert(r.status == RISCH_OK);
+        const char* w1 = NULL;                                     // canonical forms spell out each
+        Expr *cF = simplify_exp(F, &w1), *cI = simplify_exp(r.result, &w1); // exp(k·v), whatever the tower
+        assert(cF && cI);
+        expect_str(expr_to_string(cI), expr_to_string_free(cF));
+        free_expr(cI);
+        assert(derivative_matches(r.result, f));
+        roundtrips++;
+        long root = trial % 2 ? 1 : rnd(-3, 3);                   // odd trials: on a double pole of y = 1/(x-1)
+        Expr* G = create_add(expr_copy(F), create_div(create_exp(create_poly_expr(poly_copy(v))), create_poly_expr(poly_si((long[]){ -1, 1 }, 1))));
+        Expr* g = differentiate_exp(G, &why);
+        assert(g);
+        Expr* bad = create_add(expr_copy(g), create_div(create_mul(create_const(rnd(1, 5)), create_exp(create_poly_expr(poly_copy(v)))),
+                                                         create_poly_expr(poly_si((long[]){ -root, 1 }, 1))));
+        RischResult rb = integrate_exp(bad);
+        assert(rb.status == RISCH_NONELEMENTARY);                   // always in the setting now
+        rejected++;
+        free_expr(rb.result);
+        free_expr(G); free_expr(g); free_expr(bad);
+        free_expr(r.result); free_expr(f); free_expr(F); free_polynomial(v);
+    }
+    printf("  test_prop_integrate_exp PASSED (%d round trips, %d non-elementary by construction)\n", roundtrips, rejected);
+}
+
 static Matrix* random_matrix(int n) {
     Matrix* A = matrix_create(n, n);
     for (int i = 0; i < n * n; i++) rat_set_si(&A->data[i], rnd(-20, 20), rnd(1, 4));
@@ -1494,6 +1639,7 @@ void run_property_tests(void) {
     test_reg_expr_lead();
     test_reg_qsurd();
     test_reg_radical_products();
+    test_reg_integrate_exp();
     test_lrt_direct();
     printf("\nProperty Tests (seed %s):\n", env ? env : "default");
     test_prop_factor_roundtrip();
@@ -1508,4 +1654,5 @@ void run_property_tests(void) {
     test_prop_integrate_infinite();
     test_prop_definite_symmetric();
     test_prop_modular_gcd();
+    test_prop_integrate_exp();
 }

@@ -46,6 +46,7 @@ static void estack_free(ExprStack* s) {
 typedef struct {
     TokenType type;
     bool is_unary;
+    FunctionName fn; // for TOKEN_FUNCTION
 } OpEntry;
 
 typedef struct {
@@ -156,7 +157,17 @@ static bool push_operator(ExprStack* exprs, OpStack* ops, OpEntry entry) {
 
 // true if token type can start an operand (triggers implicit mul detection)
 static bool is_operand_start(TokenType t) {
-    return t == TOKEN_NUMBER || t == TOKEN_VARIABLE || t == TOKEN_LEFT_PAREN;
+    return t == TOKEN_NUMBER || t == TOKEN_VARIABLE || t == TOKEN_LEFT_PAREN || t == TOKEN_FUNCTION;
+}
+
+// apply the function waiting below a just-closed parenthesis, if there is one
+static bool apply_function(ExprStack* exprs, OpStack* ops) {
+    if (ostack_empty(ops) || ostack_peek(ops).type != TOKEN_FUNCTION) return true;
+    OpEntry f = ostack_pop(ops);
+    Expr* arg = estack_pop(exprs);
+    if (!arg) return false;
+    estack_push(exprs, f.fn == FN_EXP ? create_exp(arg) : create_ln(arg));
+    return true;
 }
 
 // --- shunting-yard parser ---
@@ -176,7 +187,7 @@ Expr* parse_expression(const char** input) {
 
         // implicit multiplication: operand followed by operand-start
         if (prev_was_operand && is_operand_start(tt)) {
-            OpEntry mul = { TOKEN_MULTIPLY, false };
+            OpEntry mul = { TOKEN_MULTIPLY, false, FN_EXP };
             success = push_operator(&exprs, &ops, mul) && success;
         }
 
@@ -191,8 +202,12 @@ Expr* parse_expression(const char** input) {
             prev_was_operand = true;
 
         } else if (tt == TOKEN_LEFT_PAREN) {
-            ostack_push(&ops, (OpEntry){ TOKEN_LEFT_PAREN, false });
+            ostack_push(&ops, (OpEntry){ TOKEN_LEFT_PAREN, false, FN_EXP });
             prev_was_operand = false;
+
+        } else if (tt == TOKEN_FUNCTION) {
+            ostack_push(&ops, (OpEntry){ TOKEN_FUNCTION, false, tok->function });
+            prev_was_operand = false;                   // its '(' follows (the lexer checked)
 
         } else if (tt == TOKEN_RIGHT_PAREN) {
             // pop until matching left paren
@@ -208,6 +223,7 @@ Expr* parse_expression(const char** input) {
                 success = apply_op(&exprs, top) && success;
             }
             if (!found) { success = false; free(tok); break; }
+            success = apply_function(&exprs, &ops) && success;
             prev_was_operand = true;
 
         } else if (tt == TOKEN_PLUS || tt == TOKEN_MINUS ||
@@ -215,7 +231,7 @@ Expr* parse_expression(const char** input) {
                    tt == TOKEN_POWER) {
             // unary minus: minus when previous was not an operand
             bool unary = (tt == TOKEN_MINUS && !prev_was_operand);
-            OpEntry entry = { tt, unary };
+            OpEntry entry = { tt, unary, FN_EXP };
             success = push_operator(&exprs, &ops, entry) && success;
             prev_was_operand = false;
 
@@ -232,7 +248,7 @@ Expr* parse_expression(const char** input) {
     // pop remaining operators
     while (!ostack_empty(&ops)) {
         OpEntry top = ostack_pop(&ops);
-        if (top.type == TOKEN_LEFT_PAREN) { success = false; break; }
+        if (top.type == TOKEN_LEFT_PAREN || top.type == TOKEN_FUNCTION) { success = false; break; }
         success = apply_op(&exprs, top) && success;
     }
 
@@ -248,6 +264,14 @@ Expr* parse_expression(const char** input) {
 }
 
 Expr* parse_and_simplify(const char* input) {
+    Expr* expression = parse_input(input);
+    if (!expression) return NULL;
+    Expr* result = simplify(expression);
+    free_expr(expression);
+    return result;
+}
+
+Expr* parse_input(const char* input) {
     const char* p = input;
     Expr* expression = parse_expression(&p);
     while (expression && isspace((unsigned char)*p)) p++;
@@ -260,7 +284,5 @@ Expr* parse_and_simplify(const char* input) {
         fprintf(stderr, "Error parsing expression.\n");
         return NULL;
     }
-    Expr* result = simplify(expression);
-    free_expr(expression);
-    return result;
+    return expression;
 }

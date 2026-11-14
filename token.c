@@ -30,6 +30,21 @@ Token* get_next_token(const char** input) {
         return token;
     }
 
+    // functions: exp( and ln( (only when the name is followed by an opening parenthesis)
+    static const struct { const char* name; FunctionName fn; } FUNCTIONS[] = { { "exp", FN_EXP }, { "ln", FN_LN } };
+    for (size_t i = 0; i < sizeof FUNCTIONS / sizeof FUNCTIONS[0]; i++) {
+        size_t n = strlen(FUNCTIONS[i].name);
+        if (strncmp(*input, FUNCTIONS[i].name, n) != 0) continue;   // also stops at the string's end
+        const char* after = *input + n;
+        while (isspace((unsigned char)*after)) after++;
+        if (*after == '(') {
+            token->type = TOKEN_FUNCTION;
+            token->function = FUNCTIONS[i].fn;
+            *input = after;                           // the '(' is the next token
+            return token;
+        }
+    }
+
     // Handle variables
     if (isalpha(**input)) {
         token->type = TOKEN_VARIABLE;
