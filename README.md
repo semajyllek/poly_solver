@@ -114,7 +114,7 @@ It confirms each factorization multiplies back, each root and root count (every 
 3. **Modular and integer polynomials** (`poly_zp.c`, `poly_zx.c`): dense F_p[x] and Z[x]
 4. **Expression tree** (`expression.c`): tagged union with canonicalization to polynomial/rational form
 5. **Parser** (`token.c`, `parser.c`): shunting-yard with implicit multiplication and unary minus
-6. **Factoring** (`factor.c`, `zx_factor.c`): Yun square-free decomposition + Berlekamp–Zassenhaus
+6. **Factoring** (`factor.c`, `zx_factor.c`, `modgcd.c`): Yun square-free decomposition (modular gcds, exactly checked) + Berlekamp–Zassenhaus
 7. **Roots and solver** (`roots.c`, `solver.c`): Descartes/VCA isolation, exact refinement, radicals
 8. **Integration** (`integrate.c`, `logpart.c`, `subres.c`, `rootform.c`, `surd.c`, `partial_frac.c`): Hermite reduction, log/atan terms, Lazard–Rioboo–Trager, radical forms, partial fractions
 9. **Definite integrals** (`definite.c`, `constfold.c`): pole detection, exact evaluation with atan jump corrections, constant folding with Q(√m) arithmetic (`qsurd.c`), quadrature check

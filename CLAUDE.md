@@ -41,7 +41,7 @@ Symbolic algebra engine, layered bottom-up (INTERNALS.md has the details):
 
 3. **Modular/integer kernels** (`poly_zp.c/h`, `poly_zx.c/h`, `zx_factor.c`): dense F_p[x] (p < 2^31) with distinct-degree and Cantor–Zassenhaus factoring; dense Z[x] with GMP coefficients; Berlekamp–Zassenhaus (prime choice, Hensel lifting, exact-division recombination).
 
-4. **Factoring** (`factor.c/h`): Yun square-free decomposition, then BZ per part. `Factorization` invariant: `poly == content · Π factors[i]^mult[i]`, factors primitive integer polynomials with positive leading coefficient, sorted deterministically.
+4. **Factoring** (`factor.c/h`, `modgcd.c/h`): Yun square-free decomposition (gcds by `poly_gcd_fast`: CRT over word-size primes + rational reconstruction, checked exactly over Q, Euclid as fallback; also the inverse in LRT's `reduce_monic`), then BZ per part. `Factorization` invariant: `poly == content · Π factors[i]^mult[i]`, factors primitive integer polynomials with positive leading coefficient, sorted deterministically.
 
 5. **Roots and solving** (`roots.c/h`, `solver.c/h`): Descartes/VCA real-root isolation with exact bisection refinement. The solver gives exact rational roots, radicals for quadratic factors, every root exactly for binomial/cyclotomic-type factors (`rootform.c`), and certified intervals plus non-real counts for other higher-degree factors.
 

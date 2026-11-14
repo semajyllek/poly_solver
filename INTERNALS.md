@@ -73,6 +73,7 @@ polynomial.c/h            ← sparse Q[x]: arithmetic, gcd, xgcd, pow, exact eva
     │        │
     │        ▼
     │    zx_factor.c      ← Berlekamp–Zassenhaus: prime choice, Hensel lifting, recombination
+    │    modgcd.c/h       ← gcd and inverse over Q by CRT + rational reconstruction, checked exactly
     │        │
     ▼        ▼
 factor.c/h                ← content, Yun square-free decomposition, full factorization
@@ -846,14 +847,25 @@ The convention is the standard one: factors are primitive integer polynomials wi
 
 ### 9.2 Yun's square-free decomposition
 
-With `a0 = gcd(f, f')`, `b = f/a0`, `d = f'/a0 - b'`, each pass computes `a_i = gcd(b, d)`, then `b ← b/a_i` and `d ← (d/a_i) - b'`. Part `i` collects exactly the factors of multiplicity `i`:
+With `a0 = gcd(f, f')`, `b = f/a0`, `d = f'/a0 - b'`, each pass computes `a_i = gcd(b, d)`, then `b ← b/a_i` and `d ← (d/a_i) - b'`. Part `i` collects exactly the factors of multiplicity `i`. The gcds use `poly_gcd_fast` (§9.3):
 
 ```
 f = (x - 1)(x^2 - 2)^2
 parts: [x - 1, x^2 - 2]   → multiplicities 1 and 2
 ```
 
-### 9.3 Berlekamp–Zassenhaus (`zx_factor.c`)
+### 9.3 Modular gcd and inverse (`modgcd.c`)
+
+Euclid over Q has coefficient blow-up: the intermediate remainders' numerators and denominators grow far beyond the answer's. For a dense degree-30 denominator, that made the gcds in Yun's algorithm and the inverse in `reduce_monic` take over 80% of the time. `modgcd.c` computes images in F_p for word-size primes, from `2³¹ − 1` downward, and combines them by CRT.
+- **Unlucky primes.** For a gcd, only images of the least degree are kept. A prime that divides the resultant of the cofactors gives a longer image: it is dropped, or it restarts the accumulation when it came first. For an inverse, a prime where `a` is not a unit modulo `M` is skipped, as is any prime that divides a leading coefficient.
+- **Reconstruction.** Rational reconstruction (half-extended Euclid, `|n|, d ≤ √(m/2)`) is tried each time the prime count has grown by a quarter, which keeps its total cost proportional to the last try.
+- **Check.** When two tries agree, the candidate is checked exactly over Q. A gcd candidate must divide both inputs: a monic common divisor has degree ≤ deg gcd, and no image has smaller degree than the true gcd, so this proves equality. An inverse candidate must satisfy `s·a mod M = 1`.
+
+A NULL result after 4000 primes falls back to Euclid, so results are always exact. `poly_gcd_fast` uses the modular route when both degrees are ≥ 6. Tests exercise both kinds of unlucky prime: `x` with `x − p₁p₂` (stable but wrong until the check), and a run of many primes in which the fifth is unlucky.
+
+Measured CPU time, main → this, on dense random denominators (outputs byte-identical): degree 15: 0.12 → 0.03 s; degree 20: 0.65 → 0.12 s; degree 25: 3.9 → 0.45 s; degree 30: 14.3/10.1 → 1.1/0.66 s (13–15×).
+
+### 9.4 Berlekamp–Zassenhaus (`zx_factor.c`)
 
 For a primitive, square-free `f ∈ Z[x]`:
 
@@ -976,7 +988,7 @@ For `∫ a/d` with `d` square-free, `deg a < deg d` (Bronstein, *Symbolic Integr
    - `deg M = 2`, `α = p ± r√m·i`: `p·ln|U² + mW²|` plus the arctangent part. For `m = 1` that part is `r·LogToAtan(U, W)`. Rioboo's recursion turns `i·log((A+iB)/(A−iB))` into a sum of `atan(poly)` terms that are continuous on the real line. Otherwise it is `−2r√m·atan(√m·W/U)`.
    - `deg M ≥ 3`: an exact `RootSum(M, t -> t * ln(S(t, x)))`.
 
-**Subresultant chain.** `rt_chain` (`subres.c`) computes every `S_j` of `d` and `g = a − t·d'` over Q[t] in one subresultant pseudo-remainder sequence (Ducos 2000). With `A = S_d` regular (principal coefficient `s`) and `B = S_{d−1}` of degree `e`, δ = d − e: Lazard's shortcut gives `S_e = (lc(B)/s)^(δ−1)·B` (the `S_j` in between are zero), and `S_{e−1} = prem(A, −B) / (s^δ·lc(A))`. Every division is exact in Q[t] and asserted. The resultant is `S_0`. `test_subres_ref.c` keeps the definition (Sylvester-submatrix determinants evaluated at integer `t` and interpolated) as a test oracle, and `test_prop_subres_chain` checks the two agree exactly, including defective chains such as `1/(x^6+2)`. The chain is 6–90× faster than the determinants on degrees 8–25. For dense denominators the remaining cost is `reduce_monic`'s inverse of `lc(S)` modulo `M(t)` by XGCD over Q.
+**Subresultant chain.** `rt_chain` (`subres.c`) computes every `S_j` of `d` and `g = a − t·d'` over Q[t] in one subresultant pseudo-remainder sequence (Ducos 2000). With `A = S_d` regular (principal coefficient `s`) and `B = S_{d−1}` of degree `e`, δ = d − e: Lazard's shortcut gives `S_e = (lc(B)/s)^(δ−1)·B` (the `S_j` in between are zero), and `S_{e−1} = prem(A, −B) / (s^δ·lc(A))`. Every division is exact in Q[t] and asserted. The resultant is `S_0`. `test_subres_ref.c` keeps the definition (Sylvester-submatrix determinants evaluated at integer `t` and interpolated) as a test oracle, and `test_prop_subres_chain` checks the two agree exactly, including defective chains such as `1/(x^6+2)`. The chain is 6–90× faster than the determinants on degrees 8–25. For dense denominators, `reduce_monic`'s inverse of `lc(S)` modulo `M(t)` and the square-free gcds were the remaining cost. They are now modular (§9.3), for a 13–15× speedup at degree 30.
 
 A final pass merges like terms (`c1·f + c2·f`), so cancelling arctangents disappear: `∫ x^2/(x^6+1) = 1/3 * atan(x^3)`.
 

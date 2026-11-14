@@ -1,4 +1,5 @@
 #include "factor.h"
+#include "modgcd.h"
 #include "strbuf.h"
 #include "poly_zx.h"
 #include <stdio.h>
@@ -69,14 +70,14 @@ SquareFreeDecomp square_free_decompose(const Polynomial* f) {
     SquareFreeDecomp d = { NULL, 0 };
     if (polynomial_degree(f) <= 0) return d;
     Polynomial* fp = poly_derivative(f);
-    Polynomial* a0 = poly_gcd(f, fp);
+    Polynomial* a0 = poly_gcd_fast(f, fp);
     Polynomial* b = poly_divide(f, a0);
     Polynomial* c = poly_divide(fp, a0);
     Polynomial* dd = minus_derivative(c, b);
     free_polynomial(fp); free_polynomial(a0); free_polynomial(c);
     // each pass peels off the factors of multiplicity exactly i (Yun 1976)
     while (polynomial_degree(b) > 0) {
-        Polynomial* ai = poly_gcd(b, dd);
+        Polynomial* ai = poly_gcd_fast(b, dd);
         Polynomial* nb = poly_divide(b, ai);
         Polynomial* nc = poly_divide(dd, ai);
         free_polynomial(b); free_polynomial(dd);

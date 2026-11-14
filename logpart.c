@@ -10,6 +10,7 @@
 // degree 2 gives a closed real form (logs with sqrt for real α; a log plus Rioboo's
 // LogToAtan arctangents for complex α); degree >= 3 is returned as an exact RootSum.
 #include "logpart.h"
+#include "modgcd.h"
 #include "subres.h"
 #include "factor.h"
 #include <stdlib.h>
@@ -62,6 +63,16 @@ static Expr* ln_term(const Rational* c, Polynomial* P) {
 
 // --- S_i: choose and normalize ---
 
+// s with s·a ≡ 1 (mod M): modular for large M (modgcd.c), else extended Euclid over Q
+static Polynomial* inverse_mod(const Polynomial* a, const Polynomial* M) {
+    Polynomial* s = polynomial_degree(M) >= 6 ? modular_inverse(a, M) : NULL;
+    if (s) return s;
+    PolyBezout bz = poly_xgcd(a, M);                     // s·a + t·M = 1
+    s = poly_copy(bz.s);
+    free_bezout(&bz);
+    return s;
+}
+
 // divide every t-coefficient of S exactly by g
 static void divide_coeffs(PolyTX* S, const Polynomial* g) {
     for (int k = 0; k <= S->deg; k++) {
@@ -75,7 +86,7 @@ static void divide_coeffs(PolyTX* S, const Polynomial* g) {
 static void normalize_s(PolyTX* S, const Polynomial* Q) {
     SquareFreeDecomp lc = square_free_decompose(S->c[S->deg]);
     for (int j = 0; j < lc.count; j++) {
-        Polynomial* g = poly_gcd(lc.parts[j], Q);
+        Polynomial* g = poly_gcd_fast(lc.parts[j], Q);
         if (polynomial_degree(g) > 0) {
             Polynomial* gj = poly_pow(g, (unsigned)(j + 1));
             divide_coeffs(S, gj);
@@ -91,14 +102,14 @@ static PolyTX reduce_monic(const PolyTX* S, const Polynomial* M) {
     PolyTX r = ptx_alloc(S->deg);
     for (int k = 0; k <= S->deg; k++) { free_polynomial(r.c[k]); r.c[k] = poly_mod(S->c[k], M); }
     while (r.deg > 0 && poly_is_zero(r.c[r.deg])) { free_polynomial(r.c[r.deg]); r.deg--; }
-    PolyBezout bz = poly_xgcd(r.c[r.deg], M); // s·lc + t·M = 1
+    Polynomial* s = inverse_mod(r.c[r.deg], M);        // s·lc ≡ 1 (mod M)
     for (int k = 0; k <= r.deg; k++) {
-        Polynomial* prod = poly_multiply(r.c[k], bz.s);
+        Polynomial* prod = poly_multiply(r.c[k], s);
         free_polynomial(r.c[k]);
         r.c[k] = poly_mod(prod, M);
         free_polynomial(prod);
     }
-    free_bezout(&bz);
+    free_polynomial(s);
     return r;
 }
 

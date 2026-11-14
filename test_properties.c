@@ -21,6 +21,7 @@
 #include "definite.h"
 #include "constfold.h"
 #include "qsurd.h"
+#include "modgcd.h"
 #include <complex.h>
 
 static bool derivative_is(const Expr* F, const Polynomial* num, const Polynomial* den);
@@ -1300,6 +1301,86 @@ static void test_prop_definite_symmetric(void) {
     printf("  test_prop_definite_symmetric PASSED (%d trials, %d exact pairs equal as strings)\n", TRIALS, compared);
 }
 
+// random polynomial of degree d, coefficients up to 10^big (or small rationals)
+static Polynomial* random_q_poly(int d, int big) {
+    Polynomial* p = create_polynomial();
+    for (int i = 0; i <= d; i++) {
+        Rational c;
+        rat_init(&c);
+        if (big) {
+            char lit[64];
+            snprintf(lit, sizeof lit, "%ld%09ld", rnd(1, 999999), rnd(0, 999999999));
+            rat_parse_literal(&c, lit);
+            if (rnd(0, 1)) rat_neg(&c, &c);
+        } else rat_set_si(&c, rnd(-9, 9), rnd(1, 4));
+        if (i == d && rat_is_zero(&c)) rat_set_si(&c, 1, 1);
+        add_term(p, &c, i);
+        rat_clear(&c);
+    }
+    return p;
+}
+
+static bool poly_eq(const Polynomial* a, const Polynomial* b) {
+    Polynomial* d = poly_subtract(a, b);
+    bool e = poly_is_zero(d);
+    free_polynomial(d);
+    return e;
+}
+
+// modular gcd and inverse agree with Euclid over Q: random a = g·u, b = g·v (so the gcd is
+// usually g, with large or fractional coefficients), and inverses modulo random M
+static void test_prop_modular_gcd(void) {
+    int nontrivial = 0, inverses = 0;
+    for (int trial = 0; trial < TRIALS; trial++) {
+        int big = trial % 3 == 0;
+        Polynomial *g = random_q_poly((int)rnd(0, 4), big), *u = random_q_poly((int)rnd(1, 6), big),
+                   *v = random_q_poly((int)rnd(1, 6), big);
+        Polynomial *a = poly_multiply(g, u), *b = poly_multiply(g, v);
+        Polynomial *fast = modular_gcd(a, b), *slow = poly_gcd(a, b);
+        assert(fast && poly_eq(fast, slow));
+        nontrivial += polynomial_degree(slow) > 0;
+        Polynomial* inv = modular_inverse(u, v);              // u invertible modulo v iff coprime
+        if (polynomial_degree(v) > 0) {
+            Polynomial* uv = poly_gcd(u, v);
+            if (polynomial_degree(uv) == 0) {
+                PolyBezout bz = poly_xgcd(u, v);
+                Polynomial* s = poly_mod(bz.s, v);
+                assert(inv && poly_eq(inv, s));
+                free_polynomial(s);
+                free_bezout(&bz);
+                inverses++;
+            }
+            free_polynomial(uv);
+        }
+        free_polynomial(inv);
+        free_polynomial(fast); free_polynomial(slow);
+        free_polynomial(a); free_polynomial(b); free_polynomial(g); free_polynomial(u); free_polynomial(v);
+    }
+    // the first prime 2^31 - 1 is unlucky for x and x - (2^31 - 1) (both become x), and divides
+    // the leading coefficient of (2^31 - 1)·x^2 + 1: the image is discarded or skipped
+    Polynomial *x = poly_si((long[]){ 0, 1 }, 1), *y = poly_si((long[]){ -2147483647L, 1 }, 1);
+    Polynomial* h = modular_gcd(x, y);
+    assert(h && polynomial_degree(h) == 0);
+    Polynomial* z = poly_si((long[]){ 1, 0, 2147483647L }, 2);
+    Polynomial* hz = modular_gcd(z, x);
+    assert(hz && polynomial_degree(hz) == 0);
+    // x - p1·p2 looks like x for both first primes: a stable but wrong reconstruction that only
+    // the exact check rejects
+    Polynomial* y2 = poly_si((long[]){ -4611685975477714963L, 1 }, 1);
+    Polynomial* h2 = modular_gcd(x, y2);
+    assert(h2 && polynomial_degree(h2) == 0);
+    // with 40-digit coefficients the gcd needs many primes, and the fifth (2147483563) is
+    // unlucky for x and x - 2147483563: its longer image must be skipped, not mixed in
+    Polynomial *g = random_q_poly(3, 1), *g2 = poly_multiply(g, g);
+    Polynomial *gx = poly_multiply(g2, x), *y5 = poly_si((long[]){ -2147483563L, 1 }, 1), *gy = poly_multiply(g2, y5);
+    Polynomial *h5 = modular_gcd(gx, gy), *m5 = poly_gcd(gx, gy);
+    assert(h5 && poly_eq(h5, m5));
+    free_polynomial(y2); free_polynomial(h2); free_polynomial(g); free_polynomial(g2); free_polynomial(gx);
+    free_polynomial(y5); free_polynomial(gy); free_polynomial(h5); free_polynomial(m5);
+    free_polynomial(x); free_polynomial(y); free_polynomial(h); free_polynomial(z); free_polynomial(hz);
+    printf("  test_prop_modular_gcd PASSED (%d trials, %d nontrivial gcds, %d inverses)\n", TRIALS, nontrivial, inverses);
+}
+
 static Matrix* random_matrix(int n) {
     Matrix* A = matrix_create(n, n);
     for (int i = 0; i < n * n; i++) rat_set_si(&A->data[i], rnd(-20, 20), rnd(1, 4));
@@ -1396,4 +1477,5 @@ void run_property_tests(void) {
     test_prop_integrate_definite();
     test_prop_integrate_infinite();
     test_prop_definite_symmetric();
+    test_prop_modular_gcd();
 }
