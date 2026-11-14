@@ -62,23 +62,6 @@ static Expr* ln_term(const Rational* c, Polynomial* P) {
 
 // --- S_i: choose and normalize ---
 
-// S_i as in IntRationalLogPart: d itself, g = a - t·d', or the degree-i subresultant
-static PolyTX choose_s(const RTPair* pr, int i) {
-    int m = polynomial_degree(pr->d);
-    if (i == m) {
-        PolyTX s = ptx_alloc(m);
-        for (int k = 0; k <= m; k++) {
-            Rational c;
-            rat_init(&c);
-            poly_coeff(&c, pr->d, k);
-            add_term(s.c[k], &c, 0);
-            rat_clear(&c);
-        }
-        return s;
-    }
-    return i == m - 1 ? rt_g(pr) : rt_subresultant(pr, i);
-}
-
 // divide every t-coefficient of S exactly by g
 static void divide_coeffs(PolyTX* S, const Polynomial* g) {
     for (int k = 0; k <= S->deg; k++) {
@@ -311,13 +294,13 @@ static Expr* terms_for_factor(const PolyTX* S, const Polynomial* M) {
 
 Expr* lrt_log_part(const Polynomial* a, const Polynomial* d) {
     RTPair pr = { d, a };
-    Polynomial* R = rt_resultant(&pr);
-    SquareFreeDecomp sq = square_free_decompose(R);
+    SubresChain ch = rt_chain(&pr);
+    SquareFreeDecomp sq = square_free_decompose(ch.S[0].c[0]); // the resultant R(t)
     Expr* result = NULL;
     for (int i = 1; i <= sq.count; i++) {
         const Polynomial* Q = sq.parts[i - 1];
         if (polynomial_degree(Q) <= 0) continue;
-        PolyTX S = choose_s(&pr, i);
+        PolyTX S = ptx_copy(&ch.S[i]); // d, g = a - t·d', or the subresultant S_i
         normalize_s(&S, Q);
         Factorization* F = factorize(Q);
         for (int f = 0; f < F->count; f++) result = sum(result, terms_for_factor(&S, F->factors[f]));
@@ -325,6 +308,6 @@ Expr* lrt_log_part(const Polynomial* a, const Polynomial* d) {
         ptx_free(&S);
     }
     free_square_free(&sq);
-    free_polynomial(R);
+    chain_free(&ch);
     return result;
 }

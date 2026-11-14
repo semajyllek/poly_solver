@@ -16,6 +16,7 @@
 #include "solver.h"
 #include "matrix.h"
 #include "logpart.h"
+#include "test_subres_ref.h"
 
 static bool derivative_is(const Expr* F, const Polynomial* num, const Polynomial* den);
 
@@ -706,6 +707,69 @@ static void test_prop_integrate_derivative(void) {
     printf("  test_prop_integrate_derivative PASSED (%d trials, %d with RootSum terms)\n", TRIALS, with_rootsum);
 }
 
+// random (a, d) with deg d in 2..7; when step > 1 both use only powers r + step·k, a
+// symmetry that makes the chain over Q[t] defective (gaps between nonzero subresultants)
+static RTPair random_rt_pair(void) {
+    long dc[8] = { 0 }, ac[8] = { 0 };
+    int step = (int)rnd(1, 3), m = step * (int)rnd(step == 1 ? 2 : 1, 7 / step), r = (int)rnd(0, step - 1);
+    for (int i = 0; i < m; i += step) dc[i] = rnd(-3, 3);
+    dc[m] = rnd(1, 3);
+    for (int i = r; i < m; i += step) ac[i] = rnd(-3, 3);
+    return (RTPair){ poly_si(dc, m), poly_si(ac, m - 1) };
+}
+
+// a == b as bivariate polynomials (missing coefficients are zero)
+static bool ptx_equal(const PolyTX* a, const PolyTX* b) {
+    int n = a->deg > b->deg ? a->deg : b->deg;
+    for (int k = 0; k <= n; k++) {
+        Polynomial* z = create_polynomial();
+        bool eq = poly_equal(k <= a->deg ? a->c[k] : z, k <= b->deg ? b->c[k] : z);
+        free_polynomial(z);
+        if (!eq) return false;
+    }
+    return true;
+}
+
+// rt_chain(p) == the Sylvester-determinant definition, index by index; true if defective
+static bool check_chain(const RTPair* p) {
+    SubresChain ch = rt_chain(p);
+    bool defective = false;
+    for (int j = 0; j <= ch.m - 2; j++) {
+        PolyTX ref = ref_subresultant(p, j);
+        if (!ptx_equal(&ch.S[j], &ref)) {
+            char *d = poly_to_string(p->d), *a = poly_to_string(p->a);
+            fprintf(stderr, "    S_%d differs for d = %s, a = %s\n", j, d, a);
+            assert(0);
+        }
+        defective |= !ptx_is_zero(&ch.S[j]) && ch.S[j].deg < j; // S_j similar to a lower one
+        ptx_free(&ref);
+    }
+    chain_free(&ch);
+    return defective;
+}
+
+// fixed chains with wide gaps (e.g. 1/(x^6+2): S_3 = S_2 = 0), then random pairs
+static void test_prop_subres_chain(void) {
+    const char* fixed[][2] = {
+        { "1", "x^6 + 2" }, { "1", "x^4 + 1" }, { "x", "x^4 + 1" }, { "x^2", "x^6 + 1" },
+        { "x^3", "x^8 + 5" }, { "1", "x^7 - 3" }, { "x + 1", "x^6 - x^3 + 2" }, { "0", "x^5 + x + 3" },
+    };
+    for (size_t i = 0; i < sizeof fixed / sizeof fixed[0]; i++) {
+        Expr *a = parse_and_simplify(fixed[i][0]), *d = parse_and_simplify(fixed[i][1]);
+        RTPair p = { d->poly, a->poly };
+        check_chain(&p);
+        free_expr(a); free_expr(d);
+    }
+    int defective = 0;
+    for (int trial = 0; trial < TRIALS; trial++) {
+        RTPair p = random_rt_pair();
+        defective += check_chain(&p);
+        free_polynomial((Polynomial*)p.d); free_polynomial((Polynomial*)p.a);
+    }
+    printf("  test_prop_subres_chain PASSED (%zu fixed, %d trials, %d defective)\n",
+           sizeof fixed / sizeof fixed[0], TRIALS, defective);
+}
+
 static Matrix* random_matrix(int n) {
     Matrix* A = matrix_create(n, n);
     for (int i = 0; i < n * n; i++) rat_set_si(&A->data[i], rnd(-20, 20), rnd(1, 4));
@@ -791,4 +855,5 @@ void run_property_tests(void) {
     test_prop_integrate_derivative();
     test_prop_linear_systems();
     test_prop_print_parse_roundtrip();
+    test_prop_subres_chain();
 }

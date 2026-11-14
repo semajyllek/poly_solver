@@ -7,7 +7,7 @@ LIB_SRCS = strbuf.c rational_num.c polynomial.c poly_zp.c poly_zx.c zx_factor.c 
            expression.c integrate.c matrix.c partial_frac.c token.c parser.c
 
 # Test binary
-TEST_SRCS = $(LIB_SRCS) test_symbolic_solver.c test_properties.c
+TEST_SRCS = $(LIB_SRCS) test_symbolic_solver.c test_properties.c test_subres_ref.c
 TEST_OBJS = $(TEST_SRCS:.c=.o)
 TEST_TARGET = test_symbolic_solver
 

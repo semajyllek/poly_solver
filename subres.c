@@ -1,13 +1,13 @@
-// Resultants and subresultants of d(x) and g(t, x) = a(x) - t·d'(x), as polynomials in t.
+// Subresultant chain of d(x) and g(t, x) = a(x) - t·d'(x) over Q[t], by the subresultant
+// pseudo-remainder sequence with Lazard's shortcut for defective blocks (Ducos 2000).
 //
-// S_j is defined by determinants of Sylvester submatrices (Collins 1967): with F = d of
-// degree m and G = g of formal degree n = m - 1, the matrix M_j stacks the n-j shifted
-// copies x^k·F and the m-j shifted copies x^k·G; the coefficient of x^i in S_j is the
-// determinant of the first m+n-2j-1 columns of M_j plus the column of x^i. The resultant
-// is S_0. Every entry is linear in t, so each determinant is a polynomial in t of degree
-// at most m - j: we evaluate it exactly at m - j + 1 integer points and interpolate.
+// Invariant of the loop: A = S_d is a regular subresultant of degree d with principal
+// coefficient s, and B = S_{d-1} has some degree e <= d - 1. Then, with δ = d - e:
+//   S_e     = (lc(B) / s)^(δ-1) · B                 (zero for e < j < d - 1)
+//   S_{e-1} = prem(A, -B) / (s^δ · lc(A))
+// Every division is exact in Q[t]. The start is A = S_{m-1} = g, s = lc(g), B = prem(d, -g).
 #include "subres.h"
-#include "matrix.h"
+#include <assert.h>
 #include <stdlib.h>
 
 // --- bivariate lifecycle ---
@@ -31,35 +31,88 @@ void ptx_free(PolyTX* a) {
     a->deg = -1;
 }
 
-// --- dense coefficient arrays (index = power of x) ---
-
-static Rational* dense(const Polynomial* p, int n) {
-    Rational* c = malloc((size_t)(n + 1) * sizeof(Rational));
-    for (int k = 0; k <= n; k++) { rat_init(&c[k]); poly_coeff(&c[k], p, k); }
-    return c;
+bool ptx_is_zero(const PolyTX* a) {
+    for (int k = 0; k <= a->deg; k++)
+        if (!poly_is_zero(a->c[k])) return false;
+    return true;
 }
 
-static void free_dense(Rational* c, int n) {
-    for (int k = 0; k <= n; k++) rat_clear(&c[k]);
-    free(c);
+// --- bivariate arithmetic (coefficients in Q[t]) ---
+
+// replace coefficient k with an owned polynomial
+static void set_coeff(PolyTX* a, int k, Polynomial* v) {
+    free_polynomial(a->c[k]);
+    a->c[k] = v;
 }
 
-// g(t0, x) = a(x) - t0·d'(x) with formal degree m - 1
-static Rational* eval_g(const RTPair* p, const Rational* t0) {
-    int n = polynomial_degree(p->d) - 1;
-    Polynomial* dp = poly_derivative(p->d);
-    Rational* a = dense(p->a, n);
-    Rational* d = dense(dp, n);
-    Rational tmp;
-    rat_init(&tmp);
-    for (int k = 0; k <= n; k++) {
-        rat_mul(&tmp, t0, &d[k]);
-        rat_sub(&a[k], &a[k], &tmp);
+// drop zero leading x-coefficients, keeping deg >= 0
+static void ptx_trim(PolyTX* a) {
+    while (a->deg > 0 && poly_is_zero(a->c[a->deg])) {
+        free_polynomial(a->c[a->deg]);
+        a->deg--;
     }
-    rat_clear(&tmp);
-    free_dense(d, n);
-    free_polynomial(dp);
-    return a;
+}
+
+static const Polynomial* ptx_lc(const PolyTX* a) { return a->c[a->deg]; }
+
+// a <- f·a
+static void ptx_mul(PolyTX* a, const Polynomial* f) {
+    for (int k = 0; k <= a->deg; k++) set_coeff(a, k, poly_multiply(a->c[k], f));
+}
+
+// a <- a / f, every coefficient division exact
+static void ptx_div(PolyTX* a, const Polynomial* f) {
+    for (int k = 0; k <= a->deg; k++) {
+        PolyDivResult qr = poly_divmod(a->c[k], f);
+        assert(poly_is_zero(qr.remainder)); // the chain identities guarantee exactness
+        set_coeff(a, k, qr.quotient);
+        free_polynomial(qr.remainder);
+    }
+}
+
+static void ptx_neg(PolyTX* a) {
+    Rational m1 = rat_from_int(-1);
+    for (int k = 0; k <= a->deg; k++) set_coeff(a, k, poly_scale(a->c[k], &m1));
+    rat_clear(&m1);
+}
+
+// r <- lc(b)·r - lc(r)·x^(deg r - deg b)·b, cancelling the leading term of r
+static void prem_step(PolyTX* r, const PolyTX* b) {
+    int shift = r->deg - b->deg;
+    Polynomial* lr = poly_copy(ptx_lc(r));
+    ptx_mul(r, ptx_lc(b));
+    for (int k = 0; k <= b->deg; k++) {
+        Polynomial* t = poly_multiply(lr, b->c[k]);
+        set_coeff(r, k + shift, poly_subtract(r->c[k + shift], t));
+        free_polynomial(t);
+    }
+    free_polynomial(lr);
+    ptx_trim(r);
+}
+
+// prem(a, -b) = (-1)^(deg a - deg b + 1) · lc(b)^(deg a - deg b + 1) · a mod b
+static PolyTX prem_neg(const PolyTX* a, const PolyTX* b) {
+    int n = a->deg - b->deg + 1, steps = n;
+    PolyTX r = ptx_copy(a);
+    while (!ptx_is_zero(&r) && r.deg >= b->deg) { prem_step(&r, b); steps--; }
+    Polynomial* f = poly_pow(ptx_lc(b), (unsigned)steps); // the multiplications skipped
+    ptx_mul(&r, f);
+    free_polynomial(f);
+    if (n % 2) ptx_neg(&r);
+    return r;
+}
+
+// --- the two ends of the chain ---
+
+// d(x) as a bivariate polynomial constant in t
+static PolyTX ptx_from_x(const Polynomial* d) {
+    int m = polynomial_degree(d);
+    PolyTX s = ptx_alloc(m);
+    Rational c;
+    rat_init(&c);
+    for (int k = 0; k <= m; k++) { poly_coeff(&c, d, k); add_term(s.c[k], &c, 0); }
+    rat_clear(&c);
+    return s;
 }
 
 PolyTX rt_g(const RTPair* p) {
@@ -80,130 +133,72 @@ PolyTX rt_g(const RTPair* p) {
     return g;
 }
 
-// --- Sylvester submatrix determinants ---
+// --- the chain ---
 
 typedef struct {
-    const Rational* f; int m; // F coefficients, degree m
-    const Rational* g; int n; // G coefficients, formal degree n
-} SylvPair;
+    PolyTX A;       // S_d, regular
+    PolyTX B;       // S_{d-1}
+    Polynomial* s;  // principal coefficient of S_d
+} ChainStep;
 
-typedef struct {
-    int j; // which subresultant
-    int i; // which coefficient (power of x)
-} SubresIdx;
-
-// one row of the Sylvester matrix: x^shift times a dense polynomial of degree deg
-typedef struct {
-    const Rational* c;
-    int deg;
-    int shift;
-} SylvRow;
-
-// coefficient of x^power in the row's polynomial
-static const Rational* row_coeff(const SylvRow* row, int power) {
-    int k = power - row->shift;
-    return (k >= 0 && k <= row->deg) ? &row->c[k] : NULL;
-}
-
-// coefficient of x^i in S_j, as an exact determinant
-static void subres_det(Rational* out, const SylvPair* s, const SubresIdx* idx) {
-    int j = idx->j, L = s->m + s->n - 2 * j, nf = s->n - j;
-    Matrix* M = matrix_create(L, L);
-    for (int r = 0; r < L; r++) {
-        bool is_f = r < nf;
-        SylvRow row = is_f ? (SylvRow){ s->f, s->m, nf - 1 - r }
-                           : (SylvRow){ s->g, s->n, (s->m - j - 1) - (r - nf) };
-        for (int c = 0; c < L; c++) {
-            int power = (c < L - 1) ? s->m + s->n - j - 1 - c : idx->i;
-            const Rational* v = row_coeff(&row, power);
-            if (v) rat_set(&MAT_AT(M, r, c), v);
-        }
-    }
-    matrix_det(out, M);
-    matrix_free(M);
-}
-
-// --- interpolation ---
-
-Polynomial* interpolate(const Rational* ts, const Rational* vs, int n) {
-    Rational* c = malloc((size_t)n * sizeof(Rational));
-    Rational num, den;
-    rat_init(&num); rat_init(&den);
-    for (int i = 0; i < n; i++) rat_init_set(&c[i], &vs[i]);
-    for (int k = 1; k < n; k++) // Newton divided differences, in place
-        for (int i = n - 1; i >= k; i--) {
-            rat_sub(&num, &c[i], &c[i - 1]);
-            rat_sub(&den, &ts[i], &ts[i - k]);
-            rat_div(&c[i], &num, &den);
-        }
-    Polynomial* p = poly_constant(&c[n - 1]);
-    Rational one = rat_one_val();
-    for (int k = n - 2; k >= 0; k--) { // Horner: p = p·(t - ts[k]) + c[k]
-        Polynomial* lin = create_polynomial();
-        add_term(lin, &one, 1);
-        rat_neg(&num, &ts[k]);
-        add_term(lin, &num, 0);
-        Polynomial* q = poly_multiply(p, lin);
-        add_term(q, &c[k], 0);
-        free_polynomial(p); free_polynomial(lin);
-        p = q;
-    }
-    for (int i = 0; i < n; i++) rat_clear(&c[i]);
-    free(c);
-    rat_clear(&num); rat_clear(&den); rat_clear(&one);
-    return p;
-}
-
-// --- resultant and subresultants in t ---
-
-// values[i][v] = coefficient of x^i of S_j at t = v, for v = 0..npts-1
-static void sample_subres(const RTPair* p, int j, Rational** values) {
-    int m = polynomial_degree(p->d), npts = m - j + 1;
-    Rational* f = dense(p->d, m);
-    for (int v = 0; v < npts; v++) {
-        Rational t0 = rat_from_int(v);
-        Rational* g = eval_g(p, &t0);
-        SylvPair s = { f, m, g, m - 1 };
-        for (int i = 0; i <= j; i++) {
-            SubresIdx idx = { j, i };
-            subres_det(&values[i][v], &s, &idx);
-        }
-        free_dense(g, m - 1);
-        rat_clear(&t0);
-    }
-    free_dense(f, m);
-}
-
-// the coefficients of S_j(t, x) as polynomials in t
-static PolyTX subres_poly(const RTPair* p, int j) {
-    int m = polynomial_degree(p->d), npts = m - j + 1;
-    Rational** values = malloc((size_t)(j + 1) * sizeof(Rational*));
-    Rational* ts = malloc((size_t)npts * sizeof(Rational));
-    for (int v = 0; v < npts; v++) { rat_init(&ts[v]); mpq_set_si(ts[v].val, v, 1); }
-    for (int i = 0; i <= j; i++) {
-        values[i] = malloc((size_t)npts * sizeof(Rational));
-        for (int v = 0; v < npts; v++) rat_init(&values[i][v]);
-    }
-    sample_subres(p, j, values);
-    PolyTX S = { malloc((size_t)(j + 1) * sizeof(Polynomial*)), j };
-    for (int i = 0; i <= j; i++) {
-        S.c[i] = interpolate(ts, values[i], npts);
-        for (int v = 0; v < npts; v++) rat_clear(&values[i][v]);
-        free(values[i]);
-    }
-    for (int v = 0; v < npts; v++) rat_clear(&ts[v]);
-    free(ts);
-    free(values);
-    return S;
-}
-
-Polynomial* rt_resultant(const RTPair* p) {
-    PolyTX s0 = subres_poly(p, 0);
-    Polynomial* r = poly_copy(s0.c[0]);
-    ptx_free(&s0);
+// S_e = (lc(B) / s)^(δ-1) · B (Lazard); just B when the block is regular
+static PolyTX lazard(const ChainStep* st) {
+    unsigned k = (unsigned)(st->A.deg - st->B.deg - 1);
+    PolyTX r = ptx_copy(&st->B);
+    if (k == 0) return r;
+    Polynomial* num = poly_pow(ptx_lc(&st->B), k);
+    Polynomial* den = poly_pow(st->s, k);
+    ptx_mul(&r, num);
+    ptx_div(&r, den);
+    free_polynomial(num); free_polynomial(den);
     return r;
 }
 
-PolyTX rt_subresultant(const RTPair* p, int j) {
-    return subres_poly(p, j);
+// S_{e-1} = prem(A, -B) / (s^δ · lc(A))
+static PolyTX next_sub(const ChainStep* st) {
+    PolyTX r = prem_neg(&st->A, &st->B);
+    Polynomial* sd = poly_pow(st->s, (unsigned)(st->A.deg - st->B.deg));
+    Polynomial* den = poly_multiply(sd, ptx_lc(&st->A));
+    ptx_div(&r, den);
+    free_polynomial(sd); free_polynomial(den);
+    return r;
+}
+
+static void put(SubresChain* ch, int j, PolyTX v) {
+    ptx_free(&ch->S[j]);
+    ch->S[j] = v;
+}
+
+// record S_{d-1} and S_e, then move to (S_e, S_{e-1}); false once the chain is complete
+static bool advance(SubresChain* ch, ChainStep* st) {
+    int d = st->A.deg, e = st->B.deg;
+    put(ch, d - 1, ptx_copy(&st->B));
+    PolyTX C = lazard(st);
+    if (e < d - 1) put(ch, e, ptx_copy(&C));
+    if (e == 0) { ptx_free(&C); return false; }
+    PolyTX next = next_sub(st);
+    ptx_free(&st->A); ptx_free(&st->B); free_polynomial(st->s);
+    st->s = poly_copy(ptx_lc(&C));
+    st->A = C;
+    st->B = next;
+    return true;
+}
+
+SubresChain rt_chain(const RTPair* p) {
+    int m = polynomial_degree(p->d);
+    SubresChain ch = { malloc((size_t)(m + 1) * sizeof(PolyTX)), m };
+    for (int j = 0; j <= m; j++) ch.S[j] = ptx_alloc(0);
+    put(&ch, m, ptx_from_x(p->d));
+    put(&ch, m - 1, rt_g(p));
+    ChainStep st = { ptx_copy(&ch.S[m - 1]), prem_neg(&ch.S[m], &ch.S[m - 1]),
+                     poly_copy(ptx_lc(&ch.S[m - 1])) };
+    while (!ptx_is_zero(&st.B) && advance(&ch, &st)) {}
+    ptx_free(&st.A); ptx_free(&st.B); free_polynomial(st.s);
+    return ch;
+}
+
+void chain_free(SubresChain* ch) {
+    for (int j = 0; j <= ch->m; j++) ptx_free(&ch->S[j]);
+    free(ch->S);
+    ch->S = NULL;
 }
