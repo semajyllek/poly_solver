@@ -10,7 +10,10 @@ A fast C library and CLI for symbolic polynomial algebra and linear systems with
 - **Differentiation & integration**: every rational function over Q can be integrated. Hermite reduction gives the rational part. Linear and quadratic factors get `ln`/`atan` closed forms. Higher-degree factors use **Lazard–Rioboo–Trager**: rational and quadratic log coefficients come out as `ln`/`atan` (Rioboo's continuous arctangents). When the factor's roots are known exactly (binomials `x^n ± c` and rescaled cyclotomics, such as `x^5 - 1` or `x^4 + 2x^2 + 4`), the answer is written with radicals and real `ln`/`atan`, using `cos(kπ/N)` constants where no square-root form exists. Otherwise it is an exact `RootSum`.
 - **Equation solving**: exact rational roots, exact radicals for quadratic factors (including complex roots), and every root exactly (real and complex) for binomial and cyclotomic-type factors such as `x^6 + 2` or `x^5 - 1`. Other higher-degree factors get certified real-root intervals (Descartes/VCA bisection) and a count of their non-real roots.
 - **Definite integrals**: `integrate "f" a b` gives the exact value with constants folded (`ln(4/3)`, `1/9 * sqrt(3) * pi`) plus a decimal, accepts `inf`/`-inf` bounds (`integrate "1/(x^4+1)" -inf inf` gives `1/2 * sqrt(2) * pi`), reports divergence when the denominator vanishes in `[a, b]` or the integrand decays too slowly at infinity, and checks every exact value against numeric quadrature at run time.
-- **Integration with exp (Risch algorithm)**: `integrate "x^2*exp(3x)"` gives `(1/3x^2 - 2/9x + 2/27) * exp(3x)`. When no formula exists, it says so with a proof: `integrate "exp(x^2)"` reports that `exp(x^2)` has no elementary antiderivative. This works for sums of `r(x)·exp(k·v)`, where each `r` is a rational function and every `exp` argument is a multiple of one polynomial `v`. `differentiate` and `simplify` accept the same expressions.
+- **Integration with exp and ln (Risch algorithm)**: `integrate "x^2*exp(3x)"` gives `(1/3x^2 - 2/9x + 2/27) * exp(3x)`, and `integrate "x^2*ln(x)^3"` gives `1/3x^3 * ln(abs(x))^3 - 1/3x^3 * ln(abs(x))^2 + 2/9x^3 * ln(abs(x)) - 2/27x^3`. When no formula exists, it says so with a proof: `exp(x^2)`, `exp(x)/x`, `ln(x)/(x+1)` and `ln(x^2+1)^2` have no elementary antiderivative.
+  - It covers sums of `r(x)·exp(k·v)`, where each `r` is a rational function and every `exp` argument is a multiple of one polynomial `v`.
+  - It also covers polynomials in `ln(u)` with rational-function coefficients, where every `ln` argument is an integer power of one rational function `u`.
+  - `differentiate` and `simplify` accept the same expressions.
 - **Linear systems**: solve Ax=b, determinant, inverse, rank and RREF with exact rational arithmetic.
 
 ## Build
@@ -52,6 +55,8 @@ make sanitize && ./test_symbolic_solver   # AddressSanitizer + UBSan build of th
 | `integrate`     | `./poly_solver integrate "(x-1)*exp(x)/x^2"`     | `exp(x) / x`                       |
 | `integrate`     | `./poly_solver integrate "exp(x)/x"`             | `no elementary antiderivative: the part exp(x) / x ...` |
 | `differentiate` | `./poly_solver differentiate "x^2*exp(3x)"`      | `(3x^2 + 2x) * exp(3x)`            |
+| `integrate`     | `./poly_solver integrate "ln(x)^2"`              | `x * ln(abs(x))^2 - 2x * ln(abs(x)) + 2x` |
+| `integrate`     | `./poly_solver integrate "ln(x)/(x+1)"`          | `no elementary antiderivative: the part ln(abs(x)) / (x + 1) ...` |
 | `solve`         | `./poly_solver solve "x^3 - 6x^2 + 11x - 6"`    | `x = 1, x = 2, x = 3`             |
 | `solve`         | `./poly_solver solve "x^2 - x - 1"`              | `x = 1/2 - 1/2*sqrt(5) ~ -0.6180339887, x = 1/2 + 1/2*sqrt(5) ~ 1.6180339887` |
 | `solve`         | `./poly_solver solve "x^3 - 2"`                  | `x = 2^(1/3) ~ 1.2599210498, x = -1/2 * 2^(1/3) +/- 1/2 * 2^(1/3) * sqrt(3) * i ~ (-0.6299605249 +/- 1.0911236360i)` |
@@ -78,7 +83,7 @@ Matrix entries can be integers, fractions or decimals of any size (`1/3`, `-5/7`
 - Number literals: integers, decimals and exponents (`12`, `0.75`, `2.5e-3`), all exact
 - `-x^2` means `-(x^2)`. Anything left over after a complete expression (e.g. `= 4`) is an error.
 - Exponents must be integers. `x^(1/2)` and division by zero are rejected with an error.
-- `exp(u)` is accepted by `simplify`, `differentiate` and `integrate`. `ln(u)` parses, but is not supported yet.
+- `exp(u)` and `ln(u)` are accepted by `simplify`, `differentiate` and `integrate`. Answers write `ln(abs(u))`, which is valid on both sides of a sign change of `u`.
 
 ### Limits
 
@@ -87,7 +92,10 @@ Matrix entries can be integers, fractions or decimals of any size (`1/3`, `-5/7`
 - Exp integration covers one exponential tower: every `exp` argument must be a rational multiple of one nonconstant polynomial. Divisions may only be by single terms such as `x^2·exp(x)`. These are reported as not supported yet:
   - `1/(1 + exp(x))`;
   - `exp(x)·exp(x^2)`, which needs two independent exponentials;
-  - `exp(1/x)`, `exp(3)` and `ln(x)`;
+  - `exp(1/x)`, `exp(3)`;
+  - `1/ln(x)` and `1/(x·ln(x))`, which need division by ln;
+  - `ln(x) + ln(x+1)` and `ln(2x)·ln(x)`, which need two independent logarithms or a new constant `ln 2`;
+  - `exp` and `ln` together, and `ln(ln(x))`;
   - definite integrals of exp expressions.
 - Definite integrals: when the antiderivative has a `RootSum`, only the numeric value is given. Exact values are simplified in one quadratic field Q(√m): logs merge, atan pairs combine (`∫₀¹ 1/(x⁴+1)` gives `1/4 * sqrt(2) * ln(1 + sqrt(2)) + 1/8 * sqrt(2) * pi`). Values that need two radicals (`cos(pi/12)`) or higher roots (`2^(1/4)`) are folded but not merged.
 

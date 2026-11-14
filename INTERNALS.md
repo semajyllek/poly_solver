@@ -1072,7 +1072,7 @@ Example: `∫_{-1}^{1} (x²+1)/(x⁴+3x²+1) dx = 1/5 * sqrt(5) * pi`. The naive
 
 Infinite examples: `∫_{-∞}^{∞} 1/(x⁴+1) = 1/2 * sqrt(2) * pi`, `∫_0^∞ x/(x³+1) = 2/9 * sqrt(3) * pi`, `∫_{-∞}^{∞} 1/(x⁶+2) = 1/3 * 2^(1/6) * pi`.
 
-### 11.6 Integration with exp: the Risch algorithm (`expfield.c`, `risch.c`)
+### 11.6 Integration with exp and ln: the Risch algorithm (`expfield.c`, `risch.c`)
 
 **Setting.** The field is Q(x)(θ), with θ = exp(v) and v a nonconstant polynomial, so θ' = v'·θ and θ is transcendental over Q(x). The integrands are Laurent polynomials `f = Σ a_k·θ^k` with `a_k ∈ Q(x)`.
 
@@ -1100,11 +1100,27 @@ Anything else is reported as unsupported, with a reason: a sum in a denominator,
 - `∫ (2x²+1)·exp(x²) = x·exp(x²)`.
 - `∫ exp(x²)`: here a = 1, h = 1 and B = 2x. The equation 2x·q + q' = 1 needs deg q = −1, so there is no solution.
 
+**The ln (primitive) case.** Here θ = ln(u) with u ∈ Q(x) nonconstant, θ' = L = u'/u, and the integrand is a polynomial `Σ_{k=0}^{n} a_k θ^k`. Every `ln` argument must be `u^k` exactly for an integer k: `ln(x^2) = 2·θ` and `ln(1/x) = −θ`. The base is oriented so that `deg num ≥ deg den`. `ln(2x)` together with `ln(x)` would bring in the constant `ln 2`, so it is unsupported.
+
+By Liouville's theorem, `∫ f = Σ_{k=1}^{n+1} b_k θ^k + (an integral over Q(x))`, with `b_{n+1}` constant and `b_k ∈ Q(x)`. Matching θ^k gives `a_k = b_k' + (k+1)·b_{k+1}·L`.
+- **Top-down.** Write `b_k = r_k + d_k` with `d_k` constant. From k = n down to 1, `g_k = a_k − (k+1)·r_{k+1}·L` must satisfy `∫ g_k = r_k + (k+1)·d_{k+1}·θ`. This is *limited integration*: `hermite_split` gives `∫ g = R + ∫ A/D` with D square-free, and then `A/D = c·L` must hold exactly for a rational c. Any other log or atan at a level k ≥ 1 proves that ∫ f is not elementary.
+- **Level 0** is free: `∫ (a_0 − r_1·L)` is an ordinary rational integral, with ln, atan or RootSum.
+- **Check.** `d/dx Σ b_k θ^k + g_0 = f` exactly.
+
+**ln examples.**
+- `∫ ln(x)/x`: g = 1/x = 1·L, so `d_2 = 1/2` and the answer is `1/2·ln(x)^2`.
+- `∫ ln(x)/(x+1)`: `A/D = 1/(x+1)` is not a multiple of `1/x`, so the integral is non-elementary (the dilogarithm).
+- `∫ ln(x²+1)^2`: level 1 needs `atan(x)`, which is not a multiple of `ln(x²+1)`, so it is non-elementary.
+
 **Verification.**
 - **Pinned cases** in `test_reg_integrate_exp`: 12 exact results, 5 proofs, 8 unsupported inputs, and parser cases.
 - **Round trips** in `test_prop_integrate_exp`: integrating `d/dx F` returns F in canonical form. Each is also checked by a 5-point numeric derivative against the original input, which does not share the tower.
 - **Non-elementary by construction:** `c·exp(v)/(x − r)` is added to a solvable integrand, including with r on an existing double pole, so that the remainder test decides.
 - **SymPy:** the cross-check stream compares verdicts with SymPy's `risch_integrate`. For example, seed 20261113 gives 23 elementary results, which differentiate back exactly, and 16 proofs that SymPy confirms.
+- **ln tests.**
+  - `test_reg_integrate_log` pins 11 answers, 5 proofs and 7 unsupported inputs.
+  - `test_prop_integrate_log` checks round trips with the numeric derivative, and that adding `c·ln(x)/(x − r)` is always rejected.
+  - A separate SymPy stream for ln matched on all 400 integrands over 10 seeds: 257 elementary results and 143 proofs.
 
 ---
 

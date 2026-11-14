@@ -1450,7 +1450,7 @@ static void test_reg_integrate_exp(void) {
         assert(r.status == RISCH_NONELEMENTARY && r.result);
         free_expr(r.result);
     }
-    const char* outside[] = { "1/(1+exp(x))", "exp(x)*exp(x^2)", "exp(1/x)", "ln(x)", "exp(3)", "exp(exp(x))", "exp(x)^(1/2)", "(1+exp(x))^(-1)" };
+    const char* outside[] = { "1/(1+exp(x))", "exp(x)*exp(x^2)", "exp(1/x)", "x*exp(x)*ln(x)", "exp(3)", "exp(exp(x))", "exp(x)^(1/2)", "(1+exp(x))^(-1)" };
     for (size_t i = 0; i < sizeof outside / sizeof outside[0]; i++) {
         RischResult r = risch_str(outside[i]);
         assert(r.status == RISCH_UNSUPPORTED && !r.result && r.reason);
@@ -1555,6 +1555,85 @@ static void test_prop_integrate_exp(void) {
     printf("  test_prop_integrate_exp PASSED (%d round trips, %d non-elementary by construction)\n", roundtrips, rejected);
 }
 
+// --- ln integration (Risch, primitive case) ---
+
+static void test_reg_integrate_log(void) {
+    const char* ok[][2] = {
+        { "ln(x)", "x * ln(abs(x)) - x" },
+        { "ln(x)^2", "x * ln(abs(x))^2 - 2x * ln(abs(x)) + 2x" },
+        { "x^2*ln(x)^3", "1/3x^3 * ln(abs(x))^3 - 1/3x^3 * ln(abs(x))^2 + 2/9x^3 * ln(abs(x)) - 2/27x^3" },
+        { "ln(x)/x", "1/2 * ln(abs(x))^2" },                       // the constant d_2 from level 1
+        { "ln(x)/x^2", "-ln(abs(x)) / x - 1 / x" },
+        { "x*ln(x^2+1)", "1/2x^2 * ln(abs(x^2 + 1)) - 1/2x^2 + 1/2 * ln(abs(x^2 + 1))" },
+        { "ln(x^2+1)", "x * ln(abs(x^2 + 1)) - 2x + 2 * atan(x)" }, // level 0 via the rational integrator
+        { "2x*ln(x^2+1)/(x^2+1)", "1/2 * ln(abs(x^2 + 1))^2" },
+        { "ln(1/x)*x", "-1/2x^2 * ln(abs(x)) + 1/4x^2" },          // ln(1/x) = -ln(x)
+        { "ln(x^2)+ln(x)", "3x * ln(abs(x)) - 3x" },               // ln(x^2) = 2·ln(x)
+        { "ln((x+1)/(x-1))", "x * ln(abs((x + 1) / (x - 1))) + ln(abs(x + 1)) + ln(abs(x - 1))" },
+    };
+    for (size_t i = 0; i < sizeof ok / sizeof ok[0]; i++) {
+        RischResult r = risch_str(ok[i][0]);
+        assert(r.status == RISCH_OK);
+        expect_str(expr_to_string(r.result), ok[i][1]);
+        free_expr(r.result);
+    }
+    const char* none[] = { "ln(x)/(x+1)", "ln(x)^2/(x+1)", "ln(x^2+1)/x", "ln(x)^2+ln(x)/(x+1)", "ln(x)/(x^2+1)" };
+    for (size_t i = 0; i < sizeof none / sizeof none[0]; i++) {
+        RischResult r = risch_str(none[i]);
+        assert(r.status == RISCH_NONELEMENTARY && r.result);
+        free_expr(r.result);
+    }
+    const char* outside[] = { "1/ln(x)", "1/(x*ln(x))", "ln(x)+ln(x+1)", "ln(2x)*ln(x)", "ln(ln(x))", "ln(x)*exp(x)", "ln(3)" };
+    for (size_t i = 0; i < sizeof outside / sizeof outside[0]; i++) {
+        RischResult r = risch_str(outside[i]);
+        assert(r.status == RISCH_UNSUPPORTED && !r.result && r.reason);
+    }
+    printf("  test_reg_integrate_log PASSED (%zu exact, %zu non-elementary, %zu unsupported)\n",
+           sizeof ok / sizeof ok[0], sizeof none / sizeof none[0], sizeof outside / sizeof outside[0]);
+}
+
+// F = Σ_{k=1}^{3} b_k·ln(u)^k (u = x or x² + c), b_k random rational functions
+static Expr* random_log_sum(long c) {
+    Expr* F = NULL;
+    for (int k = 1; k <= 3; k++) {
+        if (k > 1 && rnd(0, 1)) continue;
+        Expr* u = c ? create_add(create_pow(create_var("x"), create_const(2)), create_const(c)) : create_var("x");
+        Expr* t = create_mul(random_coeff(), create_pow(create_ln(u), create_const(k)));
+        F = F ? create_add(F, t) : t;
+    }
+    return F;
+}
+
+// round trip: ∫ d/dx F agrees with F up to a constant (checked numerically, independent of the
+// tower; integrate_exp also checks its own result exactly); adding c·ln(x)/(x - r), r ≠ 0, to
+// the integrand always makes it non-elementary
+static void test_prop_integrate_log(void) {
+    int roundtrips = 0, rejected = 0;
+    for (int trial = 0; trial < TRIALS; trial++) {
+        long c = trial % 2 ? rnd(1, 4) : 0;
+        Expr* F = random_log_sum(c);
+        const char* why = NULL;
+        Expr* f = differentiate_exp(F, &why);
+        assert(f);
+        RischResult r = integrate_exp(f);
+        assert(r.status == RISCH_OK);
+        assert(derivative_matches(r.result, f));
+        roundtrips++;
+        if (!c) {                                                   // u = x: ln(x - r) is a new log
+            long root = rnd(1, 3) * (rnd(0, 1) ? 1 : -1);
+            Expr* bad = create_add(expr_copy(f), create_div(create_mul(create_const(rnd(1, 5)), create_ln(create_var("x"))),
+                                                             create_poly_expr(poly_si((long[]){ -root, 1 }, 1))));
+            RischResult rb = integrate_exp(bad);
+            assert(rb.status == RISCH_NONELEMENTARY);
+            rejected++;
+            free_expr(rb.result);
+            free_expr(bad);
+        }
+        free_expr(r.result); free_expr(f); free_expr(F);
+    }
+    printf("  test_prop_integrate_log PASSED (%d round trips, %d non-elementary by construction)\n", roundtrips, rejected);
+}
+
 static Matrix* random_matrix(int n) {
     Matrix* A = matrix_create(n, n);
     for (int i = 0; i < n * n; i++) rat_set_si(&A->data[i], rnd(-20, 20), rnd(1, 4));
@@ -1640,6 +1719,7 @@ void run_property_tests(void) {
     test_reg_qsurd();
     test_reg_radical_products();
     test_reg_integrate_exp();
+    test_reg_integrate_log();
     test_lrt_direct();
     printf("\nProperty Tests (seed %s):\n", env ? env : "default");
     test_prop_factor_roundtrip();
@@ -1655,4 +1735,5 @@ void run_property_tests(void) {
     test_prop_definite_symmetric();
     test_prop_modular_gcd();
     test_prop_integrate_exp();
+    test_prop_integrate_log();
 }

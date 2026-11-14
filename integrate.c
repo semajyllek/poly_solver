@@ -13,6 +13,7 @@
 #include "expression.h"
 #include "factor.h"
 #include "logpart.h"
+#include "integrate.h"
 #include "rootform.h"
 #include <stdlib.h>
 #include <string.h>
@@ -385,6 +386,28 @@ static Expr* integrate_rational(const Polynomial* num, const Polynomial* den) {
     free_polynomial(dr.remainder);
     if (last_error) { free_expr(result); return NULL; }
     return result ? combine_like_terms(result) : create_poly_expr(create_polynomial());
+}
+
+bool hermite_split(const Polynomial* num, const Polynomial* den, HermiteSplit* out) {
+    PolyDivResult dr = poly_divmod(num, den);
+    Hermite h = hermite_reduce(dr.remainder, den);
+    bool ok = poly_is_zero(dr.remainder) || hermite_ok(&h, dr.remainder, den);
+    PolyDivResult extra = poly_divmod(h.a, h.dstar);      // keep a/dstar proper
+    Polynomial* p = poly_add(dr.quotient, extra.quotient);
+    Polynomial* P = poly_integral(p);                     // ∫ of the polynomial parts
+    Polynomial* Pd = poly_multiply(P, h.g.den);
+    out->rnum = poly_add(h.g.num, Pd);
+    out->rden = poly_copy(h.g.den);
+    out->a = extra.remainder;
+    out->dstar = poly_copy(h.dstar);
+    free_polynomial(p); free_polynomial(P); free_polynomial(Pd); free_polynomial(extra.quotient);
+    free_polynomial(dr.quotient); free_polynomial(dr.remainder);
+    hermite_free(&h);
+    return ok;
+}
+
+void hermite_split_free(HermiteSplit* h) {
+    free_polynomial(h->rnum); free_polynomial(h->rden); free_polynomial(h->a); free_polynomial(h->dstar);
 }
 
 Expr* integrate(Expr* expr, const char* variable) {

@@ -39,14 +39,14 @@ bool qfn_is_zero(const QFn* a) { return poly_is_zero(a->num); }
 static QFn qfn_poly(const Polynomial* p) { return (QFn){ poly_copy(p), poly_one() }; }
 
 // a ± b
-static QFn qfn_add(const QFn* a, const QFn* b, int sign) {
+QFn qfn_add(const QFn* a, const QFn* b, int sign) {
     Polynomial *l = poly_multiply(a->num, b->den), *r = poly_multiply(b->num, a->den);
     Polynomial* n = sign > 0 ? poly_add(l, r) : poly_subtract(l, r);
     free_polynomial(l); free_polynomial(r);
     return qfn_from(n, poly_multiply(a->den, b->den));
 }
 
-static QFn qfn_mul(const QFn* a, const QFn* b) {
+QFn qfn_mul(const QFn* a, const QFn* b) {
     return qfn_from(poly_multiply(a->num, b->num), poly_multiply(a->den, b->den));
 }
 
@@ -64,7 +64,7 @@ static QFn qfn_derivative(const QFn* a) {
 
 Expr* qfn_expr(const QFn* a) {
     if (polynomial_degree(a->den) == 0) return create_poly_expr(poly_copy(a->num));
-    return create_rational_fn(poly_copy(a->num), poly_copy(a->den));
+    return create_div(create_poly_expr(poly_copy(a->num)), create_poly_expr(poly_copy(a->den)));
 }
 
 
@@ -98,14 +98,14 @@ static void lp_trim(LPoly* f) {
 }
 
 // a·θ^k; takes a
-static LPoly lp_term(QFn a, int k) {
+LPoly lpoly_term(QFn a, int k) {
     LPoly f = { k, 1, malloc(sizeof(QFn)) };
     f.a[0] = a;
     lp_trim(&f);
     return f;
 }
 
-static LPoly lp_add(const LPoly* f, const LPoly* g, int sign) {
+LPoly lpoly_add(const LPoly* f, const LPoly* g, int sign) {
     if (f->n == 0 && g->n == 0) return lp_empty();
     int lo = f->n == 0 ? g->lo : g->n == 0 ? f->lo : (f->lo < g->lo ? f->lo : g->lo);
     int hi = f->n == 0 ? g->lo + g->n : g->n == 0 ? f->lo + f->n
@@ -139,7 +139,33 @@ static LPoly lp_mul(const LPoly* f, const LPoly* g) {
     return r;
 }
 
+// (a·θ^k)' = a'·θ^k + k·a·L·θ^(k-1) for θ = ln(u), L = u'/u
+static LPoly log_derivative(const LPoly* f, const Tower* t) {
+    LPoly r = lp_span(f->lo > 0 ? f->lo - 1 : 0, f->n + 1);
+    QFn L = tower_L(t);
+    for (int i = 0; i < f->n; i++) {
+        int k = f->lo + i;
+        QFn d = qfn_derivative(&f->a[i]);
+        QFn* at = &r.a[k - r.lo];
+        QFn s = qfn_add(at, &d, 1);
+        qfn_free(at); *at = s; qfn_free(&d);
+        if (k == 0) continue;
+        Rational kk = rat_from_int(k);
+        QFn kL = { poly_scale(L.num, &kk), poly_copy(L.den) };
+        QFn p = qfn_mul(&kL, &f->a[i]);
+        QFn* below = &r.a[k - 1 - r.lo];
+        QFn s2 = qfn_add(below, &p, 1);
+        qfn_free(below); *below = s2;
+        qfn_free(&kL); qfn_free(&p);
+        rat_clear(&kk);
+    }
+    qfn_free(&L);
+    lp_trim(&r);
+    return r;
+}
+
 LPoly lpoly_derivative(const LPoly* f, const Tower* t) {
+    if (t->kind == TOWER_LOG) return log_derivative(f, t);
     LPoly r = lp_span(f->lo, f->n);
     QFn vp = { poly_derivative(t->v), poly_one() };
     for (int i = 0; i < f->n; i++) {
@@ -159,14 +185,21 @@ LPoly lpoly_derivative(const LPoly* f, const Tower* t) {
 }
 
 bool lpoly_equal(const LPoly* f, const LPoly* g) {
-    LPoly d = lp_add(f, g, -1);
+    LPoly d = lpoly_add(f, g, -1);
     bool z = d.n == 0;
     lpoly_free(&d);
     return z;
 }
 
-// exp(k·v)
+QFn tower_L(const Tower* t) { return (QFn){ poly_copy(t->Ln), poly_copy(t->Ld) }; }
+
+// exp(k·v), or ln(u)^k
 static Expr* theta_power(const Tower* t, int k) {
+    if (t->kind == TOWER_LOG) {
+        QFn u = { t->un, t->ud };
+        Expr* ln = create_ln(qfn_expr(&u));
+        return k == 1 ? ln : create_pow(ln, create_const(k));
+    }
     Rational kk = rat_from_int(k);
     Expr* e = create_exp(create_poly_expr(poly_scale(t->v, &kk)));
     rat_clear(&kk);
@@ -188,16 +221,17 @@ Expr* lpoly_term_expr(const QFn* a, const Tower* t, int k) {
     rat_init(&c);
     bool constant = constant_value(a->num, &c);
     bool minus_one = constant && mpz_cmp_si(mpq_numref(c.val), -1) == 0 && mpz_cmp_ui(mpq_denref(c.val), 1) == 0;
-    if (minus_one) e = create_neg(e);
-    else if (!(constant && rat_is_one(&c))) e = create_mul(create_poly_expr(poly_copy(a->num)), e);
+    if (!minus_one && !(constant && rat_is_one(&c))) e = create_mul(create_poly_expr(poly_copy(a->num)), e);
     rat_clear(&c);
     if (polynomial_degree(a->den) > 0) e = create_div(e, create_poly_expr(poly_copy(a->den)));
-    return e;
+    return minus_one ? create_neg(e) : e;                 // outside, so sums print a - b
 }
 
 Expr* lpoly_expr(const LPoly* f, const Tower* t) {
     Expr* acc = NULL;
-    for (int i = 0; i < f->n; i++) {
+    bool down = t->kind == TOWER_LOG;                     // ln(x)^3 terms first, like a textbook
+    for (int j = 0; j < f->n; j++) {
+        int i = down ? f->n - 1 - j : j;
         if (qfn_is_zero(&f->a[i])) continue;
         Expr* term = lpoly_term_expr(&f->a[i], t, f->lo + i);
         acc = acc ? create_add(acc, term) : term;
@@ -210,16 +244,35 @@ Expr* lpoly_expr(const LPoly* f, const Tower* t) {
 typedef struct {
     Polynomial** u; // the nonconstant exp arguments found
     int n;
+    QFn* w;         // the nonconstant ln arguments found
+    int nw;
     const char* unsupported;
 } Args;
 
 static void note(Args* A, const char* why) { if (!A->unsupported) A->unsupported = why; }
 
+// an ln argument: a nonconstant rational function (ln(1) = 0 is fine; ln(c) is a new constant)
+static void collect_ln(const Expr* e, Args* A) {
+    Expr* c = canonicalize(e->ln_arg);
+    if (!c) { note(A, "ln of something other than a rational function (such as ln(ln(x))) is not supported yet"); return; }
+    QFn u = c->type == EXPR_POLY ? qfn_poly(c->poly) : qfn_from(poly_copy(c->ratfn.num), poly_copy(c->ratfn.den));
+    free_expr(c);
+    bool constant = polynomial_degree(u.num) <= 0 && polynomial_degree(u.den) == 0;
+    Rational v;
+    rat_init(&v);
+    if (constant) poly_coeff(&v, u.num, 0);
+    if (constant && !rat_is_one(&v)) note(A, "ln of a constant other than 1 (a transcendental number) is not supported yet");
+    rat_clear(&v);
+    if (constant) { qfn_free(&u); return; }
+    A->w = realloc(A->w, (size_t)(A->nw + 1) * sizeof(QFn));
+    A->w[A->nw++] = u;
+}
+
 static void collect(const Expr* e, Args* A) {
     switch (e->type) {
         case EXPR_BINOP: collect(e->binop.left, A); collect(e->binop.right, A); return;
         case EXPR_NEG: collect(e->operand, A); return;
-        case EXPR_LN: note(A, "ln is not supported yet"); return;
+        case EXPR_LN: collect_ln(e, A); return;
         case EXPR_EXP: break;
         default: return;
     }
@@ -277,6 +330,91 @@ static int power_of(const Tower* t, const Polynomial* u) {
     return k;
 }
 
+// --- the log tower: θ = ln(u), every ln argument an integer power of u ---
+
+static QFn log_deriv(const QFn* u) {
+    QFn d = qfn_derivative(u), inv = qfn_inv(u);
+    QFn L = qfn_mul(&d, &inv);
+    qfn_free(&d); qfn_free(&inv);
+    return L;
+}
+
+// a/b as a rational constant, if it is one
+static bool constant_ratio(const QFn* a, const QFn* b, Rational* r) {
+    QFn ib = qfn_inv(b);
+    QFn q = qfn_mul(a, &ib);
+    bool c = polynomial_degree(q.num) <= 0 && polynomial_degree(q.den) == 0;
+    if (c) poly_coeff(r, q.num, 0);
+    qfn_free(&ib); qfn_free(&q);
+    return c;
+}
+
+static QFn qfn_pow(const QFn* a, long k) {
+    QFn base = k < 0 ? qfn_inv(a) : qfn_copy(a), r = { poly_one(), poly_one() };
+    for (long i = 0; i < labs(k); i++) { QFn p = qfn_mul(&r, &base); qfn_free(&r); r = p; }
+    qfn_free(&base);
+    return r;
+}
+
+static bool smaller_abs(const Rational* a, const Rational* b) {
+    Rational x, y;
+    rat_init(&x); rat_init(&y);
+    rat_abs(&x, a); rat_abs(&y, b);
+    bool lt = rat_cmp(&x, &y) < 0;
+    rat_clear(&x); rat_clear(&y);
+    return lt;
+}
+
+// θ = ln(u) for the argument u with the smallest |ln u / ln w|; false unless every argument is
+// exactly u^k for an integer k (ln(2x) = ln 2 + ln x brings in a new constant)
+static bool make_log_tower(const Args* A, Tower* t) {
+    QFn L0 = log_deriv(&A->w[0]);
+    Rational* r = malloc((size_t)A->nw * sizeof(Rational));
+    int base = 0;
+    bool ok = true;
+    for (int i = 0; i < A->nw; i++) {
+        rat_init(&r[i]);
+        QFn Li = log_deriv(&A->w[i]);
+        ok = ok && constant_ratio(&Li, &L0, &r[i]);
+        qfn_free(&Li);
+        if (ok && smaller_abs(&r[i], &r[base])) base = i;
+    }
+    for (int i = 0; ok && i < A->nw; i++) {
+        Rational k;
+        rat_init(&k);
+        rat_div(&k, &r[i], &r[base]);
+        ok = mpz_cmp_ui(mpq_denref(k.val), 1) == 0 && mpz_cmpabs_ui(mpq_numref(k.val), MAX_EXP_POWER) <= 0;
+        if (ok) {
+            QFn p = qfn_pow(&A->w[base], mpz_get_si(mpq_numref(k.val)));
+            QFn d = qfn_add(&p, &A->w[i], -1);
+            ok = qfn_is_zero(&d);
+            qfn_free(&p); qfn_free(&d);
+        }
+        rat_clear(&k);
+    }
+    if (ok) {                                             // orient as ln(x), not ln(1/x)
+        QFn u = polynomial_degree(A->w[base].num) < polynomial_degree(A->w[base].den) ? qfn_inv(&A->w[base]) : qfn_copy(&A->w[base]);
+        QFn L = log_deriv(&u);
+        *t = (Tower){ TOWER_LOG, NULL, u.num, u.den, L.num, L.den };
+    }
+    for (int i = 0; i < A->nw; i++) rat_clear(&r[i]);
+    free(r);
+    qfn_free(&L0);
+    return ok;
+}
+
+// the k with ln(w) = k·θ, for an argument w of the tower (an integer by construction)
+static long log_multiple(const Tower* t, const QFn* w) {
+    QFn Lw = log_deriv(w), L = tower_L(t);
+    Rational k;
+    rat_init(&k);
+    constant_ratio(&Lw, &L, &k);
+    long m = mpz_get_si(mpq_numref(k.val));
+    rat_clear(&k);
+    qfn_free(&Lw); qfn_free(&L);
+    return m;
+}
+
 // --- expression -> Laurent polynomial ---
 
 typedef struct {
@@ -286,8 +424,11 @@ typedef struct {
 
 static LPoly conv(const Expr* e, Conv* C);
 
-// a single term a·θ^k (the only divisors allowed)
-static bool is_monomial(const LPoly* f) { return f->n == 1; }
+// a single term a·θ^k: the only divisors allowed (for ln, only with k = 0: 1/ln(x) is not a
+// polynomial in θ)
+static bool divisor_ok(const LPoly* f, const Tower* t) { return f->n == 1 && (t->kind == TOWER_EXP || f->lo == 0); }
+
+#define BAD_DIVISOR "division by a sum involving exp, or by ln(...) (such as 1/(1 + exp(x)) or 1/ln(x)), is not supported yet"
 
 static LPoly conv_pow(const Expr* e, Conv* C) {
     Expr* n = canonicalize(e->binop.right);
@@ -305,14 +446,14 @@ static LPoly conv_pow(const Expr* e, Conv* C) {
     if (!integer) { C->unsupported = "exponents must be small integers"; return lp_empty(); }
     LPoly b = conv(e->binop.left, C);
     if (C->unsupported) { lpoly_free(&b); return lp_empty(); }
-    if (k < 0 && !is_monomial(&b)) { lpoly_free(&b); C->unsupported = "division by a sum involving exp (such as 1/(1 + exp(x))) is not supported yet"; return lp_empty(); }
+    if (k < 0 && !divisor_ok(&b, C->t)) { lpoly_free(&b); C->unsupported = BAD_DIVISOR; return lp_empty(); }
     if (k < 0) {                                          // (a·θ^j)^-1 = (1/a)·θ^-j
-        LPoly inv = lp_term(qfn_inv(&b.a[0]), -b.lo);
+        LPoly inv = lpoly_term(qfn_inv(&b.a[0]), -b.lo);
         lpoly_free(&b);
         b = inv;
         k = -k;
     }
-    LPoly r = lp_term((QFn){ poly_one(), poly_one() }, 0);
+    LPoly r = lpoly_term((QFn){ poly_one(), poly_one() }, 0);
     for (long i = 0; i < k; i++) { LPoly p = lp_mul(&r, &b); lpoly_free(&r); r = p; }
     lpoly_free(&b);
     return r;
@@ -322,13 +463,13 @@ static LPoly conv_binop(const Expr* e, Conv* C) {
     if (e->binop.op == OP_POW) return conv_pow(e, C);
     LPoly l = conv(e->binop.left, C), r = conv(e->binop.right, C), out = lp_empty();
     if (!C->unsupported) switch (e->binop.op) {
-        case OP_ADD: out = lp_add(&l, &r, 1); break;
-        case OP_SUB: out = lp_add(&l, &r, -1); break;
+        case OP_ADD: out = lpoly_add(&l, &r, 1); break;
+        case OP_SUB: out = lpoly_add(&l, &r, -1); break;
         case OP_MUL: out = lp_mul(&l, &r); break;
         default:
             if (r.n == 0) C->unsupported = "division by zero";
-            else if (!is_monomial(&r)) C->unsupported = "division by a sum involving exp (such as 1/(1 + exp(x))) is not supported yet";
-            else { LPoly inv = lp_term(qfn_inv(&r.a[0]), -r.lo); out = lp_mul(&l, &inv); lpoly_free(&inv); }
+            else if (!divisor_ok(&r, C->t)) C->unsupported = BAD_DIVISOR;
+            else { LPoly inv = lpoly_term(qfn_inv(&r.a[0]), -r.lo); out = lp_mul(&l, &inv); lpoly_free(&inv); }
     }
     lpoly_free(&l); lpoly_free(&r);
     return out;
@@ -336,18 +477,18 @@ static LPoly conv_binop(const Expr* e, Conv* C) {
 
 static LPoly conv(const Expr* e, Conv* C) {
     if (C->unsupported) return lp_empty();
-    if (!expr_has_exp(e)) {                               // a rational function of x
+    if (!expr_has_exp(e) && !expr_has_ln(e)) {           // a rational function of x
         Expr* c = canonicalize((Expr*)e);                 // canonicalize does not modify e
         if (!c) { C->unsupported = "not a rational function of x and exp"; return lp_empty(); }
         QFn a = c->type == EXPR_POLY ? qfn_poly(c->poly) : qfn_from(poly_copy(c->ratfn.num), poly_copy(c->ratfn.den));
         free_expr(c);
-        return lp_term(a, 0);
+        return lpoly_term(a, 0);
     }
     switch (e->type) {
         case EXPR_BINOP: return conv_binop(e, C);
         case EXPR_NEG: {
             LPoly f = conv(e->operand, C), z = lp_empty();
-            LPoly r = lp_add(&z, &f, -1);
+            LPoly r = lpoly_add(&z, &f, -1);
             lpoly_free(&f);
             return r;
         }
@@ -355,7 +496,18 @@ static LPoly conv(const Expr* e, Conv* C) {
             Expr* c = canonicalize(e->fn_arg);           // a polynomial (collect checked)
             int k = polynomial_degree(c->poly) > 0 ? power_of(C->t, c->poly) : 0;
             free_expr(c);
-            return lp_term((QFn){ poly_one(), poly_one() }, k);
+            return lpoly_term((QFn){ poly_one(), poly_one() }, k);
+        }
+        case EXPR_LN: {                                   // ln(u^k) = k·θ (collect checked u)
+            Expr* c = canonicalize(e->ln_arg);
+            QFn w = c->type == EXPR_POLY ? qfn_poly(c->poly) : qfn_from(poly_copy(c->ratfn.num), poly_copy(c->ratfn.den));
+            free_expr(c);
+            bool constant = polynomial_degree(w.num) <= 0 && polynomial_degree(w.den) == 0; // ln(1) = 0
+            Rational k = rat_from_int(constant ? 0 : log_multiple(C->t, &w));
+            qfn_free(&w);
+            QFn kq = { poly_constant(&k), poly_one() };
+            rat_clear(&k);
+            return lpoly_term(kq, 1);
         }
         default:
             C->unsupported = "only +, -, *, /, integer powers and exp are supported";
@@ -364,25 +516,30 @@ static LPoly conv(const Expr* e, Conv* C) {
 }
 
 ExpForm exp_form(const Expr* e) {
-    ExpForm F = { { NULL }, lp_empty(), NULL };
-    Args A = { NULL, 0, NULL };
+    ExpForm F = { { TOWER_EXP, NULL, NULL, NULL, NULL, NULL }, lp_empty(), NULL };
+    Args A = { NULL, 0, NULL, 0, NULL };
     collect(e, &A);
     F.unsupported = A.unsupported;
+    if (!F.unsupported && A.n > 0 && A.nw > 0) F.unsupported = "exp and ln together (two towers) are not supported yet";
+    if (!F.unsupported && A.nw > 0 && !make_log_tower(&A, &F.t))
+        F.unsupported = "ln of arguments that are not integer powers of one function (such as ln(x)·ln(x+1) or ln(2x)) is not supported yet";
     if (!F.unsupported && A.n > 0 && !make_tower(&A, &F.t))
         F.unsupported = "exponentials of independent arguments (such as exp(x)·exp(x^2)) are not supported yet";
-    if (!F.unsupported && !F.t.v) F.t.v = poly_one();     // no θ: exp(0) only; any v works
+    if (!F.unsupported && F.t.kind == TOWER_EXP && !F.t.v) F.t.v = poly_one(); // no θ: any v works
     if (!F.unsupported) {
         Conv C = { &F.t, NULL };
         F.f = conv(e, &C);
         F.unsupported = C.unsupported;
     }
     for (int i = 0; i < A.n; i++) free_polynomial(A.u[i]);
-    free(A.u);
+    for (int i = 0; i < A.nw; i++) qfn_free(&A.w[i]);
+    free(A.u); free(A.w);
     return F;
 }
 
 void exp_form_free(ExpForm* F) {
     lpoly_free(&F->f);
-    free_polynomial(F->t.v);
-    F->t.v = NULL;
+    Polynomial* parts[] = { F->t.v, F->t.un, F->t.ud, F->t.Ln, F->t.Ld };
+    for (int i = 0; i < 5; i++) free_polynomial(parts[i]);
+    F->t = (Tower){ TOWER_EXP, NULL, NULL, NULL, NULL, NULL };
 }

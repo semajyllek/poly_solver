@@ -284,10 +284,28 @@ static void emit_negated_term(const Expr* expr, StrBuf* sb) {
     expr_to_string_impl(expr, sb);
 }
 
+// a polynomial whose leading coefficient is negative (it prints with a leading "-")
+static bool leading_minus_poly(const Expr* e) {
+    return e->type == EXPR_POLY && e->poly->head && rat_is_negative(&e->poly->head->coeff);
+}
+
+// a product led by a one-term polynomial with a negative coefficient: -1/3x^3 * ln(abs(x))
+static bool negative_monomial_product(const Expr* e) {
+    return e->type == EXPR_BINOP && (e->binop.op == OP_MUL || e->binop.op == OP_DIV)
+        && leading_minus_poly(e->binop.left) && !e->binop.left->poly->head->next;
+}
+
 // emit a + b, absorbing negative right-hand sides as subtraction
 static void emit_add(const Expr* left, const Expr* right, StrBuf* sb) {
     expr_to_string_impl(left, sb);
-    if (is_negative_term(right)) {
+    if (leading_minus_poly(right) || negative_monomial_product(right)) {   // a + -x^2 + 3 -> a - x^2 + 3
+        StrBuf rs = sb_new();
+        expr_to_string_impl(right, &rs);
+        char* str = sb_finish(&rs);
+        sb_append(sb, " - ");
+        sb_append(sb, str + 1);                           // drop the leading '-'
+        free(str);
+    } else if (is_negative_term(right)) {
         sb_append(sb, " - ");
         emit_negated_term(right, sb);
     } else {
@@ -423,7 +441,8 @@ static void expr_to_string_impl(const Expr* expr, StrBuf* sb) {
             break;
         case EXPR_NEG: {
             ExprType t = expr->operand->type;              // a function call needs no parentheses
-            bool call = t == EXPR_EXP || t == EXPR_LN || t == EXPR_ATAN || t == EXPR_SQRT || t == EXPR_TRIG;
+            bool call = t == EXPR_EXP || t == EXPR_LN || t == EXPR_ATAN || t == EXPR_SQRT || t == EXPR_TRIG
+                     || (t == EXPR_BINOP && expr->operand->binop.op != OP_ADD && expr->operand->binop.op != OP_SUB);
             sb_append(sb, call ? "-" : "-(");
             expr_to_string_impl(expr->operand, sb);
             if (!call) sb_append(sb, ")");
