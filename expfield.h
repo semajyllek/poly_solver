@@ -6,7 +6,8 @@
 // The differential field Q(x)(θ) for one transcendental θ over Q(x), either
 //   θ = exp(v), v a nonconstant polynomial (θ' = v'·θ), with Laurent polynomials Σ a_k·θ^k, or
 //   θ = ln(u), u a nonconstant rational function (θ' = u'/u), with polynomials Σ_{k>=0} a_k·θ^k,
-// coefficients a_k in Q(x): x²·exp(3x), exp(x)/x, x·ln(x)^2, ln(x^2 + 1)/x, ...
+// coefficients a_k in Q(x): x²·exp(3x), exp(x)/x, x·ln(x)^2, ln(x^2 + 1)/x, ...; and quotients of
+// these (1/(1 + exp(x)), 1/(x·ln(x))), kept as reduced fractions over K[θ] (kpoly.h)
 
 // a rational function num/den in lowest terms with a monic den
 typedef struct {
@@ -32,7 +33,7 @@ typedef struct {
 // outside this setting (division by a sum with exp, exp of a non-polynomial, ln, ...)
 typedef struct {
     Tower t;      // t.v is the constant 1 when e has no exp of a nonconstant argument
-    LPoly f;
+    LPoly f, den; // e = f/den in lowest terms, den monic in θ (θ ∤ den for exp); den = 1 mostly
     const char* unsupported;
 } ExpForm;
 
@@ -50,11 +51,15 @@ QFn qfn_add(const QFn* a, const QFn* b, int sign);    // a ± b
 QFn qfn_mul(const QFn* a, const QFn* b);
 LPoly lpoly_term(QFn a, int k);                       // a·θ^k; takes a
 LPoly lpoly_add(const LPoly* f, const LPoly* g, int sign);
+LPoly lpoly_mul(const LPoly* f, const LPoly* g);
+QFn qfn_inv(const QFn* a);                            // 1/a for a ≠ 0
+QFn qfn_derivative(const QFn* a);                     // d/dx
 
 LPoly lpoly_derivative(const LPoly* f, const Tower* t); // (a·θ^k)' = (a' + k·v'·a)·θ^k
 bool lpoly_equal(const LPoly* f, const LPoly* g);
 void lpoly_free(LPoly* f);
 Expr* lpoly_expr(const LPoly* f, const Tower* t);     // Σ a_k·exp(k·v), 0 when empty
+Expr* lpoly_expr_order(const LPoly* f, const Tower* t, bool down);
 Expr* lpoly_term_expr(const QFn* a, const Tower* t, int k); // one term a·exp(k·v)
 
 #endif

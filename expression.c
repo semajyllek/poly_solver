@@ -248,6 +248,19 @@ static bool positive_constant(const Expr* e) {
     return pos;
 }
 
+// positive for every real x by its shape: positive constants and exp(...) combined by + · /
+// (exp(x) + 1, 2·exp(x)), so ln of it needs no abs
+static bool evidently_positive(const Expr* e) {
+    switch (e->type) {
+        case EXPR_EXP: return true;
+        case EXPR_POLY: return polynomial_degree(e->poly) == 0 && !rat_is_negative(&e->poly->head->coeff);
+        case EXPR_BINOP:
+            return (e->binop.op == OP_ADD || e->binop.op == OP_MUL || e->binop.op == OP_DIV)
+                && evidently_positive(e->binop.left) && evidently_positive(e->binop.right);
+        default: return positive_constant(e);
+    }
+}
+
 static void expr_to_string_impl(const Expr* expr, StrBuf* sb);
 
 // emit a term with its sign flipped: -1/2 * ln(abs(x)) → 1/2 * ln(abs(x))
@@ -480,8 +493,8 @@ static void expr_to_string_impl(const Expr* expr, StrBuf* sb) {
             break;
         }
         case EXPR_LN:
-            if (positive_constant(expr->ln_arg)) {
-                sb_append(sb, "ln(");                    // ln(3/2), ln(3 + 2 * sqrt(2)): no abs
+            if (evidently_positive(expr->ln_arg)) {
+                sb_append(sb, "ln(");                    // ln(3/2), ln(3 + 2 * sqrt(2)), ln(exp(x) + 1): no abs
                 expr_to_string_impl(expr->ln_arg, sb);
                 sb_append(sb, ")");
                 break;

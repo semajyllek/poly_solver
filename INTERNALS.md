@@ -1079,9 +1079,9 @@ Infinite examples: `∫_{-∞}^{∞} 1/(x⁴+1) = 1/2 * sqrt(2) * pi`, `∫_0^�
 `exp_form` builds the setting from the parse tree:
 - It collects every `exp(u)` and canonicalizes each `u`, which must be a polynomial.
 - It checks that all the `u` are rational multiples of the first argument w, and sets `v = w/l`, where l is the lcm of the ratios' denominators. Every `u` is then an integer multiple `k·v`, and v is oriented so that `lc(v) > 0`.
-- It converts the tree: `+ − ·`, division by a single term `a·θ^k`, integer powers capped at 256, and `exp(k·v) → θ^k`.
+- It converts the tree into a fraction `f/den` over `K[θ]`, K = Q(x) (`kpoly.c`): `+ − · /`, integer powers capped at 256, and `exp(k·v) → θ^k`. The fraction is reduced by a gcd in K[θ] and `den` is made monic. For exp, θ is a unit of `K[θ, 1/θ]`, so θ powers move into the numerator and `θ ∤ den`. When `den = 1`, f is a Laurent polynomial and the paths below apply directly. Otherwise the denominator steps further down run first.
 
-Anything else is reported as unsupported, with a reason: a sum in a denominator, independent exponentials, `exp` of a constant or a non-polynomial, and `ln`.
+Anything else is reported as unsupported, with a reason: independent exponentials, and `exp` of a constant or a non-polynomial.
 
 **Theorem.** By Liouville's theorem, ∫ f is elementary iff `∫ f = ∫ a₀ + Σ_{k≠0} y_k·θ^k` with `y_k ∈ Q(x)` satisfying the Risch differential equation `y' + k·v'·y = a_k`. The solution is unique, because `y = C·θ^(−k)` is not rational. ∫ a₀ is the rational integration of §11.2–11.4.
 
@@ -1112,15 +1112,42 @@ By Liouville's theorem, `∫ f = Σ_{k=1}^{n+1} b_k θ^k + (an integral over Q(x
 - `∫ ln(x)/(x+1)`: `A/D = 1/(x+1)` is not a multiple of `1/x`, so the integral is non-elementary (the dilogarithm).
 - `∫ ln(x²+1)^2`: level 1 needs `atan(x)`, which is not a multiple of `ln(x²+1)`, so it is non-elementary.
 
+**Denominators in θ** (`integrate_fraction` in `risch.c`). These cover `1/(1+exp(x))`, `1/(x·ln(x))` and `1/ln(x)`. For f = N/E, with E monic in θ and θ ∤ E for exp, the steps are:
+- **Proper part.** For exp, write the numerator as `N·θ^(−m)`. Bezout gives `s·θ^m + t·E = N`, so `f = s/E + t·θ^(−m)`. In the exp case θ itself is *special* (`θ | θ'`), which is why it is split off first. The ln case has m = 0.
+- **Hermite reduction over K[θ].** This is Bronstein's quadratic HermiteReduce:
+  - The square-free parts V of E come from `d/dθ`.
+  - Each step solves `B·U·D(V) + C·V = −A/j`, where D is the derivation: `D(θ) = v'θ` or `D(θ) = u'/u`.
+  - Every factor of E is *normal*: gcd(V, D(V)) = 1, because the only special irreducible is θ for exp, and there are none for ln.
+  - The result is `∫ b/E = g + ∫ h/d`, with d square-free and `deg h < deg d`.
+- **Residue test (Rothstein–Trager).**
+  - **The residues.** They are the roots of `res_θ(d, h − z·D(d))`, which up to a factor in K is the characteristic polynomial of `s = h·D(d)⁻¹ mod d`.
+  - **The criterion.** ∫ f is elementary only if these roots are constants (Bronstein, *Symbolic Integration I*, Thm 5.6.1).
+  - **Exact, without randomness.** That holds iff every power sum `Tr(s^k)`, `k = 1..deg d`, lies in Q. The traces use `Tr(θ^j)` from d's coefficients by Newton's identities.
+  - **The proof.** A nonconstant power sum proves the integral is non-elementary, and the part `h/d` is printed.
+  - **Otherwise** Newton's identities give `R(z) ∈ Q[z]`, which is factored over Q. For each rational root c, `g_c = gcd(d, h − c·D(d))`, scaled to a primitive polynomial `G_c` in `Z[x][θ]`, contributes `c·ln(G_c)`.
+  - **Irrational residues** (`exp(x)/(1+exp(2x)) = atan(exp(x))`, residues ±i/2) are elementary but need ln/atan over Q(c). They are reported as unsupported.
+- **Remainder.** `f − D(g) − Σ c·D(G_c)/G_c` is computed exactly and must be a polynomial (Laurent for exp) in θ. A failure here is an internal error. The remainder carries the exp correction `−Σ c·deg(G_c)·v'` and the `ln(content)` terms automatically. It is then integrated by the paths above, which check themselves.
+- **Examples.**
+  - `∫ 1/(1+exp(x)) = x − ln(exp(x) + 1)`: the residue is −1, and the remainder is `0 − (−1)·1·v' = 1`.
+  - `∫ 1/(x·ln(x)) = ln(ln(x))`: s = 1.
+  - `∫ 1/ln(x)`: here `s = 1/L = x` is not constant (this is the logarithmic integral).
+  - `∫ x/(1+exp(x))`: the residue is −x (this is a dilogarithm).
+  - With θ = exp(x²), `x/(θ − 3)` has the constant residue 1/6 and *is* elementary, while `1/(θ − 3)` is not.
+
 **Verification.**
-- **Pinned cases** in `test_reg_integrate_exp`: 12 exact results, 5 proofs, 8 unsupported inputs, and parser cases.
+- **Pinned cases** in `test_reg_integrate_exp`: 12 exact results, 5 proofs, 7 unsupported inputs, and parser cases.
 - **Round trips** in `test_prop_integrate_exp`: integrating `d/dx F` returns F in canonical form. Each is also checked by a 5-point numeric derivative against the original input, which does not share the tower.
 - **Non-elementary by construction:** `c·exp(v)/(x − r)` is added to a solvable integrand, including with r on an existing double pole, so that the remainder test decides.
 - **SymPy:** the cross-check stream compares verdicts with SymPy's `risch_integrate`. For example, seed 20261113 gives 23 elementary results, which differentiate back exactly, and 16 proofs that SymPy confirms.
 - **ln tests.**
-  - `test_reg_integrate_log` pins 11 answers, 5 proofs and 7 unsupported inputs.
+  - `test_reg_integrate_log` pins 11 answers, 5 proofs and 5 unsupported inputs.
   - `test_prop_integrate_log` checks round trips with the numeric derivative, and that adding `c·ln(x)/(x − r)` is always rejected.
   - A separate SymPy stream for ln matched on all 400 integrands over 10 seeds: 257 elementary results and 143 proofs.
+- **Denominator tests.**
+  - `test_reg_integrate_tower_fractions` pins 10 answers, 6 proofs and 2 irrational-residue cases.
+  - `test_prop_integrate_tower_fractions` integrates `(A/B^m + c·ln(G) + a·θ)'` over five towers. B and G are linear or quadratic in θ, with coefficients in Q[x]. Each result is checked by the numeric derivative.
+  - That test also adds a term with a nonconstant residue, which must be rejected.
+  - The SymPy `check_frac` stream matched on all 400 integrands, seeds 100–499: 219 elementary results that differentiate back exactly, 177 proofs that SymPy confirms, and 4 cases with irrational residues, which are unsupported.
 
 ---
 

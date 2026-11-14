@@ -2,6 +2,7 @@
 // from an expression tree (which also finds v).
 #include "expfield.h"
 #include "modgcd.h"
+#include "kpoly.h"
 #include <stdlib.h>
 
 #define MAX_EXP_POWER 256 // |n| in u^n, like canonicalize's cap on polynomial powers
@@ -51,10 +52,10 @@ QFn qfn_mul(const QFn* a, const QFn* b) {
 }
 
 // 1/a for a ≠ 0
-static QFn qfn_inv(const QFn* a) { return qfn_from(poly_copy(a->den), poly_copy(a->num)); }
+QFn qfn_inv(const QFn* a) { return qfn_from(poly_copy(a->den), poly_copy(a->num)); }
 
 // (n/d)' = (n'd - nd')/d²
-static QFn qfn_derivative(const QFn* a) {
+QFn qfn_derivative(const QFn* a) {
     Polynomial *dn = poly_derivative(a->num), *dd = poly_derivative(a->den);
     Polynomial *l = poly_multiply(dn, a->den), *r = poly_multiply(a->num, dd);
     Polynomial* n = poly_subtract(l, r);
@@ -125,7 +126,7 @@ LPoly lpoly_add(const LPoly* f, const LPoly* g, int sign) {
     return r;
 }
 
-static LPoly lp_mul(const LPoly* f, const LPoly* g) {
+LPoly lpoly_mul(const LPoly* f, const LPoly* g) {
     if (f->n == 0 || g->n == 0) return lp_empty();
     LPoly r = lp_span(f->lo + g->lo, f->n + g->n - 1);
     for (int i = 0; i < f->n; i++)
@@ -227,9 +228,11 @@ Expr* lpoly_term_expr(const QFn* a, const Tower* t, int k) {
     return minus_one ? create_neg(e) : e;                 // outside, so sums print a - b
 }
 
-Expr* lpoly_expr(const LPoly* f, const Tower* t) {
+Expr* lpoly_expr(const LPoly* f, const Tower* t) { return lpoly_expr_order(f, t, t->kind == TOWER_LOG); }
+
+// the terms from the top power down (ln(x)^3 first, exp(x) + 1), or from the bottom up
+Expr* lpoly_expr_order(const LPoly* f, const Tower* t, bool down) {
     Expr* acc = NULL;
-    bool down = t->kind == TOWER_LOG;                     // ln(x)^3 terms first, like a textbook
     for (int j = 0; j < f->n; j++) {
         int i = down ? f->n - 1 - j : j;
         if (qfn_is_zero(&f->a[i])) continue;
@@ -415,22 +418,43 @@ static long log_multiple(const Tower* t, const QFn* w) {
     return m;
 }
 
-// --- expression -> Laurent polynomial ---
+// --- expression -> fraction in θ ---
 
 typedef struct {
     const Tower* t;
     const char* unsupported;
 } Conv;
 
-static LPoly conv(const Expr* e, Conv* C);
+static KFrac conv(const Expr* e, Conv* C);
 
-// a single term a·θ^k: the only divisors allowed (for ln, only with k = 0: 1/ln(x) is not a
-// polynomial in θ)
-static bool divisor_ok(const LPoly* f, const Tower* t) { return f->n == 1 && (t->kind == TOWER_EXP || f->lo == 0); }
+static KFrac kf_empty(void) { return (KFrac){ lp_empty(), lp_empty() }; }
+static KFrac kf_poly(LPoly n) { return (KFrac){ n, kp_one() }; }  // takes n
+static bool kf_is_poly(const KFrac* f) { return kp_is_one(&f->d); }
 
-#define BAD_DIVISOR "division by a sum involving exp, or by ln(...) (such as 1/(1 + exp(x)) or 1/ln(x)), is not supported yet"
+// n/d for a nonzero d: kept as a polynomial when d = 1 (no gcd needed); takes both
+static KFrac kf_make(LPoly n, LPoly d, const Conv* C) {
+    if (kp_is_one(&d)) { lpoly_free(&d); return kf_poly(n); }
+    return kfrac_make(n, d, C->t->kind);
+}
 
-static LPoly conv_pow(const Expr* e, Conv* C) {
+// 1/f for f ≠ 0
+static KFrac kf_inv(const KFrac* f, const Conv* C) { return kf_make(kp_copy(&f->d), kp_copy(&f->n), C); }
+
+static KFrac kf_mul(const KFrac* a, const KFrac* b, const Conv* C) {
+    return kf_make(lpoly_mul(&a->n, &b->n), lpoly_mul(&a->d, &b->d), C);
+}
+
+static KFrac kf_add(const KFrac* a, const KFrac* b, Conv* C) {
+    if (kf_is_poly(a) && kf_is_poly(b)) return kf_poly(lpoly_add(&a->n, &b->n, 1));
+    return kfrac_add(a, b, C->t->kind);
+}
+
+static KFrac kf_neg(const KFrac* f) {
+    LPoly z = lp_empty();
+    return (KFrac){ lpoly_add(&z, &f->n, -1), kp_copy(&f->d) };
+}
+
+static KFrac conv_pow(const Expr* e, Conv* C) {
     Expr* n = canonicalize(e->binop.right);
     bool integer = n && n->type == EXPR_POLY && polynomial_degree(n->poly) <= 0;
     long k = 0;
@@ -443,80 +467,72 @@ static LPoly conv_pow(const Expr* e, Conv* C) {
         rat_clear(&c);
     }
     free_expr(n);
-    if (!integer) { C->unsupported = "exponents must be small integers"; return lp_empty(); }
-    LPoly b = conv(e->binop.left, C);
-    if (C->unsupported) { lpoly_free(&b); return lp_empty(); }
-    if (k < 0 && !divisor_ok(&b, C->t)) { lpoly_free(&b); C->unsupported = BAD_DIVISOR; return lp_empty(); }
-    if (k < 0) {                                          // (a·θ^j)^-1 = (1/a)·θ^-j
-        LPoly inv = lpoly_term(qfn_inv(&b.a[0]), -b.lo);
-        lpoly_free(&b);
-        b = inv;
-        k = -k;
-    }
-    LPoly r = lpoly_term((QFn){ poly_one(), poly_one() }, 0);
-    for (long i = 0; i < k; i++) { LPoly p = lp_mul(&r, &b); lpoly_free(&r); r = p; }
-    lpoly_free(&b);
+    if (!integer) { C->unsupported = "exponents must be small integers"; return kf_empty(); }
+    KFrac b = conv(e->binop.left, C);
+    if (C->unsupported) { kfrac_free(&b); return kf_empty(); }
+    if (k < 0 && b.n.n == 0) { kfrac_free(&b); C->unsupported = "division by zero"; return kf_empty(); }
+    if (k < 0) { KFrac inv = kf_inv(&b, C); kfrac_free(&b); b = inv; k = -k; }
+    KFrac r = kf_poly(kp_one());
+    for (long i = 0; i < k; i++) { KFrac p = kf_mul(&r, &b, C); kfrac_free(&r); r = p; }
+    kfrac_free(&b);
     return r;
 }
 
-static LPoly conv_binop(const Expr* e, Conv* C) {
+static KFrac conv_binop(const Expr* e, Conv* C) {
     if (e->binop.op == OP_POW) return conv_pow(e, C);
-    LPoly l = conv(e->binop.left, C), r = conv(e->binop.right, C), out = lp_empty();
+    KFrac l = conv(e->binop.left, C), r = conv(e->binop.right, C), out = kf_empty();
     if (!C->unsupported) switch (e->binop.op) {
-        case OP_ADD: out = lpoly_add(&l, &r, 1); break;
-        case OP_SUB: out = lpoly_add(&l, &r, -1); break;
-        case OP_MUL: out = lp_mul(&l, &r); break;
+        case OP_ADD: out = kf_add(&l, &r, C); break;
+        case OP_SUB: { KFrac m = kf_neg(&r); out = kf_add(&l, &m, C); kfrac_free(&m); break; }
+        case OP_MUL: out = kf_mul(&l, &r, C); break;
         default:
-            if (r.n == 0) C->unsupported = "division by zero";
-            else if (!divisor_ok(&r, C->t)) C->unsupported = BAD_DIVISOR;
-            else { LPoly inv = lpoly_term(qfn_inv(&r.a[0]), -r.lo); out = lp_mul(&l, &inv); lpoly_free(&inv); }
+            if (r.n.n == 0) C->unsupported = "division by zero";
+            else { KFrac inv = kf_inv(&r, C); out = kf_mul(&l, &inv, C); kfrac_free(&inv); }
     }
-    lpoly_free(&l); lpoly_free(&r);
+    kfrac_free(&l); kfrac_free(&r);
     return out;
 }
 
-static LPoly conv(const Expr* e, Conv* C) {
-    if (C->unsupported) return lp_empty();
+// ln(u^k) = k·θ (collect checked u; ln(1) = 0)
+static LPoly conv_ln(const Expr* e, const Conv* C) {
+    Expr* c = canonicalize(e->ln_arg);
+    QFn w = c->type == EXPR_POLY ? qfn_poly(c->poly) : qfn_from(poly_copy(c->ratfn.num), poly_copy(c->ratfn.den));
+    free_expr(c);
+    bool constant = polynomial_degree(w.num) <= 0 && polynomial_degree(w.den) == 0;
+    Rational k = rat_from_int(constant ? 0 : log_multiple(C->t, &w));
+    qfn_free(&w);
+    QFn kq = { poly_constant(&k), poly_one() };
+    rat_clear(&k);
+    return lpoly_term(kq, 1);
+}
+
+static KFrac conv(const Expr* e, Conv* C) {
+    if (C->unsupported) return kf_empty();
     if (!expr_has_exp(e) && !expr_has_ln(e)) {           // a rational function of x
         Expr* c = canonicalize((Expr*)e);                 // canonicalize does not modify e
-        if (!c) { C->unsupported = "not a rational function of x and exp"; return lp_empty(); }
+        if (!c) { C->unsupported = "not a rational function of x and exp"; return kf_empty(); }
         QFn a = c->type == EXPR_POLY ? qfn_poly(c->poly) : qfn_from(poly_copy(c->ratfn.num), poly_copy(c->ratfn.den));
         free_expr(c);
-        return lpoly_term(a, 0);
+        return kf_poly(lpoly_term(a, 0));
     }
     switch (e->type) {
         case EXPR_BINOP: return conv_binop(e, C);
-        case EXPR_NEG: {
-            LPoly f = conv(e->operand, C), z = lp_empty();
-            LPoly r = lpoly_add(&z, &f, -1);
-            lpoly_free(&f);
-            return r;
-        }
+        case EXPR_NEG: { KFrac f = conv(e->operand, C), r = kf_neg(&f); kfrac_free(&f); return r; }
         case EXPR_EXP: {
             Expr* c = canonicalize(e->fn_arg);           // a polynomial (collect checked)
             int k = polynomial_degree(c->poly) > 0 ? power_of(C->t, c->poly) : 0;
             free_expr(c);
-            return lpoly_term((QFn){ poly_one(), poly_one() }, k);
+            return kf_make(lpoly_term((QFn){ poly_one(), poly_one() }, k), kp_one(), C);
         }
-        case EXPR_LN: {                                   // ln(u^k) = k·θ (collect checked u)
-            Expr* c = canonicalize(e->ln_arg);
-            QFn w = c->type == EXPR_POLY ? qfn_poly(c->poly) : qfn_from(poly_copy(c->ratfn.num), poly_copy(c->ratfn.den));
-            free_expr(c);
-            bool constant = polynomial_degree(w.num) <= 0 && polynomial_degree(w.den) == 0; // ln(1) = 0
-            Rational k = rat_from_int(constant ? 0 : log_multiple(C->t, &w));
-            qfn_free(&w);
-            QFn kq = { poly_constant(&k), poly_one() };
-            rat_clear(&k);
-            return lpoly_term(kq, 1);
-        }
+        case EXPR_LN: return kf_poly(conv_ln(e, C));
         default:
-            C->unsupported = "only +, -, *, /, integer powers and exp are supported";
-            return lp_empty();
+            C->unsupported = "only +, -, *, /, integer powers, exp and ln are supported";
+            return kf_empty();
     }
 }
 
 ExpForm exp_form(const Expr* e) {
-    ExpForm F = { { TOWER_EXP, NULL, NULL, NULL, NULL, NULL }, lp_empty(), NULL };
+    ExpForm F = { { TOWER_EXP, NULL, NULL, NULL, NULL, NULL }, lp_empty(), kp_one(), NULL };
     Args A = { NULL, 0, NULL, 0, NULL };
     collect(e, &A);
     F.unsupported = A.unsupported;
@@ -528,8 +544,10 @@ ExpForm exp_form(const Expr* e) {
     if (!F.unsupported && F.t.kind == TOWER_EXP && !F.t.v) F.t.v = poly_one(); // no θ: any v works
     if (!F.unsupported) {
         Conv C = { &F.t, NULL };
-        F.f = conv(e, &C);
+        KFrac q = conv(e, &C);
         F.unsupported = C.unsupported;
+        if (!F.unsupported) { lpoly_free(&F.den); F.f = q.n; F.den = q.d; }
+        else kfrac_free(&q);
     }
     for (int i = 0; i < A.n; i++) free_polynomial(A.u[i]);
     for (int i = 0; i < A.nw; i++) qfn_free(&A.w[i]);
@@ -539,6 +557,7 @@ ExpForm exp_form(const Expr* e) {
 
 void exp_form_free(ExpForm* F) {
     lpoly_free(&F->f);
+    lpoly_free(&F->den);
     Polynomial* parts[] = { F->t.v, F->t.un, F->t.ud, F->t.Ln, F->t.Ld };
     for (int i = 0; i < 5; i++) free_polynomial(parts[i]);
     F->t = (Tower){ TOWER_EXP, NULL, NULL, NULL, NULL, NULL };

@@ -1450,7 +1450,7 @@ static void test_reg_integrate_exp(void) {
         assert(r.status == RISCH_NONELEMENTARY && r.result);
         free_expr(r.result);
     }
-    const char* outside[] = { "1/(1+exp(x))", "exp(x)*exp(x^2)", "exp(1/x)", "x*exp(x)*ln(x)", "exp(3)", "exp(exp(x))", "exp(x)^(1/2)", "(1+exp(x))^(-1)" };
+    const char* outside[] = { "exp(x)/(1+exp(2x))", "exp(x)*exp(x^2)", "exp(1/x)", "x*exp(x)*ln(x)", "exp(3)", "exp(exp(x))", "exp(x)^(1/2)" };
     for (size_t i = 0; i < sizeof outside / sizeof outside[0]; i++) {
         RischResult r = risch_str(outside[i]);
         assert(r.status == RISCH_UNSUPPORTED && !r.result && r.reason);
@@ -1583,7 +1583,7 @@ static void test_reg_integrate_log(void) {
         assert(r.status == RISCH_NONELEMENTARY && r.result);
         free_expr(r.result);
     }
-    const char* outside[] = { "1/ln(x)", "1/(x*ln(x))", "ln(x)+ln(x+1)", "ln(2x)*ln(x)", "ln(ln(x))", "ln(x)*exp(x)", "ln(3)" };
+    const char* outside[] = { "ln(x)+ln(x+1)", "ln(2x)*ln(x)", "ln(ln(x))", "ln(x)*exp(x)", "ln(3)" };
     for (size_t i = 0; i < sizeof outside / sizeof outside[0]; i++) {
         RischResult r = risch_str(outside[i]);
         assert(r.status == RISCH_UNSUPPORTED && !r.result && r.reason);
@@ -1632,6 +1632,101 @@ static void test_prop_integrate_log(void) {
         free_expr(r.result); free_expr(f); free_expr(F);
     }
     printf("  test_prop_integrate_log PASSED (%d round trips, %d non-elementary by construction)\n", roundtrips, rejected);
+}
+
+// --- denominators in θ (Hermite reduction and the residue test) ---
+
+static void test_reg_integrate_tower_fractions(void) {
+    const char* ok[][2] = {
+        { "1/(1+exp(x))", "x - ln(exp(x) + 1)" },                   // residue -1, plus deg·v' at θ^0
+        { "exp(x)/(exp(x)+1)", "ln(exp(x) + 1)" },
+        { "exp(x)/(exp(x)+1)^2", "-1 / (exp(x) + 1)" },             // Hermite only
+        { "exp(2x)/(exp(x)+1)^3", "(-exp(x) - 1/2) / (exp(2x) + 2 * exp(x) + 1)" },
+        { "1/(exp(x)-exp(-x))", "1/2 * ln(abs(exp(x) - 1)) - 1/2 * ln(exp(x) + 1)" }, // a Laurent denominator
+        { "1/(x*ln(x))", "ln(abs(ln(abs(x))))" },
+        { "1/(x*ln(x)^2)", "-1 / ln(abs(x))" },
+        { "(2x/(x^2+1))/ln(x^2+1)", "ln(abs(ln(abs(x^2 + 1))))" },
+        { "1/(x*ln(x)*(ln(x)+1))", "ln(abs(ln(abs(x)))) - ln(abs(ln(abs(x)) + 1))" },
+        { "(1+exp(x))/(x+exp(x))", "ln(abs(exp(x) + x))" },         // θ-coefficients in Q[x]
+    };
+    for (size_t i = 0; i < sizeof ok / sizeof ok[0]; i++) {
+        RischResult r = risch_str(ok[i][0]);
+        assert(r.status == RISCH_OK);
+        expect_str(expr_to_string(r.result), ok[i][1]);
+        free_expr(r.result);
+    }
+    const char* none[] = { "1/ln(x)", "x/(1+exp(x))", "1/(exp(x)+x)", "ln(x)/(ln(x)+1)", "exp(x)/(exp(x)+x)^2", "1/(exp(x^2)+1)" };
+    for (size_t i = 0; i < sizeof none / sizeof none[0]; i++) {
+        RischResult r = risch_str(none[i]);
+        assert(r.status == RISCH_NONELEMENTARY && r.result);
+        free_expr(r.result);
+    }
+    const char* outside[] = { "exp(x)/(1+exp(2x))", "1/(x*(ln(x)^2+1))" };   // residues ±i/2, ±i
+    for (size_t i = 0; i < sizeof outside / sizeof outside[0]; i++) {
+        RischResult r = risch_str(outside[i]);
+        assert(r.status == RISCH_UNSUPPORTED && !r.result && r.reason);
+    }
+    printf("  test_reg_integrate_tower_fractions PASSED (%zu exact, %zu non-elementary, %zu unsupported)\n",
+           sizeof ok / sizeof ok[0], sizeof none / sizeof none[0], sizeof outside / sizeof outside[0]);
+}
+
+// θ for a trial: exp(±x), exp(2x), exp(x²), ln(x) or ln(x² + 1)
+static Expr* random_theta(int kind) {
+    Expr* x = create_var("x");
+    switch (kind) {
+        case 0: return create_exp(rnd(0, 1) ? x : create_neg(x));
+        case 1: return create_exp(create_mul(create_const(2), x));
+        case 2: return create_exp(create_pow(x, create_const(2)));
+        case 3: return create_ln(x);
+        default: return create_ln(create_add(create_pow(x, create_const(2)), create_const(1)));
+    }
+}
+
+// a + b·x with small integers, a ≠ 0 when b = 0
+static Expr* small_linear(void) {
+    long a = rnd(-3, 3), b = rnd(0, 2) ? 0 : rnd(-2, 2);
+    if (!a && !b) a = 1;
+    return create_poly_expr(poly_si((long[]){ a, b }, 1));
+}
+
+// θ + c: c a nonzero integer
+static Expr* shifted_theta(int kind) {
+    long c = rnd(1, 3) * (rnd(0, 1) ? 1 : -1);
+    return create_add(random_theta(kind), create_const(c));
+}
+
+// F = A/B^m + c·ln(G) + a·θ with B, G linear or quadratic in θ: the integrand f = F' (built
+// from the pieces, since ln(G) is outside the input setting) integrates back to F up to a
+// constant, checked numerically; adding x/(θ + r) for θ = exp(c·x), or 1/(θ + r) for exp(x²)
+// and ln (residues -1/(2r·x), 1/L), makes it non-elementary
+static void test_prop_integrate_tower_fractions(void) {
+    int roundtrips = 0, rejected = 0;
+    for (int trial = 0; trial < TRIALS; trial++) {
+        int kind = trial % 5;
+        Expr* B = shifted_theta(kind);
+        if (rnd(0, 1)) B = create_mul(B, shifted_theta(kind));
+        Expr* A = create_add(create_mul(small_linear(), random_theta(kind)), small_linear());
+        Expr* rat = create_div(A, create_pow(B, create_const(rnd(1, 2))));
+        Expr* part = create_add(rat, create_mul(small_linear(), random_theta(kind)));
+        Expr* G = shifted_theta(kind);
+        const char* why = NULL;
+        Expr *dpart = differentiate_exp(part, &why), *dG = differentiate_exp(G, &why);
+        assert(dpart && dG);
+        long c = rnd(1, 3) * (rnd(0, 1) ? 1 : -1);
+        Expr* f = create_add(dpart, create_div(create_mul(create_const(c), dG), G));
+        RischResult r = integrate_exp(f);
+        assert(r.status == RISCH_OK);
+        assert(derivative_matches(r.result, f));
+        roundtrips++;
+        Expr* extra = kind < 2 ? create_var("x") : create_const(1); // residue -x/(r·v') or 1/(r·v'), 1/L
+        Expr* bad = create_add(expr_copy(f), create_div(extra, shifted_theta(kind)));
+        RischResult rb = integrate_exp(bad);
+        assert(rb.status == RISCH_NONELEMENTARY);
+        rejected++;
+        free_expr(rb.result); free_expr(bad);
+        free_expr(r.result); free_expr(f); free_expr(part);
+    }
+    printf("  test_prop_integrate_tower_fractions PASSED (%d round trips, %d non-elementary by construction)\n", roundtrips, rejected);
 }
 
 static Matrix* random_matrix(int n) {
@@ -1720,6 +1815,7 @@ void run_property_tests(void) {
     test_reg_radical_products();
     test_reg_integrate_exp();
     test_reg_integrate_log();
+    test_reg_integrate_tower_fractions();
     test_lrt_direct();
     printf("\nProperty Tests (seed %s):\n", env ? env : "default");
     test_prop_factor_roundtrip();
@@ -1736,4 +1832,5 @@ void run_property_tests(void) {
     test_prop_modular_gcd();
     test_prop_integrate_exp();
     test_prop_integrate_log();
+    test_prop_integrate_tower_fractions();
 }

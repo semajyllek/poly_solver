@@ -13,6 +13,10 @@ A fast C library and CLI for symbolic polynomial algebra and linear systems with
 - **Integration with exp and ln (Risch algorithm)**: `integrate "x^2*exp(3x)"` gives `(1/3x^2 - 2/9x + 2/27) * exp(3x)`, and `integrate "x^2*ln(x)^3"` gives `1/3x^3 * ln(abs(x))^3 - 1/3x^3 * ln(abs(x))^2 + 2/9x^3 * ln(abs(x)) - 2/27x^3`. When no formula exists, it says so with a proof: `exp(x^2)`, `exp(x)/x`, `ln(x)/(x+1)` and `ln(x^2+1)^2` have no elementary antiderivative.
   - It covers sums of `r(x)·exp(k·v)`, where each `r` is a rational function and every `exp` argument is a multiple of one polynomial `v`.
   - It also covers polynomials in `ln(u)` with rational-function coefficients, where every `ln` argument is an integer power of one rational function `u`.
+  - Denominators in `exp` or `ln` work too (Hermite reduction and the residue test):
+    - `1/(1+exp(x))` gives `x - ln(exp(x) + 1)`;
+    - `1/(x*ln(x))` gives `ln(abs(ln(abs(x))))`;
+    - `1/ln(x)` and `x/(1+exp(x))` are proved non-elementary.
   - `differentiate` and `simplify` accept the same expressions.
 - **Linear systems**: solve Ax=b, determinant, inverse, rank and RREF with exact rational arithmetic.
 
@@ -57,6 +61,8 @@ make sanitize && ./test_symbolic_solver   # AddressSanitizer + UBSan build of th
 | `differentiate` | `./poly_solver differentiate "x^2*exp(3x)"`      | `(3x^2 + 2x) * exp(3x)`            |
 | `integrate`     | `./poly_solver integrate "ln(x)^2"`              | `x * ln(abs(x))^2 - 2x * ln(abs(x)) + 2x` |
 | `integrate`     | `./poly_solver integrate "ln(x)/(x+1)"`          | `no elementary antiderivative: the part ln(abs(x)) / (x + 1) ...` |
+| `integrate`     | `./poly_solver integrate "1/(1+exp(x))"`         | `x - ln(exp(x) + 1)`               |
+| `integrate`     | `./poly_solver integrate "1/ln(x)"`              | `no elementary antiderivative: the part 1 / ln(abs(x)) ...` |
 | `solve`         | `./poly_solver solve "x^3 - 6x^2 + 11x - 6"`    | `x = 1, x = 2, x = 3`             |
 | `solve`         | `./poly_solver solve "x^2 - x - 1"`              | `x = 1/2 - 1/2*sqrt(5) ~ -0.6180339887, x = 1/2 + 1/2*sqrt(5) ~ 1.6180339887` |
 | `solve`         | `./poly_solver solve "x^3 - 2"`                  | `x = 2^(1/3) ~ 1.2599210498, x = -1/2 * 2^(1/3) +/- 1/2 * 2^(1/3) * sqrt(3) * i ~ (-0.6299605249 +/- 1.0911236360i)` |
@@ -89,11 +95,10 @@ Matrix entries can be integers, fractions or decimals of any size (`1/3`, `-5/7`
 
 - When a logarithm's coefficient is an algebraic number of degree 3 or more, the answer is an exact `RootSum(q(t), t -> t * ln(S(t, x)))`: the sum of `t·ln(S(t, x))` over the roots of `q`. This happens only when the roots aren't known in closed form. Example: `1/(x^5+x+3)`, whose roots can't be written with radicals at all (its Galois group is S5).
 - Complex roots of other irreducible factors of degree 3 or more (for example `x^3 + x + 1`, or the Capelli factors `x^4 ± 2x^2 + 2` of `x^8 + 4`) are counted but not located.
-- Exp integration covers one exponential tower: every `exp` argument must be a rational multiple of one nonconstant polynomial. Divisions may only be by single terms such as `x^2·exp(x)`. These are reported as not supported yet:
-  - `1/(1 + exp(x))`;
+- Exp integration covers one exponential tower: every `exp` argument must be a rational multiple of one nonconstant polynomial. These are reported as not supported yet:
+  - denominators whose residues are irrational numbers, such as `exp(x)/(1+exp(2x))` (which is `atan(exp(x))`) and `1/(x·(ln(x)^2+1))`. These are elementary, but they need logs over an algebraic extension;
   - `exp(x)·exp(x^2)`, which needs two independent exponentials;
   - `exp(1/x)`, `exp(3)`;
-  - `1/ln(x)` and `1/(x·ln(x))`, which need division by ln;
   - `ln(x) + ln(x+1)` and `ln(2x)·ln(x)`, which need two independent logarithms or a new constant `ln 2`;
   - `exp` and `ln` together, and `ln(ln(x))`;
   - definite integrals of exp expressions.

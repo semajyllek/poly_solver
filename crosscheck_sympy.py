@@ -260,19 +260,10 @@ def random_coeff(rng):
     return num / den
 
 
-def check_exp(rng):
-    """integrate f = Σ a_k·exp(k·v): our verdict must match SymPy's risch_integrate. Half the
-    integrands are derivatives (always elementary); for those and every elementary answer, the
-    answer must differentiate back to f exactly. A NonElementaryIntegral from SymPy must meet
-    our proof, and vice versa."""
+def compare_risch(f):
+    """Our verdict on ∫ f against SymPy's risch_integrate: a NonElementaryIntegral from SymPy
+    must meet our proof and vice versa, and every answer must differentiate back to f exactly."""
     from sympy.integrals.risch import risch_integrate, NonElementaryIntegral
-    v = rng.randint(1, 3) * x**rng.randint(1, 2) * rng.choice([-1, 1]) + rng.randint(-2, 2) * x
-    ks = rng.sample([-2, -1, 1, 2], rng.randint(1, 2))
-    if rng.random() < 0.5:
-        F = sum(random_coeff(rng) * sp.exp(k * v) for k in ks)
-        f = sp.together(sp.diff(F, x))
-    else:
-        f = sum(random_coeff(rng) * sp.exp(k * v) for k in ks) + (random_coeff(rng) if rng.random() < 0.3 else 0)
     code, out, err = run_cli("integrate", to_cli(f))
     if code != 0:
         assert "not supported" in err, f"failed on {f}: {err}"
@@ -291,10 +282,20 @@ def check_exp(rng):
     return "elementary"
 
 
+def check_exp(rng):
+    """f = Σ a_k·exp(k·v); half the integrands are derivatives (always elementary)."""
+    v = rng.randint(1, 3) * x**rng.randint(1, 2) * rng.choice([-1, 1]) + rng.randint(-2, 2) * x
+    ks = rng.sample([-2, -1, 1, 2], rng.randint(1, 2))
+    if rng.random() < 0.5:
+        F = sum(random_coeff(rng) * sp.exp(k * v) for k in ks)
+        f = sp.together(sp.diff(F, x))
+    else:
+        f = sum(random_coeff(rng) * sp.exp(k * v) for k in ks) + (random_coeff(rng) if rng.random() < 0.3 else 0)
+    return compare_risch(f)
+
+
 def check_log(rng):
-    """integrate f = Σ a_k·ln(u)^k (u = x, x² + c or (x + c)/(x - c)): our verdict must match
-    SymPy's risch_integrate, and every answer must differentiate back to f exactly."""
-    from sympy.integrals.risch import risch_integrate, NonElementaryIntegral
+    """f = Σ a_k·ln(u)^k, u = x, x² + c or (x + c)/(x - c); half are derivatives."""
     c = rng.randint(1, 3)
     u = rng.choice([x, x**2 + c, (x + c) / (x - c)])
     if rng.random() < 0.5:
@@ -302,22 +303,26 @@ def check_log(rng):
         f = sp.diff(F, x)
     else:
         f = sum(random_coeff(rng) * sp.log(u)**k for k in range(0, rng.randint(1, 2) + 1))
-    code, out, err = run_cli("integrate", to_cli(f))
-    if code != 0:
-        assert "not supported" in err, f"failed on {f}: {err}"
-        return "unsupported"
-    try:
-        ref = risch_integrate(f, x)
-    except Exception:
-        ref = None
-    nonelem_ref = ref is not None and (isinstance(ref, NonElementaryIntegral) or ref.has(NonElementaryIntegral))
-    if out.startswith("no elementary antiderivative"):
-        assert ref is None or nonelem_ref, f"we say non-elementary, SymPy integrates {f}: {ref}"
-        return "nonelementary" if ref is not None else "unconfirmed"
-    assert not nonelem_ref, f"SymPy proves {f} non-elementary, we gave {out}"
-    d = sp.simplify(sp.diff(to_sympy(out), x) - f)
-    assert d == 0, f"d/dx of our {out} differs from {f} by {d}"
-    return "elementary"
+    return compare_risch(f)
+
+
+def theta_poly(rng, th, deg):
+    """Σ_{k<=deg} c_k·θ^k with small integer or linear-in-x coefficients, monic-ish on top."""
+    terms = [rng.choice([rng.randint(-3, 3), rng.randint(-2, 2) * x + rng.randint(-2, 2)]) * th**k for k in range(deg)]
+    return sum(terms) + rng.choice([1, 2, x]) * th**deg
+
+
+def check_frac(rng):
+    """f a rational function of θ = exp(v) or ln(u) with a denominator in θ: half are
+    derivatives of B/D + c·ln(G) (elementary), half random (often non-elementary)."""
+    th = rng.choice([sp.exp(x), sp.exp(-2 * x), sp.exp(x**2), sp.log(x), sp.log(x**2 + 1)])
+    if rng.random() < 0.5:
+        F = theta_poly(rng, th, rng.randint(0, 1)) / theta_poly(rng, th, rng.randint(1, 2))**rng.randint(1, 2)
+        F += rng.choice([-2, -1, 1, sp.Rational(1, 2)]) * sp.log(theta_poly(rng, th, 1))
+        f = sp.together(sp.diff(F, x))
+    else:
+        f = theta_poly(rng, th, rng.randint(0, 2)) / theta_poly(rng, th, rng.randint(1, 2))
+    return compare_risch(f)
 
 
 def check_matrix(rng):
@@ -339,11 +344,13 @@ def main():
     rng_inf = random.Random(args.seed + 3)
     rng_exp = random.Random(args.seed + 4)
     rng_log = random.Random(args.seed + 5)
+    rng_frac = random.Random(args.seed + 6)
     rootsums = radicals = 0
     definite = {"exact": 0, "numeric": 0, "pole": 0}
     infinite = {"exact": 0, "numeric": 0, "divergent": 0}
     exps = {"elementary": 0, "nonelementary": 0, "unconfirmed": 0, "unsupported": 0}
     logs = dict(exps)
+    fracs = dict(exps)
     for t in range(args.trials):
         p = random_poly(rng)
         check_factor(p)
@@ -357,6 +364,7 @@ def main():
         infinite[check_infinite(rng_inf)] += 1
         exps[check_exp(rng_exp)] += 1
         logs[check_log(rng_log)] += 1
+        fracs[check_frac(rng_frac)] += 1
         check_matrix(rng)
         print(f"  trial {t + 1}/{args.trials} ok", flush=True)
     print(f"crosscheck OK: {args.trials} trials (factor, solve, integrate, det); "
@@ -368,7 +376,9 @@ def main():
           f"{exps['elementary']} elementary, {exps['nonelementary']} proved non-elementary (SymPy agrees), "
           f"{exps['unconfirmed']} non-elementary where SymPy's Risch failed, {exps['unsupported']} unsupported; "
           f"ln integrals: {logs['elementary']} elementary, {logs['nonelementary']} proved non-elementary (SymPy agrees), "
-          f"{logs['unconfirmed']} unconfirmed, {logs['unsupported']} unsupported")
+          f"{logs['unconfirmed']} unconfirmed, {logs['unsupported']} unsupported; "
+          f"denominators in exp/ln: {fracs['elementary']} elementary, {fracs['nonelementary']} proved non-elementary "
+          f"(SymPy agrees), {fracs['unconfirmed']} unconfirmed, {fracs['unsupported']} unsupported")
 
 
 if __name__ == "__main__":
