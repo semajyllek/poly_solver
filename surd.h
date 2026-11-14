@@ -6,7 +6,8 @@
 // Exact real constants built from rationals, radicals and trig values at rational
 // multiples of π: one monomial is c · m^e · sqrt(s) · trig(angle·π), where
 //   m >= 1 is not a perfect power and 0 <= e < 1 (m = 1, e = 0 for none),
-//   s in {1, 2, 3} comes from the exact table (cos(π/6) = sqrt(3)/2, ...),
+//   sqrt(s), s squarefree, is used only beside a radical that is not a square root
+//   (2^(1/5)·sqrt(5)); otherwise square roots merge into m^e (sqrt(2)·sqrt(3) = sqrt(6)),
 //   trig is symbolic only off the table, with angle in (0, 1/2).
 typedef struct {
     Rational c;

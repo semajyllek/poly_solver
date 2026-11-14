@@ -4,7 +4,7 @@
 #include "expression.h"
 
 // e with x replaced by the rational x0, folded exactly: products collect their rational
-// factor (sqrt(m)·sqrt(m) = m), sums collect their rational part and merge like terms,
+// factor (square roots multiply into one: sqrt(2)·sqrt(6) = 2·sqrt(3)), sums collect their rational part and merge like terms,
 // ln|c·m^e| splits into logs of rationals, and atan takes its exact values at 0, ±1,
 // ±sqrt(3), ±1/sqrt(3), ±(sqrt(2) ∓ 1) and ±(2 ∓ sqrt(3)). e must not contain a RootSum.
 Expr* expr_at(const Expr* e, const Rational* x0);

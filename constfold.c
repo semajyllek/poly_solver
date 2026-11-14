@@ -55,18 +55,37 @@ static void gather(const Expr* e, Rational* c, Factors* F) {
     push(F, expr_copy(e));
 }
 
-// sqrt(m)·sqrt(m) = m
+// the square roots of positive integers in F multiply into one, squares moved into c:
+// sqrt(m)·sqrt(m) = m, sqrt(2)·sqrt(3) = sqrt(6), sqrt(2)·sqrt(6) = 2·sqrt(3)
+static bool is_int_sqrt(const Expr* e) {
+    return e && is_sqrt_const(e) && mpz_cmp_ui(mpq_denref(e->fn_arg->constant.val), 1) == 0
+        && mpz_sgn(mpq_numref(e->fn_arg->constant.val)) > 0;
+}
+
 static void pair_sqrts(Rational* c, Factors* F) {
+    mpz_t N, q, r;
+    mpz_inits(N, q, r, NULL);
+    mpz_set_ui(N, 1);
+    int n = 0;
     for (int i = 0; i < F->n; i++)
-        for (int j = i + 1; F->f[i] && is_sqrt_const(F->f[i]) && j < F->n; j++) {
-            if (!F->f[j] || !is_sqrt_const(F->f[j]) || !rat_eq(&F->f[i]->fn_arg->constant, &F->f[j]->fn_arg->constant)) continue;
-            rat_mul(c, c, &F->f[i]->fn_arg->constant);
-            free_expr(F->f[i]); free_expr(F->f[j]);
-            F->f[i] = F->f[j] = NULL;
-        }
+        if (is_int_sqrt(F->f[i])) { mpz_mul(N, N, mpq_numref(F->f[i]->fn_arg->constant.val)); free_expr(F->f[i]); F->f[i] = NULL; n++; }
+    mpz_set_ui(q, 1);                                     // N = q²·r, r squarefree by trial division
+    for (unsigned long p = 2; p * p <= 1000000 && mpz_cmp_ui(N, p * p) >= 0; p++)
+        while (mpz_divisible_ui_p(N, p * p)) { mpz_divexact_ui(N, N, p * p); mpz_mul_ui(q, q, p); }
+    if (mpz_perfect_square_p(N)) { mpz_sqrt(r, N); mpz_mul(q, q, r); mpz_set_ui(N, 1); }
+    Rational t;
+    rat_init(&t);
+    mpq_set_z(t.val, q);
+    rat_mul(c, c, &t);
     int k = 0;
     for (int i = 0; i < F->n; i++) if (F->f[i]) F->f[k++] = F->f[i];
     F->n = k;
+    if (n && mpz_cmp_ui(N, 1) != 0) {                     // the remaining sqrt(r)
+        mpq_set_z(t.val, N);
+        F->f[F->n++] = create_sqrt(create_const_rat(&t));
+    }
+    rat_clear(&t);
+    mpz_clears(N, q, r, NULL);
 }
 
 // print order of a factor: radicals, trig values, π, then ln/atan and anything else

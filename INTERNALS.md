@@ -1014,7 +1014,8 @@ Anything else stays `RootSum`. For example, `x^5 + x + 3` has Galois group S5, s
 
 **Exact constants (`surd.c`).** A `Mono` is `c · m^e · sqrt(s) · trig(angle·π)`:
 - `R^e` is put in canonical form by extracting perfect powers, so `(1/1492992)^(1/6) = 2^(1/6)/12`.
-- Trig values at multiples of π/6 and π/4 come from a table, so `cos(π/6) = sqrt(3)/2`. Other angles stay symbolic, folded into `(0, π/2)`, and print as `cos(2*pi/5)`. They are an `EXPR_TRIG` node.
+- Trig values at multiples of π/6 and π/4 come from a table, so `cos(π/6) = sqrt(3)/2`. Other angles stay symbolic, folded into `(0, π/2)`, and print as `cos(2*pi/5)`. They are an `EXPR_TRIG` node. Values such as `cos(π/5) = (1 + √5)/4` are kept as `cos(pi/5)` on purpose, because it shows where the value comes from: the roots of `x^5 + 1` lie at angles kπ/5.
+- **Square roots merge.** A square root goes into the radical slot when it is empty or already a square root, and squares move into `c`: `sqrt(2)·sqrt(3) = sqrt(6)`, and `sqrt(6)·sqrt(3) = 3·sqrt(2)` (for `x^6 + 216`). Beside a radical that is not a square root it stays separate, as `2^(1/12)·sqrt(3)`, unless it has the same base: `2^(1/4)·sqrt(2) = 2^(3/4)`.
 - Like monomials are merged.
 
 **How it is verified.**
@@ -1031,7 +1032,7 @@ Anything else stays `RootSum`. For example, `x^5 + x + 3` has Galois group S5, s
 1. **Divergence.** If the denominator has a root in `[a, b]`, the integral diverges (every pole of a rational function has order ≥ 1). This is decided exactly: zero tests at `a` and `b`, then isolating intervals refined until each root is clearly inside or outside. An infinite side imposes no condition on the roots there. With an infinite bound, the integral converges only when `deg den ≥ deg num + 2`, since `f ~ c·x^(deg num − deg den)` far out.
 2. **Antiderivative.** `F = integrate(f)`. If it contains a `RootSum`, only the numeric value is given: its complex logarithms have branch cuts, so `F(b) − F(a)` would not be trustworthy.
 3. **Evaluation.** `expr_at` substitutes `x = a` and `x = b` and folds the constants exactly (`constfold.c`):
-   - products collect their rational factor, and `sqrt(m)·sqrt(m) = m`;
+   - products collect their rational factor, and integer square roots multiply into one, with squares pulled out: `sqrt(2)·sqrt(6) = 2·sqrt(3)`;
    - sums collect their rational part and merge like terms;
    - `ln|c·m^e·…|` splits into logs of rationals, which merge when their coefficients are integer multiples (`-ln(3) + 2ln(2) = ln(4/3)`);
    - `atan` takes its exact values at `0`, `±1`, `±sqrt(3)`, `±1/sqrt(3)`, `±(sqrt(2) ∓ 1)` (π/8, 3π/8) and `±(2 ∓ sqrt(3))` (π/12, 5π/12), and `atan(−u) = −atan(u)`;

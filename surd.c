@@ -1,6 +1,7 @@
 // Exact real constants: rationals times canonical radicals times trig values at rational
 // multiples of π. Trig values on the table (multiples of π/6 and π/4) become rationals
-// and square roots; the rest stay symbolic as cos/sin/cot/csc(kπ/N) with kπ/N in (0, π/2).
+// and square roots; the rest stay symbolic as cos/sin/cot/csc(kπ/N) with kπ/N in
+// (0, π/2), which keeps visible where they come from (cos(π/5) for the roots of x^5 + 1).
 #include "surd.h"
 #include <assert.h>
 #include <stdlib.h>
@@ -165,10 +166,36 @@ static int table_index(const Rational* a) {
     return idx;
 }
 
-// x <- x · sqrt(s), merging with the radical when it is the same base
-static void mul_sqrt(Mono* x, int s) {
-    assert(x->s == 1);
-    if (mpz_cmp_ui(x->m, (unsigned long)s) != 0) { x->s = s; return; }
+// x's radical becomes sqrt(N·m^(2e)) for a square-root radical (or none): squares go to c
+static void mul_into_half(Mono* x, long r) {
+    mpz_t N, q;
+    mpz_inits(N, q, NULL);
+    mpz_mul_si(N, x->m, r);                               // m = 1 when there was no radical
+    pull_powers(N, q, 2);
+    rat_mul_z(&x->c, q);
+    set_radical(x, N, 2);
+    mpz_clears(N, q, NULL);
+}
+
+// the sqrt slot becomes sqrt(s·r), squares moved into c
+static void mul_into_slot(Mono* x, long r) {
+    mpz_t N, q;
+    mpz_inits(N, q, NULL);
+    mpz_set_si(N, (long)x->s * r);
+    pull_powers(N, q, 2);
+    rat_mul_z(&x->c, q);
+    x->s = (int)mpz_get_si(N);
+    mpz_clears(N, q, NULL);
+}
+
+// x <- x · sqrt(r), r squarefree: into the radical when it is empty or a square root
+// (sqrt(2)·sqrt(3) = sqrt(6)), merged with a radical of the same base (2^(1/4)·sqrt(2) =
+// 2^(3/4)), else into the sqrt slot (2^(1/5)·sqrt(5))
+static void mul_sqrt(Mono* x, long r) {
+    if (r == 1) return;
+    bool none = mpz_cmp_ui(x->m, 1) == 0, square_root = mpz_cmp_ui(mpq_denref(x->e.val), 2) == 0;
+    if (none || square_root) { mul_into_half(x, r); return; }
+    if (mpz_cmp_ui(x->m, (unsigned long)r) != 0) { mul_into_slot(x, r); return; }
     Rational half = rat_from_si(1, 2);
     rat_add(&x->e, &x->e, &half);
     rat_clear(&half);

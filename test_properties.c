@@ -211,7 +211,7 @@ static void test_reg_integrate_radicals(void) {
         { "1/(x^5-1)", // cyclotomic, symbolic cos(2*pi/5)
           "1/5 * ln(abs(x - 1)) + 1/5 * cos(2*pi/5) * ln(abs(x^2 - 2 * cos(2*pi/5) * x + 1)) - 2/5 * sin(2*pi/5) * atan(csc(2*pi/5) * x - cot(2*pi/5)) - 1/5 * cos(pi/5) * ln(abs(x^2 + 2 * cos(pi/5) * x + 1)) - 2/5 * sin(pi/5) * atan(csc(pi/5) * x + cot(pi/5))" },
         { "1/(x^6-8)", // Q(x^2) = 4·Φ_3(x^2/2)
-          "1/48 * sqrt(2) * ln(abs((x - sqrt(2)) / (x + sqrt(2)))) + 1/96 * sqrt(2) * ln(abs(x^2 - sqrt(2) * x + 2)) - 1/48 * sqrt(2) * sqrt(3) * atan(1/3 * sqrt(2) * sqrt(3) * x - 1/3 * sqrt(3)) - 1/96 * sqrt(2) * ln(abs(x^2 + sqrt(2) * x + 2)) - 1/48 * sqrt(2) * sqrt(3) * atan(1/3 * sqrt(2) * sqrt(3) * x + 1/3 * sqrt(3))" },
+          "1/48 * sqrt(2) * ln(abs((x - sqrt(2)) / (x + sqrt(2)))) + 1/96 * sqrt(2) * ln(abs(x^2 - sqrt(2) * x + 2)) - 1/48 * sqrt(6) * atan(1/3 * sqrt(6) * x - 1/3 * sqrt(3)) - 1/96 * sqrt(2) * ln(abs(x^2 + sqrt(2) * x + 2)) - 1/48 * sqrt(6) * atan(1/3 * sqrt(6) * x + 1/3 * sqrt(3))" },
     };
     for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
         Expr* f = parse_and_simplify(cases[i].f);
@@ -352,6 +352,28 @@ static void expect_qs(const QSurd* a, const char* s) {
     free_expr(e);
 }
 
+// square roots in antiderivative constants merge (sqrt(2)·sqrt(3) = sqrt(6)); beside a radical
+// that is not a square root they stay apart (2^(1/12)·sqrt(3)); trig values stay symbolic
+static void test_reg_radical_products(void) {
+    const char* cases[][2] = {
+        { "1/(x^6+8)", "1/24 * sqrt(2) * atan(x / sqrt(2)) - 1/96 * sqrt(6) * ln(abs(x^2 - sqrt(6) * x + 2)) + 1/48 * sqrt(2) * atan(sqrt(2) * x - sqrt(3)) + 1/96 * sqrt(6) * ln(abs(x^2 + sqrt(6) * x + 2)) + 1/48 * sqrt(2) * atan(sqrt(2) * x + sqrt(3))" },
+        { "1/(x^6+216)", "1/648 * sqrt(6) * atan(x / sqrt(6)) - 1/864 * sqrt(2) * ln(abs(x^2 - 3 * sqrt(2) * x + 6)) + 1/1296 * sqrt(6) * atan(1/3 * sqrt(6) * x - sqrt(3)) + 1/864 * sqrt(2) * ln(abs(x^2 + 3 * sqrt(2) * x + 6)) + 1/1296 * sqrt(6) * atan(1/3 * sqrt(6) * x + sqrt(3))" },                     // sqrt(6)·sqrt(3) = 3·sqrt(2)
+        { "1/(x^12-2)", "1/24 * 2^(1/12) * ln(abs(x - 2^(1/12))) + 1/48 * 2^(1/12) * sqrt(3) * ln(abs(x^2 - 2^(1/12) * sqrt(3) * x + 2^(1/6))) - 1/24 * 2^(1/12) * atan(2^(11/12) * x - sqrt(3)) + 1/48 * 2^(1/12) * ln(abs(x^2 - 2^(1/12) * x + 2^(1/6))) - 1/24 * 2^(1/12) * sqrt(3) * atan(1/3 * 2^(11/12) * sqrt(3) * x - 1/3 * sqrt(3)) - 1/12 * 2^(1/12) * atan(1/2 * 2^(11/12) * x) - 1/48 * 2^(1/12) * ln(abs(x^2 + 2^(1/12) * x + 2^(1/6))) - 1/24 * 2^(1/12) * sqrt(3) * atan(1/3 * 2^(11/12) * sqrt(3) * x + 1/3 * sqrt(3)) - 1/48 * 2^(1/12) * sqrt(3) * ln(abs(x^2 + 2^(1/12) * sqrt(3) * x + 2^(1/6))) - 1/24 * 2^(1/12) * atan(2^(11/12) * x + sqrt(3)) - 1/24 * 2^(1/12) * ln(abs(x + 2^(1/12)))" },
+    };
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        Expr* f = parse_and_simplify(cases[i][0]);
+        Expr* F = integrate(f, "x");
+        expect_str(expr_to_string(F), cases[i][1]);
+        free_expr(f); free_expr(F);
+    }
+    Expr* f = parse_and_simplify("1/(x^5+1)");
+    Expr* F = integrate(f, "x");
+    char* str = expr_to_string(F);
+    assert(strstr(str, "cos(pi/5)") && !strstr(str, "sqrt(5)"));    // kept as cos(pi/5)
+    free(str); free_expr(f); free_expr(F);
+    printf("  test_reg_radical_products PASSED\n");
+}
+
 static void test_reg_qsurd(void) {
     QSurd a, b, r;
     qs_init(&a); qs_init(&b); qs_init(&r);
@@ -403,6 +425,13 @@ static void test_reg_qsurd(void) {
         create_mul(create_div(sqrt_of(2), create_const(-4)), create_ln(create_add(create_const(1), create_mul(create_const(3), sqrt_of(2))))),
     };
     expect_str(expr_to_string_free(const_fold_sum(ratio, 2)), "-1/4 * sqrt(2) * ln(17) + 1/4 * sqrt(2) * ln(9 + 7 * sqrt(2))");
+    Expr* roots[][3] = {                                              // square roots multiply into one
+        { create_mul(sqrt_of(2), sqrt_of(6)), create_const(0), create_const(0) },
+        { create_mul(sqrt_of(3), sqrt_of(3)), create_const(0), create_const(0) },
+        { create_mul(create_mul(sqrt_of(2), sqrt_of(3)), sqrt_of(5)), create_const(0), create_const(0) },
+    };
+    const char* merged[] = { "2 * sqrt(3)", "3", "sqrt(30)" };
+    for (int i = 0; i < 3; i++) expect_str(expr_to_string_free(const_fold_sum(roots[i], 3)), merged[i]);
     Expr* rest[] = { create_mul(sqrt_of(2), create_pi()), sqrt_of(3) };   // π multiples last
     expect_str(expr_to_string_free(const_fold_sum(rest, 2)), "sqrt(3) + sqrt(2) * pi");
     e = create_ln(create_add(create_const(1), create_mul(create_const(-1), sqrt_of(2))));
@@ -1464,6 +1493,7 @@ void run_property_tests(void) {
     test_reg_integrate_definite();
     test_reg_expr_lead();
     test_reg_qsurd();
+    test_reg_radical_products();
     test_lrt_direct();
     printf("\nProperty Tests (seed %s):\n", env ? env : "default");
     test_prop_factor_roundtrip();
