@@ -314,11 +314,14 @@ def theta_poly(rng, th, deg):
 
 def check_frac(rng):
     """f a rational function of θ = exp(v) or ln(u) with a denominator in θ: half are
-    derivatives of B/D + c·ln(G) (elementary), half random (often non-elementary)."""
+    derivatives of B/D + c·ln(G) (+ an atan, irrational residues; elementary), half random."""
     th = rng.choice([sp.exp(x), sp.exp(-2 * x), sp.exp(x**2), sp.log(x), sp.log(x**2 + 1)])
     if rng.random() < 0.5:
         F = theta_poly(rng, th, rng.randint(0, 1)) / theta_poly(rng, th, rng.randint(1, 2))**rng.randint(1, 2)
         F += rng.choice([-2, -1, 1, sp.Rational(1, 2)]) * sp.log(theta_poly(rng, th, 1))
+        if rng.random() < 0.5:                       # irrational residues: (1/√e)·atan(U/√e)
+            e = rng.choice([1, 2, 3])
+            F += sp.atan(theta_poly(rng, th, 1) / sp.sqrt(e)) / sp.sqrt(e)
         f = sp.together(sp.diff(F, x))
     else:
         f = theta_poly(rng, th, rng.randint(0, 2)) / theta_poly(rng, th, rng.randint(1, 2))

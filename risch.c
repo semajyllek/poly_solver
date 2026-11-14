@@ -12,7 +12,7 @@
 #include "integrate.h"
 #include "modgcd.h"
 #include "kpoly.h"
-#include "factor.h"
+#include "residue.h"
 #include <stdlib.h>
 
 // --- the Risch differential equation y' + f·y = g, f a nonzero polynomial ---
@@ -73,19 +73,6 @@ static bool solve_rde(const Rde* r, QFn* y) {
 // --- integration ---
 
 static RischResult failure(RischStatus s, const char* why) { return (RischResult){ s, NULL, why }; }
-
-// acc + e with e's own sum spliced in term by term (so each term's sign prints as a - b); takes both
-static Expr* append_sum(Expr* acc, Expr* e) {
-    if (e->type == EXPR_BINOP && (e->binop.op == OP_ADD || e->binop.op == OP_SUB)) {
-        Expr *l = e->binop.left, *r = e->binop.right;
-        BinOp op = e->binop.op;
-        e->binop.left = e->binop.right = NULL;
-        free_expr(e);
-        acc = append_sum(acc, l);
-        return op == OP_ADD ? append_sum(acc, r) : create_sub(acc, r);
-    }
-    return create_add(acc, e);
-}
 
 // the constant 0, as a constant or as the zero polynomial
 static bool is_zero_expr(const Expr* e) {
@@ -162,12 +149,6 @@ static bool limited_integrate(const QFn* g, const QFn* L, QFn* R, Rational* c) {
     return ok;
 }
 
-// coefficient of θ^k in f (zero outside its range)
-static QFn coeff_at(const LPoly* f, int k) {
-    int i = k - f->lo;
-    return i >= 0 && i < f->n ? qfn_copy(&f->a[i]) : qfn_zero();
-}
-
 // c·q for a rational constant c
 static QFn qfn_scaled(const QFn* q, const Rational* c) {
     return qfn_from(poly_scale(q->num, c), poly_copy(q->den));
@@ -188,7 +169,7 @@ static bool solve_log_levels(const ExpForm* F, LogSolution* S) {
     rat_init(&d_next);
     bool ok = true;
     for (int k = n; ok && k >= 1; k--) {
-        QFn a = coeff_at(&F->f, k), rL = qfn_mul(&r_next, &L);
+        QFn a = kp_coeff(&F->f, k), rL = qfn_mul(&r_next, &L);
         Rational kk = rat_from_int(k + 1);
         QFn t = qfn_scaled(&rL, &kk), g = qfn_add(&a, &t, -1);
         QFn R;
@@ -212,7 +193,7 @@ static bool solve_log_levels(const ExpForm* F, LogSolution* S) {
     if (ok) {
         qfn_free(&S->b[1]);
         S->b[1] = qfn_copy(&r_next);                      // d_1 = 0: level 0 absorbs it
-        QFn a0 = coeff_at(&F->f, 0), rL = qfn_mul(&r_next, &L);
+        QFn a0 = kp_coeff(&F->f, 0), rL = qfn_mul(&r_next, &L);
         qfn_free(&S->g0);
         S->g0 = qfn_add(&a0, &rL, -1);
         qfn_free(&a0); qfn_free(&rL);
@@ -254,7 +235,7 @@ static RischResult integrate_log(const ExpForm* F, const Expr* f) {
         if (!I0) r = failure(RISCH_UNSUPPORTED, integrate_error());
         else {
             Expr* eb = lpoly_expr(&B, &F->t);
-            r.result = is_zero_expr(I0) ? (free_expr(I0), eb) : is_zero_expr(eb) ? (free_expr(eb), I0) : append_sum(eb, I0);
+            r.result = is_zero_expr(I0) ? (free_expr(I0), eb) : is_zero_expr(eb) ? (free_expr(eb), I0) : expr_append_sum(eb, I0);
         }
     }
     lpoly_free(&B);
@@ -278,7 +259,7 @@ static RischResult integrate_exp_poly(const ExpForm* F) {
     if (r.status == RISCH_OK && !I0) r = failure(RISCH_UNSUPPORTED, integrate_error());
     if (r.status == RISCH_OK) {
         Expr* ey = lpoly_expr(&Y, &F->t);
-        r.result = is_zero_expr(I0) ? (free_expr(I0), ey) : is_zero_expr(ey) ? (free_expr(ey), I0) : append_sum(ey, I0);
+        r.result = is_zero_expr(I0) ? (free_expr(I0), ey) : is_zero_expr(ey) ? (free_expr(ey), I0) : expr_append_sum(ey, I0);
     }
     else free_expr(I0);
     free_expr(a0);
@@ -319,23 +300,6 @@ static LPoly proper_part(const ExpForm* F) {
     LPoly b = z.s;
     lpoly_free(&z.t); lpoly_free(&N); lpoly_free(&one); lpoly_free(&tm);
     return b;
-}
-
-// a rational constant as an element of K
-static QFn qfn_rat(const Rational* c) {
-    Rational one = rat_one_val();
-    QFn q = { poly_constant(c), poly_constant(&one) };
-    rat_clear(&one);
-    return q;
-}
-
-static QFn qfn_const(long n, long d) {
-    Rational c;
-    rat_init(&c);
-    rat_set_si(&c, n, d);
-    QFn q = qfn_rat(&c);
-    rat_clear(&c);
-    return q;
 }
 
 // (n/d)·a
@@ -390,113 +354,6 @@ static Reduced hermite_reduce(const LPoly* b, const ExpForm* F) {
 
 static void reduced_free(Reduced* R) { kfrac_free(&R->g); lpoly_free(&R->h); lpoly_free(&R->d); }
 
-// (a·b) mod d
-static LPoly mul_mod(const LPoly* a, const LPoly* b, const LPoly* d) {
-    LPoly p = lpoly_mul(a, b);
-    KDiv q = kp_divmod(&p, d);
-    lpoly_free(&p); lpoly_free(&q.q);
-    return q.r;
-}
-
-// a constant QFn's value
-static bool qfn_constant(const QFn* a, Rational* c) {
-    if (polynomial_degree(a->num) > 0 || polynomial_degree(a->den) != 0) return false;
-    poly_coeff(c, a->num, 0);                             // the denominator is monic: 1
-    return true;
-}
-
-// P[j] = Σ θ_i^j over the roots of monic d, j < deg d (Newton's identities)
-static QFn* root_power_sums(const LPoly* d) {
-    int n = kp_deg(d);
-    QFn* P = malloc((size_t)n * sizeof(QFn));
-    P[0] = qfn_const(n, 1);
-    for (int j = 1; j < n; j++) {                         // P_j = -(j·c_{n-j} + Σ_{i<j} c_{n-i}·P_{j-i})
-        QFn cj = coeff_at(d, n - j), jq = qfn_const(j, 1), acc = qfn_mul(&jq, &cj);
-        qfn_free(&jq);
-        for (int i = 1; i < j; i++) {
-            QFn ci = coeff_at(d, n - i), t = qfn_mul(&ci, &P[j - i]), s = qfn_add(&acc, &t, 1);
-            qfn_free(&acc); qfn_free(&ci); qfn_free(&t);
-            acc = s;
-        }
-        QFn z = qfn_zero();
-        P[j] = qfn_add(&z, &acc, -1);
-        qfn_free(&z); qfn_free(&acc); qfn_free(&cj);
-    }
-    return P;
-}
-
-// Tr(a) on K[θ]/(d) for deg a < deg d: Σ a_j·P_j
-static QFn trace(const LPoly* a, const QFn* P, int n) {
-    QFn acc = qfn_zero();
-    for (int j = 0; j < n; j++) {
-        QFn aj = coeff_at(a, j), t = qfn_mul(&aj, &P[j]), s = qfn_add(&acc, &t, 1);
-        qfn_free(&aj); qfn_free(&t); qfn_free(&acc);
-        acc = s;
-    }
-    return acc;
-}
-
-// the power sums p[k-1] = Tr(s^k), k = 1 .. deg d, of the residues; false when one is not
-// a constant (the proof of non-elementarity)
-static bool residue_power_sums(const Reduced* R, const Tower* t, Rational* p) {
-    int n = kp_deg(&R->d);
-    LPoly Dd = lpoly_derivative(&R->d, t), one = kp_one();
-    KBezout z = kp_bezout(&Dd, &R->d, &one);              // z.s = D(d)⁻¹ mod d
-    LPoly s = mul_mod(&R->h, &z.s, &R->d), pw = kp_one();
-    QFn* P = root_power_sums(&R->d);
-    bool ok = true;
-    for (int k = 1; ok && k <= n; k++) {
-        LPoly next = mul_mod(&pw, &s, &R->d);
-        lpoly_free(&pw);
-        pw = next;
-        QFn tr = trace(&pw, P, n);
-        ok = qfn_constant(&tr, &p[k - 1]);
-        qfn_free(&tr);
-    }
-    for (int j = 0; j < n; j++) qfn_free(&P[j]);
-    free(P);
-    lpoly_free(&Dd); lpoly_free(&one); kbezout_free(&z); lpoly_free(&s); lpoly_free(&pw);
-    return ok;
-}
-
-// the monic polynomial in z with power sums p[0..n-1]: k·e_k = Σ_{i=1}^{k} (-1)^(i-1)·e_{k-i}·p_i
-static Polynomial* from_power_sums(const Rational* p, int n) {
-    Rational* e = malloc((size_t)(n + 1) * sizeof(Rational));
-    e[0] = rat_one_val();
-    Polynomial* R = create_polynomial();
-    add_term(R, &e[0], n);
-    for (int k = 1; k <= n; k++) {
-        rat_init(&e[k]);
-        Rational t;
-        rat_init(&t);
-        for (int i = 1; i <= k; i++) {
-            rat_mul(&t, &e[k - i], &p[i - 1]);
-            if (i % 2) rat_add(&e[k], &e[k], &t); else rat_sub(&e[k], &e[k], &t);
-        }
-        Rational kk = rat_from_int(k);
-        rat_div(&e[k], &e[k], &kk);
-        rat_set(&t, &e[k]);                               // coefficient (-1)^k·e_k of z^(n-k)
-        if (k % 2) rat_neg(&t, &t);
-        add_term(R, &t, n - k);
-        rat_clear(&kk); rat_clear(&t);
-    }
-    for (int k = 0; k <= n; k++) rat_clear(&e[k]);
-    free(e);
-    return R;
-}
-
-// the distinct residues c with c·ln(G_c), G_c a primitive multiple of gcd(d, h - c·D(d))
-typedef struct {
-    Rational* c;
-    LPoly* G;
-    int n;
-} LogTerms;
-
-static void log_terms_free(LogTerms* L) {
-    for (int i = 0; i < L->n; i++) { rat_clear(&L->c[i]); lpoly_free(&L->G[i]); }
-    free(L->c); free(L->G);
-}
-
 // the integrand f = F (in its tower F->t) and its reduction R
 typedef struct {
     const ExpForm* F;
@@ -504,77 +361,28 @@ typedef struct {
     const Expr* f;
 } FracCtx;
 
-static void add_log_term(LogTerms* L, const Rational* c, const FracCtx* X) {
-    QFn cq = qfn_rat(c);
-    LPoly Dd = lpoly_derivative(&X->R->d, &X->F->t), cDd = kp_scale(&Dd, &cq), w = lpoly_add(&X->R->h, &cDd, -1);
-    LPoly g = kp_gcd(&X->R->d, &w);
-    rat_init_set(&L->c[L->n], c);
-    L->G[L->n++] = kp_primitive(&g);
-    qfn_free(&cq); lpoly_free(&Dd); lpoly_free(&cDd); lpoly_free(&w); lpoly_free(&g);
-}
-
-// the log terms when every residue is rational; false when some residue is irrational
-// (an algebraic number: elementary, but with ln/atan over Q(c), not supported yet)
-static bool rational_residues(const Polynomial* Rz, const FracCtx* X, LogTerms* L) {
-    Factorization* fz = factorize(Rz);
-    bool ok = true;
-    for (int i = 0; ok && i < fz->count; i++) ok = polynomial_degree(fz->factors[i]) == 1;
-    L->c = malloc((size_t)(fz->count > 0 ? fz->count : 1) * sizeof(Rational));
-    L->G = malloc((size_t)(fz->count > 0 ? fz->count : 1) * sizeof(LPoly));
-    L->n = 0;
-    for (int i = 0; ok && i < fz->count; i++) {
-        Rational a, b;                                    // a·z + b: c = -b/a
-        rat_init(&a); rat_init(&b);
-        poly_coeff(&a, fz->factors[i], 1);
-        poly_coeff(&b, fz->factors[i], 0);
-        rat_div(&b, &b, &a);
-        rat_neg(&b, &b);
-        add_log_term(L, &b, X);
-        rat_clear(&a); rat_clear(&b);
-    }
-    free_factorization(fz);
-    return ok;
-}
-// f - D(g) - Σ c·D(G_c)/G_c as a polynomial in θ, or false when it is not one (an internal
+// f - D(g) - D(log part) as a polynomial in θ, or false when it is not one (an internal
 // failure: by Rothstein–Trager it always is)
-static bool remainder_poly(const FracCtx* X, const LogTerms* L, LPoly* r) {
+static bool remainder_poly(const FracCtx* X, const LogPart* L, LPoly* r) {
     const ExpForm* F = X->F;
     TowerKind kind = F->t.kind;
-    KFrac f = { kp_copy(&F->f), kp_copy(&F->den) }, Dg = kfrac_derivative(&X->R->g, &F->t), acc = kfrac_sub(&f, &Dg, kind);
-    for (int i = 0; i < L->n; i++) {
-        QFn c = qfn_rat(&L->c[i]);
-        LPoly DG = lpoly_derivative(&L->G[i], &F->t);
-        KFrac term = kfrac_make(kp_scale(&DG, &c), kp_copy(&L->G[i]), kind), next = kfrac_sub(&acc, &term, kind);
-        kfrac_free(&acc); kfrac_free(&term);
-        acc = next;
-        qfn_free(&c); lpoly_free(&DG);
-    }
+    KFrac f = { kp_copy(&F->f), kp_copy(&F->den) }, Dg = kfrac_derivative(&X->R->g, &F->t);
+    KFrac a = kfrac_sub(&f, &Dg, kind), acc = kfrac_sub(&a, &L->deriv, kind);
     bool ok = kp_is_one(&acc.d);
     if (ok) *r = kp_copy(&acc.n);
-    kfrac_free(&f); kfrac_free(&Dg); kfrac_free(&acc);
+    kfrac_free(&f); kfrac_free(&Dg); kfrac_free(&a); kfrac_free(&acc);
     return ok;
-}
-
-// c·ln(G), with the sign outside so that sums print a - b
-static Expr* log_term_expr(const Rational* c, const LPoly* G, const Tower* t) {
-    Expr* ln = create_ln(lpoly_expr_order(G, t, true));
-    Rational a;
-    rat_init(&a);
-    rat_abs(&a, c);
-    Expr* e = rat_is_one(&a) ? ln : create_mul(create_const_rat(&a), ln);
-    rat_clear(&a);
-    return rat_is_negative(c) ? create_neg(e) : e;
 }
 
 // acc + e, acc possibly zero; takes both
 static Expr* plus(Expr* acc, Expr* e) {
     if (is_zero_expr(e)) { free_expr(e); return acc; }
     if (is_zero_expr(acc)) { free_expr(acc); return e; }
-    return append_sum(acc, e);
+    return expr_append_sum(acc, e);
 }
 
-// g + Σ c·ln(G_c), then the polynomial remainder r
-static RischResult finish_fraction(const FracCtx* X, const LogTerms* L) {
+// the polynomial remainder's integral, then g, then the log part (taken)
+static RischResult finish_fraction(const FracCtx* X, LogPart* L) {
     const ExpForm* F = X->F;
     LPoly r;
     if (!remainder_poly(X, L, &r)) return failure(RISCH_UNSUPPORTED, "internal check failed: the fraction in exp/ln does not reduce to a polynomial");
@@ -584,9 +392,7 @@ static RischResult finish_fraction(const FracCtx* X, const LogTerms* L) {
     if (rest.status != RISCH_OK) return rest;
     Expr* acc = rest.result;                              // x - ln(exp(x) + 1): the polynomial part first
     if (X->R->g.n.n) acc = plus(acc, kfrac_expr(&X->R->g, &F->t));
-    for (int pass = 0; pass < 2; pass++)                  // positive log coefficients, then negative
-        for (int i = 0; i < L->n; i++)
-            if (rat_is_negative(&L->c[i]) == (pass == 1)) acc = plus(acc, log_term_expr(&L->c[i], &L->G[i], &F->t));
+    if (L->e) { acc = plus(acc, L->e); L->e = NULL; }
     rest.result = acc;
     return rest;
 }
@@ -596,25 +402,15 @@ static RischResult finish_fraction(const FracCtx* X, const LogTerms* L) {
 static RischResult integrate_fraction(const ExpForm* F, const Expr* f) {
     LPoly b = proper_part(F);
     Reduced R = hermite_reduce(&b, F);
-    FracCtx X = { F, &R, f };
-    LogTerms L = { NULL, NULL, 0 };
-    int n = kp_deg(&R.h) >= 0 ? kp_deg(&R.d) : 0;       // no residues when h = 0
-    Rational* p = malloc((size_t)(n > 0 ? n : 1) * sizeof(Rational));
-    for (int k = 0; k < n; k++) rat_init(&p[k]);
+    KFrac hd = { R.h, R.d };
+    LogPart L;
     RischResult r = { RISCH_OK, NULL, NULL };
-    if (n > 0 && !residue_power_sums(&R, &F->t, p)) {
-        KFrac hd = { R.h, R.d };
-        r = (RischResult){ RISCH_NONELEMENTARY, kfrac_expr(&hd, &F->t), RESIDUES_NOT_CONSTANT };
+    switch (residue_log_part(&hd, &F->t, &L)) {
+        case RESIDUE_NONCONSTANT: r = (RischResult){ RISCH_NONELEMENTARY, kfrac_expr(&hd, &F->t), RESIDUES_NOT_CONSTANT }; break;
+        case RESIDUE_UNSUPPORTED: r = failure(RISCH_UNSUPPORTED, L.reason); break;
+        case RESIDUE_OK: r = finish_fraction(&(FracCtx){ F, &R, f }, &L); break;
     }
-    if (r.status == RISCH_OK && n > 0) {
-        Polynomial* Rz = from_power_sums(p, n);
-        if (!rational_residues(Rz, &X, &L)) r = failure(RISCH_UNSUPPORTED, "residues that are irrational numbers (ln/atan over an algebraic extension, as in atan(exp(x))) are not supported yet");
-        free_polynomial(Rz);
-    }
-    if (r.status == RISCH_OK) r = finish_fraction(&X, &L);
-    for (int k = 0; k < n; k++) rat_clear(&p[k]);
-    free(p);
-    log_terms_free(&L);
+    log_part_free(&L);
     reduced_free(&R);
     lpoly_free(&b);
     return r;

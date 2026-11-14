@@ -945,3 +945,18 @@ double expr_eval(const Expr* e, double x, bool* ok) {
     *ok = false;
     return 0.0;
 }
+
+// acc + e with e's own sum spliced in term by term (so each term's sign prints as a - b);
+// takes both; acc may be NULL
+Expr* expr_append_sum(Expr* acc, Expr* e) {
+    if (!acc) return e;
+    if (e->type == EXPR_BINOP && (e->binop.op == OP_ADD || e->binop.op == OP_SUB)) {
+        Expr *l = e->binop.left, *r = e->binop.right;
+        BinOp op = e->binop.op;
+        e->binop.left = e->binop.right = NULL;
+        free_expr(e);
+        acc = expr_append_sum(acc, l);
+        return op == OP_ADD ? expr_append_sum(acc, r) : create_sub(acc, r);
+    }
+    return create_add(acc, e);
+}

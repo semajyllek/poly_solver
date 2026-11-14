@@ -1450,7 +1450,7 @@ static void test_reg_integrate_exp(void) {
         assert(r.status == RISCH_NONELEMENTARY && r.result);
         free_expr(r.result);
     }
-    const char* outside[] = { "exp(x)/(1+exp(2x))", "exp(x)*exp(x^2)", "exp(1/x)", "x*exp(x)*ln(x)", "exp(3)", "exp(exp(x))", "exp(x)^(1/2)" };
+    const char* outside[] = { "exp(x)/(exp(3x)+2)", "exp(x)*exp(x^2)", "exp(1/x)", "x*exp(x)*ln(x)", "exp(3)", "exp(exp(x))", "exp(x)^(1/2)" };
     for (size_t i = 0; i < sizeof outside / sizeof outside[0]; i++) {
         RischResult r = risch_str(outside[i]);
         assert(r.status == RISCH_UNSUPPORTED && !r.result && r.reason);
@@ -1458,6 +1458,10 @@ static void test_reg_integrate_exp(void) {
     const char* parsed[][2] = {                                    // parse, then canonical form
         { "x exp(x)", "x * exp(x)" }, { "2exp(x)", "2 * exp(x)" }, { "exp (x)^2", "exp(2x)" },
         { "-exp(-x)", "-exp(-x)" }, { "exp(0)*x", "x" },
+        { "(exp(x)+1)/x*(x/(exp(x)+1))", "1" },                      // Henrici: products cancel
+        { "x/(exp(x)+1)*(exp(x)+1)/(x+1)", "x / (x + 1)" },
+        { "(exp(2x)-1)/x*(1/(exp(x)-1))", "1 / x + exp(x) / x" },
+        { "1/(exp(x)+1)+exp(x)/(exp(x)+1)", "1" },                   // and sums
     };
     for (size_t i = 0; i < sizeof parsed / sizeof parsed[0]; i++) {
         Expr* e = parse_input(parsed[i][0]);
@@ -1648,6 +1652,20 @@ static void test_reg_integrate_tower_fractions(void) {
         { "(2x/(x^2+1))/ln(x^2+1)", "ln(abs(ln(abs(x^2 + 1))))" },
         { "1/(x*ln(x)*(ln(x)+1))", "ln(abs(ln(abs(x)))) - ln(abs(ln(abs(x)) + 1))" },
         { "(1+exp(x))/(x+exp(x))", "ln(abs(exp(x) + x))" },         // θ-coefficients in Q[x]
+        { "exp(x)/(1+exp(2x))", "atan(exp(x))" },                    // residues ±i/2
+        { "1/(exp(x)+exp(-x))", "atan(exp(x))" },
+        { "1/(x*(ln(x)^2+1))", "atan(ln(abs(x)))" },
+        { "(ln(x)+1)/(x*ln(x)^2+x)", "1/2 * ln(abs(ln(abs(x))^2 + 1)) + atan(ln(abs(x)))" }, // 1/2 ± i/2
+        { "1/(1+exp(x)+exp(2x))", "x - 1/2 * ln(exp(2x) + exp(x) + 1) - 1/3 * sqrt(3) * atan(1/3 * sqrt(3) * (2 * exp(x) + 1))" },
+        { "1/(x*(ln(x)^2+3))", "1/3 * sqrt(3) * atan(1/3 * sqrt(3) * ln(abs(x)))" }, // ±i/√3: Rioboo with κ = √3/3
+        { "exp(x)/(exp(2x)-2)", "-1/4 * sqrt(2) * ln(exp(x) + sqrt(2)) + 1/4 * sqrt(2) * ln(abs(exp(x) - sqrt(2)))" }, // real ±√2/4
+        { "x*exp(x^2)/(exp(2x^2)+1)", "1/2 * atan(exp(x^2))" },
+        { "exp(x)*(exp(2x)+3)/(exp(2x)+1)^2", "exp(x) / (exp(2x) + 1) + 2 * atan(exp(x))" }, // Hermite, then atan
+        { "exp(2x)/(exp(4x)+1)", "1/2 * atan(exp(2x))" },
+        { "-(exp(3x)+2exp(2x))/(exp(4x)+exp(2x)+2exp(x)+1)",          // g_α of degree 2: Rioboo's general step
+          "atan(exp(3x) - exp(2x) + exp(x) + 1) - atan(exp(x) - 1)" },
+        { "(-ln(x)^2-2ln(x))/(x*(ln(x)^4+3ln(x)^2+6ln(x)+3))",          // the same with κ = √3/3
+          "1/3 * sqrt(3) * atan(1/3 * sqrt(3) * (ln(abs(x))^3 - ln(abs(x))^2 + 3 * ln(abs(x)) + 3)) - 1/3 * sqrt(3) * atan(1/3 * sqrt(3) * (ln(abs(x)) - 1))" },
     };
     for (size_t i = 0; i < sizeof ok / sizeof ok[0]; i++) {
         RischResult r = risch_str(ok[i][0]);
@@ -1661,7 +1679,7 @@ static void test_reg_integrate_tower_fractions(void) {
         assert(r.status == RISCH_NONELEMENTARY && r.result);
         free_expr(r.result);
     }
-    const char* outside[] = { "exp(x)/(1+exp(2x))", "1/(x*(ln(x)^2+1))" };   // residues ±i/2, ±i
+    const char* outside[] = { "exp(x)/(exp(3x)+2)", "1/(x*(ln(x)^3+2))" };   // cubic residues: a RootSum over θ
     for (size_t i = 0; i < sizeof outside / sizeof outside[0]; i++) {
         RischResult r = risch_str(outside[i]);
         assert(r.status == RISCH_UNSUPPORTED && !r.result && r.reason);
@@ -1695,7 +1713,8 @@ static Expr* shifted_theta(int kind) {
     return create_add(random_theta(kind), create_const(c));
 }
 
-// F = A/B^m + c·ln(G) + a·θ with B, G linear or quadratic in θ: the integrand f = F' (built
+// F = A/B^m + c·ln(G) + a·θ (+ atan(√e·Q/P)/√e on 2 of 3 trials, P = 1 or quadratic in θ) with
+// B, G linear or quadratic in θ: the integrand f = F' (built
 // from the pieces, since ln(G) is outside the input setting) integrates back to F up to a
 // constant, checked numerically; adding x/(θ + r) for θ = exp(c·x), or 1/(θ + r) for exp(x²)
 // and ln (residues -1/(2r·x), 1/L), makes it non-elementary
@@ -1714,6 +1733,14 @@ static void test_prop_integrate_tower_fractions(void) {
         assert(dpart && dG);
         long c = rnd(1, 3) * (rnd(0, 1) ? 1 : -1);
         Expr* f = create_add(dpart, create_div(create_mul(create_const(c), dG), G));
+        if (trial % 3) {                                            // + (P·Q' - Q·P')/(P² + e·Q²): atan(√e·Q/P)/√e
+            Expr* P = trial % 3 == 1 ? create_const(1) : create_add(create_pow(random_theta(kind), create_const(2)), create_const(rnd(1, 3)));
+            Expr* Q = shifted_theta(kind);                          // P = 1: residues ±i/(2√e); P quadratic: Rioboo's general step
+            Expr *dP = differentiate_exp(P, &why), *dQ = differentiate_exp(Q, &why);
+            Expr* W = create_sub(create_mul(expr_copy(P), dQ), create_mul(expr_copy(Q), dP));
+            Expr* q = create_add(create_pow(P, create_const(2)), create_mul(create_const(rnd(1, 3)), create_pow(Q, create_const(2))));
+            f = create_add(f, create_div(W, q));
+        }
         RischResult r = integrate_exp(f);
         assert(r.status == RISCH_OK);
         assert(derivative_matches(r.result, f));

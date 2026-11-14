@@ -73,6 +73,7 @@ Expr* create_neg(Expr* operand);
 Expr* create_poly_expr(Polynomial* poly);
 Expr* create_rational_fn(Polynomial* num, Polynomial* den);
 Expr* create_ln(Expr* arg);
+Expr* expr_append_sum(Expr* acc, Expr* e);          // acc + e, e's terms spliced in; takes both, acc may be NULL
 Expr* create_atan(Expr* arg);
 Expr* create_exp(Expr* arg);
 Expr* create_sqrt(Expr* arg);

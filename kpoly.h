@@ -27,6 +27,11 @@ typedef struct {
     LPoly n, d;
 } KFrac;
 
+// (a·c, b·c) for one c ∈ Q[x] making every coefficient a polynomial in x
+typedef struct {
+    LPoly a, b;
+} KPair;
+
 int kp_deg(const LPoly* a);                            // -1 for 0
 LPoly kp_one(void);
 bool kp_is_one(const LPoly* a);
@@ -44,14 +49,21 @@ void kdiv_free(KDiv* d);
 void kbezout_free(KBezout* z);
 void ksf_free(KSquareFree* s);
 
-KFrac kfrac_make(LPoly n, LPoly d, TowerKind kind);   // takes both; d ≠ 0
+KFrac kfrac_make(LPoly n, LPoly d, TowerKind kind);   // takes both; d ≠ 0 (one full gcd)
+// sums and products of reduced fractions stay reduced (Henrici: gcds of small pieces only)
 KFrac kfrac_add(const KFrac* a, const KFrac* b, TowerKind kind);
 KFrac kfrac_sub(const KFrac* a, const KFrac* b, TowerKind kind);
+KFrac kfrac_mul(const KFrac* a, const KFrac* b, TowerKind kind);
+KFrac kfrac_inv(const KFrac* f, TowerKind kind);      // f ≠ 0
 KFrac kfrac_derivative(const KFrac* f, const Tower* t);
 void kfrac_free(KFrac* f);
 
 LPoly kp_pow(const LPoly* a, int k);                   // a^k, k >= 0
 LPoly kp_primitive(const LPoly* a);                    // a·c, c ∈ Q(x), coefficients coprime in Z[x], lc > 0
-Expr* kfrac_expr(const KFrac* f, const Tower* t);     // as (num)/(den) over Q[x], den from the top power
+Expr* kfrac_expr(const KFrac* f, const Tower* t);
+KPair kp_common_multiple(const LPoly* a, const LPoly* b);
+QFn kp_coeff(const LPoly* f, int k);                   // coefficient of θ^k (zero outside)
+QFn qfn_rat(const Rational* c);                        // a rational constant in K
+QFn qfn_const(long n, long d);                         // n/d in K     // as (num)/(den) over Q[x], den from the top power
 
 #endif

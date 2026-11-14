@@ -178,18 +178,70 @@ KFrac kfrac_derivative(const KFrac* f, const Tower* t) {
     return out;
 }
 
+// Henrici's formulas: with reduced inputs, only gcds of small pieces are needed (one big gcd
+// of the result would bring Euclid's coefficient growth over Q(x) back)
+
+// exp's numerators are Laurent: divisibility by a θ-free d ignores the θ^lo factor; for ln, θ is
+// a normal polynomial like any other and stays
+static int theta_shift(const LPoly* n, TowerKind kind) { return kind == TOWER_EXP && n->n ? n->lo : 0; }
+
+// gcd(n, d) for a numerator n and a denominator d
+static LPoly gcd_num(const LPoly* n, const LPoly* d, TowerKind kind) {
+    LPoly n0 = kp_shift(n, -theta_shift(n, kind)), g = kp_gcd(&n0, d);
+    lpoly_free(&n0);
+    return g;
+}
+
+// n/g for g | n (up to exp's θ^lo)
+static LPoly div_num(const LPoly* n, const LPoly* g, TowerKind kind) {
+    int s = theta_shift(n, kind);
+    LPoly n0 = kp_shift(n, -s), q = kp_exact_div(&n0, g), r = kp_shift(&q, s);
+    lpoly_free(&n0); lpoly_free(&q);
+    return r;
+}
+
+static KFrac kfrac_zero(void) { return (KFrac){ { 0, 0, NULL }, kp_one() }; }
+
 typedef struct {
     const KFrac *a, *b;
     int sign;
 } KSum;
 
-// a ± b
+// a/b ± c/d = (a·d' ± c·b')/(b·d') with g = gcd(b, d), b' = b/g, d' = d/g; the only common
+// factor left can come from g
 static KFrac kfrac_sum(const KSum* p, TowerKind kind) {
     const KFrac *a = p->a, *b = p->b;
-    int sign = p->sign;
-    LPoly l = lpoly_mul(&a->n, &b->d), r = lpoly_mul(&b->n, &a->d);
-    KFrac out = kfrac_make(lpoly_add(&l, &r, sign), lpoly_mul(&a->d, &b->d), kind);
-    lpoly_free(&l); lpoly_free(&r);
+    LPoly g = kp_gcd(&a->d, &b->d), a1 = kp_exact_div(&a->d, &g), b1 = kp_exact_div(&b->d, &g);
+    LPoly l = lpoly_mul(&a->n, &b1), r = lpoly_mul(&b->n, &a1), num = lpoly_add(&l, &r, p->sign);
+    KFrac out = kfrac_zero();
+    if (num.n) {
+        LPoly den = lpoly_mul(&a->d, &b1), h = gcd_num(&num, &g, kind);
+        lpoly_free(&out.d);
+        out = (KFrac){ div_num(&num, &h, kind), kp_exact_div(&den, &h) };
+        lpoly_free(&den); lpoly_free(&h);
+    }
+    lpoly_free(&g); lpoly_free(&a1); lpoly_free(&b1); lpoly_free(&l); lpoly_free(&r); lpoly_free(&num);
+    return out;
+}
+
+// (a/b)·(c/d) = (a/g1)·(c/g2) / ((b/g2)·(d/g1)) with g1 = gcd(a, d), g2 = gcd(c, b)
+KFrac kfrac_mul(const KFrac* x, const KFrac* y, TowerKind kind) {
+    if (!x->n.n || !y->n.n) return kfrac_zero();
+    LPoly g1 = gcd_num(&x->n, &y->d, kind), g2 = gcd_num(&y->n, &x->d, kind);
+    LPoly n1 = div_num(&x->n, &g1, kind), n2 = div_num(&y->n, &g2, kind);
+    LPoly d1 = kp_exact_div(&x->d, &g2), d2 = kp_exact_div(&y->d, &g1);
+    KFrac out = { lpoly_mul(&n1, &n2), lpoly_mul(&d1, &d2) };
+    lpoly_free(&g1); lpoly_free(&g2); lpoly_free(&n1); lpoly_free(&n2); lpoly_free(&d1); lpoly_free(&d2);
+    return out;
+}
+
+// d/n, already coprime: only the normalization (θ powers out of the denominator, monic)
+KFrac kfrac_inv(const KFrac* f, TowerKind kind) {
+    int s = theta_shift(&f->n, kind);
+    LPoly n = kp_shift(&f->d, -s), d = kp_shift(&f->n, -s);
+    QFn ic = qfn_inv(&d.a[d.n - 1]);
+    KFrac out = { kp_scale(&n, &ic), kp_scale(&d, &ic) };
+    lpoly_free(&n); lpoly_free(&d); qfn_free(&ic);
     return out;
 }
 
@@ -263,4 +315,31 @@ Expr* kfrac_expr(const KFrac* f, const Tower* t) {
     Expr* e = create_div(lpoly_expr_order(&n, t, n.lo >= 0), lpoly_expr_order(&d, t, true));
     lpoly_free(&n); lpoly_free(&d);
     return e;
+}
+
+QFn qfn_rat(const Rational* c) {
+    Rational one = rat_one_val();
+    QFn q = { poly_constant(c), poly_constant(&one) };
+    rat_clear(&one);
+    return q;
+}
+
+QFn qfn_const(long n, long d) {
+    Rational c;
+    rat_init(&c);
+    rat_set_si(&c, n, d);
+    QFn q = qfn_rat(&c);
+    rat_clear(&c);
+    return q;
+}
+
+QFn kp_coeff(const LPoly* f, int k) {
+    int i = k - f->lo;
+    return i >= 0 && i < f->n ? qfn_copy(&f->a[i]) : qfn_zero();
+}
+
+KPair kp_common_multiple(const LPoly* a, const LPoly* b) {
+    Polynomial* l = den_lcm(a, b);
+    KPair r = { kp_times_x(a, poly_copy(l)), kp_times_x(b, l) };
+    return r;
 }

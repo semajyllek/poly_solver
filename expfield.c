@@ -431,17 +431,12 @@ static KFrac kf_empty(void) { return (KFrac){ lp_empty(), lp_empty() }; }
 static KFrac kf_poly(LPoly n) { return (KFrac){ n, kp_one() }; }  // takes n
 static bool kf_is_poly(const KFrac* f) { return kp_is_one(&f->d); }
 
-// n/d for a nonzero d: kept as a polynomial when d = 1 (no gcd needed); takes both
-static KFrac kf_make(LPoly n, LPoly d, const Conv* C) {
-    if (kp_is_one(&d)) { lpoly_free(&d); return kf_poly(n); }
-    return kfrac_make(n, d, C->t->kind);
-}
-
 // 1/f for f ≠ 0
-static KFrac kf_inv(const KFrac* f, const Conv* C) { return kf_make(kp_copy(&f->d), kp_copy(&f->n), C); }
+static KFrac kf_inv(const KFrac* f, const Conv* C) { return kfrac_inv(f, C->t->kind); }
 
 static KFrac kf_mul(const KFrac* a, const KFrac* b, const Conv* C) {
-    return kf_make(lpoly_mul(&a->n, &b->n), lpoly_mul(&a->d, &b->d), C);
+    if (kf_is_poly(a) && kf_is_poly(b)) return kf_poly(lpoly_mul(&a->n, &b->n));
+    return kfrac_mul(a, b, C->t->kind);
 }
 
 static KFrac kf_add(const KFrac* a, const KFrac* b, Conv* C) {
@@ -522,7 +517,7 @@ static KFrac conv(const Expr* e, Conv* C) {
             Expr* c = canonicalize(e->fn_arg);           // a polynomial (collect checked)
             int k = polynomial_degree(c->poly) > 0 ? power_of(C->t, c->poly) : 0;
             free_expr(c);
-            return kf_make(lpoly_term((QFn){ poly_one(), poly_one() }, k), kp_one(), C);
+            return kf_poly(lpoly_term((QFn){ poly_one(), poly_one() }, k));
         }
         case EXPR_LN: return kf_poly(conv_ln(e, C));
         default:

@@ -1079,7 +1079,12 @@ Infinite examples: `∫_{-∞}^{∞} 1/(x⁴+1) = 1/2 * sqrt(2) * pi`, `∫_0^�
 `exp_form` builds the setting from the parse tree:
 - It collects every `exp(u)` and canonicalizes each `u`, which must be a polynomial.
 - It checks that all the `u` are rational multiples of the first argument w, and sets `v = w/l`, where l is the lcm of the ratios' denominators. Every `u` is then an integer multiple `k·v`, and v is oriented so that `lc(v) > 0`.
-- It converts the tree into a fraction `f/den` over `K[θ]`, K = Q(x) (`kpoly.c`): `+ − · /`, integer powers capped at 256, and `exp(k·v) → θ^k`. The fraction is reduced by a gcd in K[θ] and `den` is made monic. For exp, θ is a unit of `K[θ, 1/θ]`, so θ powers move into the numerator and `θ ∤ den`. When `den = 1`, f is a Laurent polynomial and the paths below apply directly. Otherwise the denominator steps further down run first.
+- It converts the tree into a fraction `f/den` over `K[θ]`, K = Q(x) (`kpoly.c`): `+ − · /`, integer powers capped at 256, and `exp(k·v) → θ^k`. The fraction is reduced by a gcd in K[θ] and `den` is made monic. For exp, θ is a unit of `K[θ, 1/θ]`, so θ powers move into the numerator and `θ ∤ den`. Sums and products of reduced fractions use Henrici's formulas:
+- `a/b ± c/d = (a·d' ± c·b')/(b·d')`, with `g = gcd(b, d)`, `b' = b/g` and `d' = d/g`. It is reduced only by `gcd(numerator, g)`.
+- A product cancels `gcd(a, d)` and `gcd(c, b)` before multiplying.
+- Inversion needs no gcd.
+
+So only small pieces ever meet a gcd. Re-reducing each result with one big Euclid over Q(x) has the same coefficient growth as over Q: on a degree-12 integrand it took 8.6 s, against 0.05 s now. When `den = 1`, f is a Laurent polynomial and the paths below apply directly. Otherwise the denominator steps further down run first.
 
 Anything else is reported as unsupported, with a reason: independent exponentials, and `exp` of a constant or a non-polynomial.
 
@@ -1124,14 +1129,30 @@ By Liouville's theorem, `∫ f = Σ_{k=1}^{n+1} b_k θ^k + (an integral over Q(x
   - **The criterion.** ∫ f is elementary only if these roots are constants (Bronstein, *Symbolic Integration I*, Thm 5.6.1).
   - **Exact, without randomness.** That holds iff every power sum `Tr(s^k)`, `k = 1..deg d`, lies in Q. The traces use `Tr(θ^j)` from d's coefficients by Newton's identities.
   - **The proof.** A nonconstant power sum proves the integral is non-elementary, and the part `h/d` is printed.
-  - **Otherwise** Newton's identities give `R(z) ∈ Q[z]`, which is factored over Q. For each rational root c, `g_c = gcd(d, h − c·D(d))`, scaled to a primitive polynomial `G_c` in `Z[x][θ]`, contributes `c·ln(G_c)`.
-  - **Irrational residues** (`exp(x)/(1+exp(2x)) = atan(exp(x))`, residues ±i/2) are elementary but need ln/atan over Q(c). They are reported as unsupported.
-- **Remainder.** `f − D(g) − Σ c·D(G_c)/G_c` is computed exactly and must be a polynomial (Laurent for exp) in θ. A failure here is an internal error. The remainder carries the exp correction `−Σ c·deg(G_c)·v'` and the `ln(content)` terms automatically. It is then integrated by the paths above, which check themselves.
+  - **Otherwise** Newton's identities give `R(z) ∈ Q[z]`, which is factored over Q (`residue.c`).
+  - **Rational roots.** For each rational root c, `g_c = gcd(d, h − c·D(d))`, scaled to a primitive polynomial `G_c` in `Z[x][θ]`, contributes `c·ln(G_c)`.
+  - **Quadratic factors.** The roots are `α = a ± b·√m` (real) or `a ± b·√m·i` (complex). Write `M = m` or `M = −m`.
+    - `g_α = gcd(d, h − α·D(d))` is taken over K(√M), where a polynomial is a pair `P + √M·Q` (`ksurd.c`). The x-denominators of P and Q are cleared together.
+    - The pair `α·ln g_α + ᾱ·ln g_ᾱ` becomes `a·ln|P² − M·Q²|` plus:
+      - for real α, `b·√m·(ln|P + √m·Q| − ln|P − √m·Q|)`;
+      - for complex α, `−b·√m·LogToAtan(√m·Q, P)`.
+  - **Rioboo with a scalar.** The complex case runs Rioboo's LogToAtan in K[θ] on states `2·atan(κ·A/B)`, with `κ = ρ·√m`:
+    - if `B | A`, the term is `2·atan(κ·A/B)`;
+    - if `deg A < deg B`, the state becomes `(−B, A)` with `κ' = 1/κ = √m/(ρ·m)`;
+    - otherwise, with `B·D − A·C' = G`, the term is `2·atan(κ·(A·D + B·C'/κ²)/G)` and the state becomes `(D, C')` with the same κ.
+    - So the arguments stay polynomial in θ, which means no jumps where P vanishes, and √m never enters the coefficient field.
+    - The arctangents are checked exactly: `Σ 2ρ_i·D(T_i)/(1 + ρ_i²·m·T_i²) = 2(P·D(Q) − Q·D(P))/(P² + m·Q²)` in K(θ).
+  - **Signs.** Both atan and the log ratio are odd, so arguments are written with a positive leading coefficient: `atan(exp(x))`, not `−atan(−exp(x))`.
+  - **Degree 3 or more** (`exp(x)/(exp(3x)+2)`) would need a RootSum over θ, so it is reported as unsupported.
+  - **Exact derivative.** Each term carries its derivative in K(θ). For a pair that is `a·D(N)/N + 2b·M·(P·D(Q) − Q·D(P))/(P² − M·Q²)`. These derivatives feed the remainder below.
+- **Remainder.** `f − D(g) − D(log part)` is computed exactly and must be a polynomial (Laurent for exp) in θ. A failure here is an internal error. The remainder carries the exp correction `−Σ c·deg(G_c)·v'` and the `ln(content)` terms automatically. It is then integrated by the paths above, which check themselves.
 - **Examples.**
   - `∫ 1/(1+exp(x)) = x − ln(exp(x) + 1)`: the residue is −1, and the remainder is `0 − (−1)·1·v' = 1`.
   - `∫ 1/(x·ln(x)) = ln(ln(x))`: s = 1.
   - `∫ 1/ln(x)`: here `s = 1/L = x` is not constant (this is the logarithmic integral).
   - `∫ x/(1+exp(x))`: the residue is −x (this is a dilogarithm).
+  - `∫ exp(x)/(1+exp(2x)) = atan(exp(x))`: residues ±i/2, `g = θ + i`, and LogToAtan(1, θ) gives `2·atan(θ)` after one swap.
+  - `∫ 1/(1+exp(x)+exp(2x)) = x − 1/2·ln(exp(2x) + exp(x) + 1) − 1/3·sqrt(3)·atan(1/3·sqrt(3)·(2·exp(x) + 1))`: residues `−1/2 ± i·√3/6`.
   - With θ = exp(x²), `x/(θ − 3)` has the constant residue 1/6 and *is* elementary, while `1/(θ − 3)` is not.
 
 **Verification.**
@@ -1144,10 +1165,10 @@ By Liouville's theorem, `∫ f = Σ_{k=1}^{n+1} b_k θ^k + (an integral over Q(x
   - `test_prop_integrate_log` checks round trips with the numeric derivative, and that adding `c·ln(x)/(x − r)` is always rejected.
   - A separate SymPy stream for ln matched on all 400 integrands over 10 seeds: 257 elementary results and 143 proofs.
 - **Denominator tests.**
-  - `test_reg_integrate_tower_fractions` pins 10 answers, 6 proofs and 2 irrational-residue cases.
-  - `test_prop_integrate_tower_fractions` integrates `(A/B^m + c·ln(G) + a·θ)'` over five towers. B and G are linear or quadratic in θ, with coefficients in Q[x]. Each result is checked by the numeric derivative.
+  - `test_reg_integrate_tower_fractions` pins 20 answers (10 with irrational residues: atan, √3, and real √2 logs), 6 proofs and 2 cubic-residue cases.
+  - `test_prop_integrate_tower_fractions` integrates `(A/B^m + c·ln(G) + a·θ)'`, on 2 of 3 trials plus `D(U)/(U² + e)` (irrational residues), over five towers. B and G are linear or quadratic in θ, with coefficients in Q[x]. Each result is checked by the numeric derivative.
   - That test also adds a term with a nonconstant residue, which must be rejected.
-  - The SymPy `check_frac` stream matched on all 400 integrands, seeds 100–499: 219 elementary results that differentiate back exactly, 177 proofs that SymPy confirms, and 4 cases with irrational residues, which are unsupported.
+  - The SymPy `check_frac` stream also adds `atan(U/√e)/√e` terms to half of its derivatives. It matched on all 400 integrands, seeds 100–499: 223 elementary results that differentiate back exactly, including the arctangent cases, and 177 proofs that SymPy confirms. None were unsupported.
 
 ---
 
