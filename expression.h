@@ -15,7 +15,9 @@ typedef enum {
     EXPR_SQRT,
     EXPR_ROOTSUM,
     EXPR_TRIG,
-    EXPR_EXP
+    EXPR_EXP,
+    EXPR_SIN,
+    EXPR_COS
 } ExprType;
 
 // exact trig constants at rational multiples of π (EXPR_TRIG); TRIG_NONE is angle·π itself
@@ -46,7 +48,7 @@ typedef struct Expr {
             Polynomial* den;
         } ratfn;
         struct Expr* ln_arg;       // EXPR_LN: ln(abs(arg))
-        struct Expr* fn_arg;       // EXPR_ATAN: atan(arg), EXPR_SQRT: sqrt(arg), EXPR_EXP: exp(arg)
+        struct Expr* fn_arg;       // EXPR_ATAN: atan(arg), EXPR_SQRT: sqrt(arg), EXPR_EXP: exp(arg), EXPR_SIN/COS: sin/cos(arg)
         struct {                   // EXPR_ROOTSUM: Σ over roots t of q of t·ln(S(t, x))
             Polynomial* q;         //   univariate in t, irreducible over Q
             Polynomial** s;        //   S = Σ s[k](t)·x^k, each s[k] of degree < deg q
@@ -76,6 +78,8 @@ Expr* create_ln(Expr* arg);
 Expr* expr_append_sum(Expr* acc, Expr* e);          // acc + e, e's terms spliced in; takes both, acc may be NULL
 Expr* create_atan(Expr* arg);
 Expr* create_exp(Expr* arg);
+Expr* create_sin(Expr* arg);
+Expr* create_cos(Expr* arg);
 Expr* create_sqrt(Expr* arg);
 Expr* create_rootsum(Polynomial* q, Polynomial** s, int s_deg); // takes ownership
 Expr* create_trig(TrigKind kind, const Rational* angle);        // trig(angle·π)
@@ -84,6 +88,7 @@ Expr* expr_copy(const Expr* e);                                 // deep copy
 bool  expr_has_rootsum(const Expr* e);                          // a RootSum among the terms
 bool  expr_has_exp(const Expr* e);                              // an exp(...) anywhere in e
 bool  expr_has_ln(const Expr* e);                               // an ln(...) anywhere in e
+bool  expr_has_trig(const Expr* e);                             // a sin(...) or cos(...) anywhere in e
 
 // operations
 Expr* canonicalize(Expr* expr);

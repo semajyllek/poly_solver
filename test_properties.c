@@ -348,6 +348,13 @@ static char* expr_to_string_free(Expr* e) {
     return s;
 }
 
+// the two canonical forms print the same; frees both
+static void expect_same_form(Expr* got, Expr* want) {
+    char* w = expr_to_string_free(want);
+    expect_str(expr_to_string_free(got), w);
+    free(w);
+}
+
 static void expect_qs(const QSurd* a, const char* s) {
     Expr* e = qs_expr(a);
     expect_str(expr_to_string(e), s);
@@ -1450,7 +1457,7 @@ static void test_reg_integrate_exp(void) {
         assert(r.status == RISCH_NONELEMENTARY && r.result);
         free_expr(r.result);
     }
-    const char* outside[] = { "exp(x)/(exp(3x)+2)", "exp(x)*exp(x^2)", "exp(1/x)", "x*exp(x)*ln(x)", "exp(3)", "exp(exp(x))", "exp(x)^(1/2)" };
+    const char* outside[] = { "exp(x)/(exp(3x)+2)", "exp(x)/(exp(x)+exp(x^2))", "exp(1/x)", "x*exp(x)*ln(x)", "exp(3)", "exp(exp(x))", "exp(x)^(1/2)" };
     for (size_t i = 0; i < sizeof outside / sizeof outside[0]; i++) {
         RischResult r = risch_str(outside[i]);
         assert(r.status == RISCH_UNSUPPORTED && !r.result && r.reason);
@@ -1539,8 +1546,7 @@ static void test_prop_integrate_exp(void) {
         const char* w1 = NULL;                                     // canonical forms spell out each
         Expr *cF = simplify_exp(F, &w1), *cI = simplify_exp(r.result, &w1); // exp(k·v), whatever the tower
         assert(cF && cI);
-        expect_str(expr_to_string(cI), expr_to_string_free(cF));
-        free_expr(cI);
+        expect_same_form(cI, cF);
         assert(derivative_matches(r.result, f));
         roundtrips++;
         long root = trial % 2 ? 1 : rnd(-3, 3);                   // odd trials: on a double pole of y = 1/(x-1)
@@ -1756,6 +1762,98 @@ static void test_prop_integrate_tower_fractions(void) {
     printf("  test_prop_integrate_tower_fractions PASSED (%d round trips, %d non-elementary by construction)\n", roundtrips, rejected);
 }
 
+// --- sin and cos: exponential sums over Q(i)(x) ---
+
+static void test_reg_integrate_trig(void) {
+    const char* ok[][2] = {
+        { "x*sin(x)", "sin(x) - x * cos(x)" },
+        { "x*cos(x)", "x * sin(x) + cos(x)" },
+        { "sin(x)^2", "1/2x - 1/4 * sin(2x)" },                     // the e^0 part by the rational integrator
+        { "sin(x)*cos(x)", "-1/4 * cos(2x)" },
+        { "sin(2x)*cos(3x)", "1/2 * cos(x) - 1/10 * cos(5x)" },
+        { "sin(x)^3", "-3/4 * cos(x) + 1/12 * cos(3x)" },
+        { "exp(x)*cos(x)", "1/2 * exp(x) * sin(x) + 1/2 * exp(x) * cos(x)" },
+        { "x*exp(x)*sin(x)", "1/2x * exp(x) * sin(x) + (-1/2x + 1/2) * exp(x) * cos(x)" },
+        { "x^2*sin(3x)", "2/9x * sin(3x) + (-1/3x^2 + 2/27) * cos(3x)" },
+        { "x*cos(x^2)", "1/2 * sin(x^2)" },
+        { "sin(x+1)", "-cos(x + 1)" },                                // a constant inside is fine
+        { "(x*cos(x)-sin(x))/x^2", "sin(x) / x" },                    // double pole: h = x
+        { "exp(x)*exp(x^2)*(2x+1)", "exp(x^2 + x)" },                 // exponents add: one term
+        { "exp(x)*sin(x)^2", "1/2 * exp(x) - 1/5 * exp(x) * sin(2x) - 1/10 * exp(x) * cos(2x)" },
+        { "sin(x)/exp(x)", "-1/2 * exp(-x) * sin(x) - 1/2 * exp(-x) * cos(x)" },          // 1/e^w = e^{-w}
+        { "cos(x)*exp(x)^(-2)", "1/5 * exp(-2x) * sin(x) - 2/5 * exp(-2x) * cos(x)" },     // negative power
+    };
+    for (size_t i = 0; i < sizeof ok / sizeof ok[0]; i++) {
+        RischResult r = risch_str(ok[i][0]);
+        assert(r.status == RISCH_OK);
+        expect_str(expr_to_string(r.result), ok[i][1]);
+        free_expr(r.result);
+    }
+    const char* none[] = { "sin(x)/x", "cos(x^2)", "exp(-x)*sin(x)/x", "exp(x)+exp(x^2)", "exp(x)*cos(x)/(x+1)", "sin(x)/(x^2+1)" };
+    for (size_t i = 0; i < sizeof none / sizeof none[0]; i++) {
+        RischResult r = risch_str(none[i]);
+        assert(r.status == RISCH_NONELEMENTARY && r.result);
+        free_expr(r.result);
+    }
+    const char* outside[] = { "tan(x)", "1/(1+cos(x))", "sin(1/x)", "cos(1)*x", "ln(x)*sin(x)", "sin(sin(x))" };
+    for (size_t i = 0; i < sizeof outside / sizeof outside[0]; i++) {
+        RischResult r = risch_str(outside[i]);
+        assert(r.status == RISCH_UNSUPPORTED && !r.result && r.reason);
+    }
+    const char* simp[][2] = {                                        // canonical forms
+        { "sin(x)^2+cos(x)^2", "1" }, { "2sin(x)cos(x)", "sin(2x)" }, { "cos(x)^2-sin(x)^2", "cos(2x)" },
+        { "sin(-x)", "-sin(x)" }, { "cos(-x)", "cos(x)" }, { "exp(x)*exp(-x)", "1" },
+    };
+    for (size_t i = 0; i < sizeof simp / sizeof simp[0]; i++) {
+        Expr* raw = parse_input(simp[i][0]);
+        const char* why = NULL;
+        Expr* s = simplify_exp(raw, &why);
+        assert(s);
+        expect_str(expr_to_string(s), simp[i][1]);
+        free_expr(s); free_expr(raw);
+    }
+    printf("  test_reg_integrate_trig PASSED (%zu exact, %zu non-elementary, %zu unsupported, %zu identities)\n",
+           sizeof ok / sizeof ok[0], sizeof none / sizeof none[0], sizeof outside / sizeof outside[0], sizeof simp / sizeof simp[0]);
+}
+
+// r(x)·exp(E)·trig(F) with E = 0 or ±x, F = k·x or x², trig = sin or cos
+static Expr* random_trig_term(void) {
+    Expr* x = create_var("x");
+    Expr* F = rnd(0, 3) ? create_mul(create_const(rnd(1, 3)), x) : create_pow(x, create_const(2));
+    Expr* t = rnd(0, 1) ? create_sin(F) : create_cos(F);
+    long e = rnd(-1, 1);
+    if (e) t = create_mul(create_exp(create_mul(create_const(e), create_var("x"))), t);
+    return create_mul(random_coeff(), t);
+}
+
+// round trip: integrate(d/dx F) gives back F's canonical form exactly (no e^0 part, so the
+// answer is unique) and matches numerically; adding exp(E)·sin(x)/(x - 5) (a simple pole no
+// coefficient has) always makes it non-elementary
+static void test_prop_integrate_trig(void) {
+    int roundtrips = 0, rejected = 0;
+    for (int trial = 0; trial < TRIALS; trial++) {
+        Expr* F = random_trig_term();
+        if (rnd(0, 1)) F = create_add(F, random_trig_term());
+        const char* why = NULL;
+        Expr* f = differentiate_exp(F, &why);
+        assert(f);
+        RischResult r = integrate_exp(f);
+        assert(r.status == RISCH_OK);
+        Expr *cF = simplify_exp(F, &why), *cI = simplify_exp(r.result, &why);
+        assert(cF && cI);
+        expect_same_form(cI, cF);
+        assert(derivative_matches(r.result, f));
+        roundtrips++;
+        Expr* bad = create_add(expr_copy(f), create_div(create_sin(create_var("x")), create_poly_expr(poly_si((long[]){ -5, 1 }, 1))));
+        RischResult rb = integrate_exp(bad);
+        assert(rb.status == RISCH_NONELEMENTARY);
+        rejected++;
+        free_expr(rb.result); free_expr(bad);
+        free_expr(r.result); free_expr(f); free_expr(F);
+    }
+    printf("  test_prop_integrate_trig PASSED (%d round trips, %d non-elementary by construction)\n", roundtrips, rejected);
+}
+
 static Matrix* random_matrix(int n) {
     Matrix* A = matrix_create(n, n);
     for (int i = 0; i < n * n; i++) rat_set_si(&A->data[i], rnd(-20, 20), rnd(1, 4));
@@ -1843,6 +1941,7 @@ void run_property_tests(void) {
     test_reg_integrate_exp();
     test_reg_integrate_log();
     test_reg_integrate_tower_fractions();
+    test_reg_integrate_trig();
     test_lrt_direct();
     printf("\nProperty Tests (seed %s):\n", env ? env : "default");
     test_prop_factor_roundtrip();
@@ -1860,4 +1959,5 @@ void run_property_tests(void) {
     test_prop_integrate_exp();
     test_prop_integrate_log();
     test_prop_integrate_tower_fractions();
+    test_prop_integrate_trig();
 }

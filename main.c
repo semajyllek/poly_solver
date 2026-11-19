@@ -149,7 +149,7 @@ static int handle_exp(const char* action, Expr* raw) {
         if (out) rc = print_and_free(out);
         else fprintf(stderr, "Error: %s.\n", why);
     } else {
-        fprintf(stderr, "Error: '%s' works on polynomials; exp(...) is supported by simplify, differentiate and integrate.\n", action);
+        fprintf(stderr, "Error: '%s' works on polynomials; exp, ln, sin and cos are supported by simplify, differentiate and integrate.\n", action);
     }
     free_expr(raw);
     return rc;
@@ -214,7 +214,7 @@ int main(int argc, char* argv[]) {
 
     const char* input = argv[2];
     Expr* raw = parse_input(input);
-    if (raw && (expr_has_exp(raw) || expr_has_ln(raw))) return handle_exp(action, raw);
+    if (raw && (expr_has_exp(raw) || expr_has_ln(raw) || expr_has_trig(raw))) return handle_exp(action, raw);
     Expr* expr = raw ? simplify(raw) : NULL;
     free_expr(raw);
     if (expr == NULL) {

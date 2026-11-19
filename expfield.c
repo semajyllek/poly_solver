@@ -535,7 +535,7 @@ ExpForm exp_form(const Expr* e) {
     if (!F.unsupported && A.nw > 0 && !make_log_tower(&A, &F.t))
         F.unsupported = "ln of arguments that are not integer powers of one function (such as ln(x)·ln(x+1) or ln(2x)) is not supported yet";
     if (!F.unsupported && A.n > 0 && !make_tower(&A, &F.t))
-        F.unsupported = "exponentials of independent arguments (such as exp(x)·exp(x^2)) are not supported yet";
+        F.unsupported = "a denominator with exponentials of independent arguments (such as exp(x)/(exp(x) + exp(x^2))) is not supported yet";
     if (!F.unsupported && F.t.kind == TOWER_EXP && !F.t.v) F.t.v = poly_one(); // no θ: any v works
     if (!F.unsupported) {
         Conv C = { &F.t, NULL };

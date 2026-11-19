@@ -166,7 +166,9 @@ static bool apply_function(ExprStack* exprs, OpStack* ops) {
     OpEntry f = ostack_pop(ops);
     Expr* arg = estack_pop(exprs);
     if (!arg) return false;
-    estack_push(exprs, f.fn == FN_EXP ? create_exp(arg) : create_ln(arg));
+    Expr* call = f.fn == FN_EXP ? create_exp(arg) : f.fn == FN_LN ? create_ln(arg) : f.fn == FN_SIN ? create_sin(arg)
+               : f.fn == FN_COS ? create_cos(arg) : create_div(create_sin(arg), create_cos(expr_copy(arg))); // tan = sin/cos
+    estack_push(exprs, call);
     return true;
 }
 

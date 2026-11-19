@@ -260,16 +260,22 @@ def random_coeff(rng):
     return num / den
 
 
-def compare_risch(f):
-    """Our verdict on ∫ f against SymPy's risch_integrate: a NonElementaryIntegral from SymPy
-    must meet our proof and vice versa, and every answer must differentiate back to f exactly."""
+def is_zero(d):
+    """d == 0 as a function of x (trig identities are checked again in exponential form)."""
+    return sp.simplify(d) == 0 or sp.simplify(sp.expand(d.rewrite(sp.exp))) == 0
+
+
+def compare_risch(f, ref_form=None):
+    """Our verdict on ∫ f against SymPy's risch_integrate (of ref_form, f rewritten when SymPy
+    needs exponentials): a NonElementaryIntegral from SymPy must meet our proof and vice versa,
+    and every answer must differentiate back to f exactly."""
     from sympy.integrals.risch import risch_integrate, NonElementaryIntegral
     code, out, err = run_cli("integrate", to_cli(f))
     if code != 0:
         assert "not supported" in err, f"failed on {f}: {err}"
         return "unsupported"
     try:
-        ref = risch_integrate(f, x)
+        ref = risch_integrate(f if ref_form is None else ref_form, x)
     except Exception:                        # SymPy's Risch can fail internally (SympifyError)
         ref = None
     nonelem_ref = ref is not None and (isinstance(ref, NonElementaryIntegral) or ref.has(NonElementaryIntegral))
@@ -277,8 +283,8 @@ def compare_risch(f):
         assert ref is None or nonelem_ref, f"we say non-elementary, SymPy integrates {f}: {ref}"
         return "nonelementary" if ref is not None else "unconfirmed"
     assert not nonelem_ref, f"SymPy proves {f} non-elementary, we gave {out}"
-    d = sp.simplify(sp.diff(to_sympy(out), x) - f)
-    assert d == 0, f"d/dx of our {out} differs from {f} by {d}"
+    d = sp.diff(to_sympy(out), x) - f
+    assert is_zero(d), f"d/dx of our {out} differs from {f} by {sp.simplify(d)}"
     return "elementary"
 
 
@@ -328,6 +334,17 @@ def check_frac(rng):
     return compare_risch(f)
 
 
+def check_trig(rng):
+    """f built from r(x)·exp(e·x)·sin/cos(k·x or x²): half derivatives (elementary), half random.
+    SymPy's Risch gets f in exponential form."""
+    def term():
+        arg = rng.choice([x, 2 * x, 3 * x, x**2])
+        return random_coeff(rng) * sp.exp(rng.choice([-1, 0, 1]) * x) * rng.choice([sp.sin, sp.cos])(arg)
+    F = sum(term() for _ in range(rng.randint(1, 2)))
+    f = sp.diff(F, x) if rng.random() < 0.5 else F
+    return compare_risch(f, f.rewrite(sp.exp))
+
+
 def check_matrix(rng):
     n = rng.randint(1, 4)
     M = sp.Matrix(n, n, lambda i, j: sp.Rational(rng.randint(-9, 9), rng.randint(1, 4)))
@@ -348,12 +365,14 @@ def main():
     rng_exp = random.Random(args.seed + 4)
     rng_log = random.Random(args.seed + 5)
     rng_frac = random.Random(args.seed + 6)
+    rng_trig = random.Random(args.seed + 7)
     rootsums = radicals = 0
     definite = {"exact": 0, "numeric": 0, "pole": 0}
     infinite = {"exact": 0, "numeric": 0, "divergent": 0}
     exps = {"elementary": 0, "nonelementary": 0, "unconfirmed": 0, "unsupported": 0}
     logs = dict(exps)
     fracs = dict(exps)
+    trigs = dict(exps)
     for t in range(args.trials):
         p = random_poly(rng)
         check_factor(p)
@@ -368,6 +387,7 @@ def main():
         exps[check_exp(rng_exp)] += 1
         logs[check_log(rng_log)] += 1
         fracs[check_frac(rng_frac)] += 1
+        trigs[check_trig(rng_trig)] += 1
         check_matrix(rng)
         print(f"  trial {t + 1}/{args.trials} ok", flush=True)
     print(f"crosscheck OK: {args.trials} trials (factor, solve, integrate, det); "
@@ -381,7 +401,9 @@ def main():
           f"ln integrals: {logs['elementary']} elementary, {logs['nonelementary']} proved non-elementary (SymPy agrees), "
           f"{logs['unconfirmed']} unconfirmed, {logs['unsupported']} unsupported; "
           f"denominators in exp/ln: {fracs['elementary']} elementary, {fracs['nonelementary']} proved non-elementary "
-          f"(SymPy agrees), {fracs['unconfirmed']} unconfirmed, {fracs['unsupported']} unsupported")
+          f"(SymPy agrees), {fracs['unconfirmed']} unconfirmed, {fracs['unsupported']} unsupported; "
+          f"sin/cos: {trigs['elementary']} elementary, {trigs['nonelementary']} proved non-elementary (SymPy agrees), "
+          f"{trigs['unconfirmed']} unconfirmed, {trigs['unsupported']} unsupported")
 
 
 if __name__ == "__main__":

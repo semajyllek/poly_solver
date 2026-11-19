@@ -1170,6 +1170,46 @@ By Liouville's theorem, `∫ f = Σ_{k=1}^{n+1} b_k θ^k + (an integral over Q(x
   - That test also adds a term with a nonconstant residue, which must be rejected.
   - The SymPy `check_frac` stream also adds `atan(U/√e)/√e` terms to half of its derivatives. It matched on all 400 integrands, seeds 100–499: 223 elementary results that differentiate back exactly, including the arctangent cases, and 177 proofs that SymPy confirms. None were unsupported.
 
+### 11.7 sin and cos: exponential sums (`cfield.c`, `expsum.c`)
+
+**Setting.**
+- `sin u = (e^{iu} − e^{−iu})/2i` and `cos u = (e^{iu} + e^{−iu})/2`, for polynomial u.
+- A product of exponentials is the exponential of the sum of the exponents.
+- So every integrand built from `+ − ·`, integer powers, division by a single term, and exp, sin and cos of polynomials is a finite sum `Σ c_w·e^w`, with:
+  - exponents `w = E + i·F` (E and F in Q[x]),
+  - coefficients `c_w ∈ Q(i)(x)`, kept as `(re + i·im)/den` with a real monic `den`.
+- `exp(x)·exp(x²)` is the single term `e^{x²+x}`. The same path takes exp-only integrands that are outside one tower, so `exp(x) + exp(x²)` is two terms.
+
+**Theorem.**
+- `D(c·e^w) = (c' + w'·c)·e^w` acts on each term on its own.
+- Choose a basis of the Q-span of the exponents. The exponentials of the basis are algebraically independent (Risch structure theorem), and the terms are distinct monomials in them.
+- So Liouville's theorem gives: ∫ is elementary iff `y' + w'·y = c_w` has a solution in Q(i)(x) for every w ≠ 0. The `w = 0` part is a rational integral.
+- Exponents that differ by a constant c are not independent (`e^{i(x+1)} = e^i·e^{ix}`), but proofs stay exact:
+  - e^c is transcendental (Lindemann–Weierstrass);
+  - the image of `y ↦ y' + w'·y` is a subspace defined over Q(i);
+  - so `c₁ + e^c·c₂` lies in it only if `c₁` and `c₂` both do. (Apply an automorphism of C that fixes Q(i) and moves e^c, then subtract.)
+- Nonzero constant exponents (`exp(3)`, `cos(1)` alone) are reported as unsupported.
+
+**Solving the equation over Q(i)** (`c_solve_rde`). This is the algorithm of §11.6 with complex leading coefficients:
+- The denominator is `h = gcd(D, D')`, and `D | h²` is required (a simple pole has no solution).
+- Then `h·q' + (w'·h − h')·q = N·h²/D` is solved term by term from the top. `lc(w'·h)` is a nonzero element of Q(i).
+- Example: `∫ sin(x)/x` gives `c = ∓i/(2x)`, a simple pole, so there is no solution: it is the sine integral Si.
+
+**Real output.**
+- Terms are grouped as `E ± i·F`, with `lc(F) > 0`.
+- The pair `c·e^{E+iF} + d·e^{E−iF}` is written as `e^E·(i(c − d)·sin F + (c + d)·cos F)`.
+- Both coefficients must be real; a failure there is an internal error.
+- Groups are ordered by F, then E. The rational part comes first: `∫ sin(x)^2 = 1/2x − 1/4 * sin(2x)`.
+
+**Checks.**
+- The answer is checked exactly: `D(Σ y_w·e^w) = f − c_0`.
+- `simplify` prints the canonical form, which proves identities such as `sin(x)^2 + cos(x)^2 = 1`.
+
+**Tests.**
+- `test_reg_integrate_trig` pins 16 answers, 6 proofs, 6 unsupported inputs and 6 identities.
+- `test_prop_integrate_trig` integrates `d/dx` of random `r(x)·exp(±x)·sin/cos(k·x or x²)` sums back to the same canonical form. The answer is unique because there is no `e^0` part. It also checks that adding `sin(x)/(x − 5)` is always rejected.
+- The SymPy `check_trig` stream passes f rewritten in exponentials to `risch_integrate`. In 300 cases (seeds 100–399) there were 0 disagreements: 172 answers differentiate back to f exactly, 47 proofs of non-elementarity agree with SymPy, and in 81 more cases we prove non-elementarity where SymPy's Risch raises internally (these are unconfirmed).
+
 ---
 
 ## 12. CLI Pipeline

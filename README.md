@@ -18,7 +18,13 @@ A fast C library and CLI for symbolic polynomial algebra and linear systems with
     - `1/(x*ln(x))` gives `ln(abs(ln(abs(x))))`;
     - `exp(x)/(1+exp(2x))` gives `atan(exp(x))`, and `1/(x*(ln(x)^2+3))` gives `1/3 * sqrt(3) * atan(1/3 * sqrt(3) * ln(abs(x)))`;
     - `1/ln(x)` and `x/(1+exp(x))` are proved non-elementary.
-  - `differentiate` and `simplify` accept the same expressions.
+  - **sin and cos** of polynomials, mixed with `exp` and rational functions:
+    - `x*sin(x)` gives `sin(x) - x * cos(x)`;
+    - `exp(x)*cos(x)` gives `1/2 * exp(x) * sin(x) + 1/2 * exp(x) * cos(x)`;
+    - `sin(x)^2` gives `1/2x - 1/4 * sin(2x)`;
+    - `sin(x)/x` and `cos(x^2)` are proved non-elementary.
+  - Products and sums of different exponentials work as well: `exp(x)*exp(x^2)*(2x+1)` gives `exp(x^2 + x)`, and `exp(x) + exp(x^2)` is proved non-elementary.
+  - `differentiate` and `simplify` accept the same expressions; `simplify "sin(x)^2+cos(x)^2"` gives `1`.
 - **Linear systems**: solve Ax=b, determinant, inverse, rank and RREF with exact rational arithmetic.
 
 ## Build
@@ -90,19 +96,20 @@ Matrix entries can be integers, fractions or decimals of any size (`1/3`, `-5/7`
 - Number literals: integers, decimals and exponents (`12`, `0.75`, `2.5e-3`), all exact
 - `-x^2` means `-(x^2)`. Anything left over after a complete expression (e.g. `= 4`) is an error.
 - Exponents must be integers. `x^(1/2)` and division by zero are rejected with an error.
-- `exp(u)` and `ln(u)` are accepted by `simplify`, `differentiate` and `integrate`. Answers write `ln(abs(u))`, which is valid on both sides of a sign change of `u`.
+- `exp(u)`, `ln(u)`, `sin(u)`, `cos(u)` and `tan(u)` (as `sin(u)/cos(u)`) are accepted by `simplify`, `differentiate` and `integrate`. Answers write `ln(abs(u))`, which is valid on both sides of a sign change of `u`.
 
 ### Limits
 
 - When a logarithm's coefficient is an algebraic number of degree 3 or more, the answer is an exact `RootSum(q(t), t -> t * ln(S(t, x)))`: the sum of `t·ln(S(t, x))` over the roots of `q`. This happens only when the roots aren't known in closed form. Example: `1/(x^5+x+3)`, whose roots can't be written with radicals at all (its Galois group is S5).
 - Complex roots of other irreducible factors of degree 3 or more (for example `x^3 + x + 1`, or the Capelli factors `x^4 ± 2x^2 + 2` of `x^8 + 4`) are counted but not located.
-- Exp integration covers one exponential tower: every `exp` argument must be a rational multiple of one nonconstant polynomial. These are reported as not supported yet:
+- Exp, sin and cos arguments must be polynomials. A denominator involving exp may use only one exponential tower: every `exp` argument a rational multiple of one polynomial. These are reported as not supported yet:
   - denominators whose residues are algebraic numbers of degree 3 or more, such as `exp(x)/(exp(3x)+2)`. These are elementary, but they would need a RootSum over exp or ln;
-  - `exp(x)·exp(x^2)`, which needs two independent exponentials;
-  - `exp(1/x)`, `exp(3)`;
+  - sin or cos in a denominator: `tan(x)`, `1/(1+cos(x))`;
+  - denominators with independent exponentials, such as `exp(x)/(exp(x)+exp(x^2))`;
+  - `exp(1/x)`, `sin(1/x)`, and constants such as `exp(3)` or `cos(1)`;
   - `ln(x) + ln(x+1)` and `ln(2x)·ln(x)`, which need two independent logarithms or a new constant `ln 2`;
-  - `exp` and `ln` together, and `ln(ln(x))`;
-  - definite integrals of exp expressions.
+  - `ln` together with `exp`, `sin` or `cos`, and `ln(ln(x))`;
+  - definite integrals of exp, ln, sin and cos expressions.
 - Definite integrals: when the antiderivative has a `RootSum`, only the numeric value is given. Exact values are simplified in one quadratic field Q(√m): logs merge, atan pairs combine (`∫₀¹ 1/(x⁴+1)` gives `1/4 * sqrt(2) * ln(1 + sqrt(2)) + 1/8 * sqrt(2) * pi`). Values that need two radicals (`cos(pi/12)`) or higher roots (`2^(1/4)`) are folded but not merged.
 
 ## Tests

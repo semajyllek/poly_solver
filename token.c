@@ -30,8 +30,9 @@ Token* get_next_token(const char** input) {
         return token;
     }
 
-    // functions: exp( and ln( (only when the name is followed by an opening parenthesis)
-    static const struct { const char* name; FunctionName fn; } FUNCTIONS[] = { { "exp", FN_EXP }, { "ln", FN_LN } };
+    // functions: exp( ln( sin( cos( tan( (only when the name is followed by an opening parenthesis)
+    static const struct { const char* name; FunctionName fn; } FUNCTIONS[] = {
+        { "exp", FN_EXP }, { "ln", FN_LN }, { "sin", FN_SIN }, { "cos", FN_COS }, { "tan", FN_TAN } };
     for (size_t i = 0; i < sizeof FUNCTIONS / sizeof FUNCTIONS[0]; i++) {
         size_t n = strlen(FUNCTIONS[i].name);
         if (strncmp(*input, FUNCTIONS[i].name, n) != 0) continue;   // also stops at the string's end

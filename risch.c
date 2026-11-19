@@ -13,6 +13,7 @@
 #include "modgcd.h"
 #include "kpoly.h"
 #include "residue.h"
+#include "expsum.h"
 #include <stdlib.h>
 
 // --- the Risch differential equation y' + f·y = g, f a nonzero polynomial ---
@@ -416,8 +417,21 @@ static RischResult integrate_fraction(const ExpForm* F, const Expr* f) {
     return r;
 }
 
+// sin/cos go to exponential sums (expsum.c); so do exp-only integrands outside one tower
+// (exp(x)·exp(x²), exp(x) + exp(x²)), keeping the tower's reason when that fails too
+static bool use_expsum(const Expr* f, const ExpForm* F) {
+    return expr_has_trig(f) || (F->unsupported && !expr_has_ln(f));
+}
+
 RischResult integrate_exp(const Expr* f) {
+    if (expr_has_trig(f)) return integrate_expsum(f);
     ExpForm F = exp_form(f);
+    if (use_expsum(f, &F)) {
+        RischResult r = integrate_expsum(f);
+        if (r.status == RISCH_UNSUPPORTED) r.reason = F.unsupported;
+        exp_form_free(&F);
+        return r;
+    }
     if (F.unsupported) { const char* why = F.unsupported; exp_form_free(&F); return failure(RISCH_UNSUPPORTED, why); }
     RischResult r = kp_is_one(&F.den) ? integrate_poly(&F, f) : integrate_fraction(&F, f);
     exp_form_free(&F);
@@ -425,8 +439,11 @@ RischResult integrate_exp(const Expr* f) {
 }
 
 Expr* differentiate_exp(const Expr* f, const char** reason) {
+    if (expr_has_trig(f)) return differentiate_expsum(f, reason);
     ExpForm F = exp_form(f);
     Expr* r = NULL;
+    const char* ignored = NULL;                           // on failure, the tower's reason is the one reported
+    if (use_expsum(f, &F) && (r = differentiate_expsum(f, &ignored))) { exp_form_free(&F); return r; }
     if (F.unsupported) *reason = F.unsupported;
     else {
         KFrac q = { F.f, F.den }, d = kfrac_derivative(&q, &F.t);
@@ -438,8 +455,11 @@ Expr* differentiate_exp(const Expr* f, const char** reason) {
 }
 
 Expr* simplify_exp(const Expr* f, const char** reason) {
+    if (expr_has_trig(f)) return simplify_expsum(f, reason);
     ExpForm F = exp_form(f);
     Expr* r = NULL;
+    const char* ignored = NULL;
+    if (use_expsum(f, &F) && (r = simplify_expsum(f, &ignored))) { exp_form_free(&F); return r; }
     if (F.unsupported) *reason = F.unsupported;
     else r = kfrac_expr(&(KFrac){ F.f, F.den }, &F.t);
     exp_form_free(&F);
