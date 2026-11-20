@@ -1379,6 +1379,47 @@ Examples:
 
 ---
 
+### 11.10 One square root (`algsqrt.c`)
+
+**The field.** An expression with square roots of one polynomial U is an element `a + b·y` of Q(x)(y), y² = U, with a, b ∈ Q(x):
+- Products use y² = U, and inverses use the conjugate: `1/(a + b·y) = (a − b·y)/(a² − b²·U)`. The norm is zero only for 0, because U is not a square.
+- `sqrt(g)` normalizes g = c·w (w primitive, positive leading coefficient) to `r·sqrt(±m·w)` with |c| = r²·m, so `sqrt(4x+4) = 2·sqrt(x+1)`.
+- Every root in an expression must give the same radicand.
+- A constant square (`sqrt(4/9)`) is rational. A negative constant, or a perfect square (`sqrt(x^2) = |x|`), is refused.
+- Half-integer powers `g^(n/2)` are `sqrt(g)^n`.
+
+The derivative is `D(a + b·y) = a' + (b' + b·U'/(2U))·y`.
+
+**Integration**, for deg U ≤ 2. `∫ a` goes to the rational integrator. For `∫ b·y`, the conic y² = U gets a rational parametrization x = X(t), y = Y(t), with its inverse t = T(x, y):
+
+| U | t | X(t), Y(t) |
+|---|---|---|
+| b₁x + c | y | X = (t² − c)/b₁, Y = t |
+| s²x² + bx + c | y + s·x (Euler) | X = (t² − c)/(2st + b), Y = (st² + bt + sc)/(2st + b) |
+| a rational point (x₀, y₀) | (y − y₀)/(x − x₀) | X = (x₀t² − 2y₀t + u₁ − a·x₀)/(t² − a), Y = (−y₀t² + u₁t − a·y₀)/(t² − a), u₁ = U'(x₀) |
+
+- **The rational point.** The search tries x₀ = p/q by increasing |p| + q, up to 40, with x₀ = 0 first, and needs U(x₀) to be a rational square.
+- **No point.** A conic with no rational point, such as x² + y² = 3, has no parametrization over Q, so it is unsupported.
+- **The exact check.** `X(T) = x` and `Y(T) = y` must hold in Q(x)(y). Then, for `F'(t) = R(t) = b(X)·Y·X'`, the chain rule gives `d/dx F(T) = R(T)·T' = b(x)·y`, because `X'(T)·T' = 1`.
+- **Back-substitution.** R is integrated by `integrate()`. The answer's terms that are rational in t are summed in Q(t) and substituted once, so they come back as one normal form `a + b·y`, written over one denominator, with an additive constant dropped. The ln, atan and RootSum terms are substituted node by node; a RootSum in t becomes the expression form `Σ αⁱ·cᵢ(x, y)`.
+
+**Examples.**
+- `∫ 1/sqrt(x²+1)`: here t = x + y, X = (t² − 1)/(2t), Y = (t² + 1)/(2t), and R(t) = 1/t, so the answer is `ln|x + sqrt(x² + 1)|`.
+- `∫ sqrt(1−x²)`: the point (0, 1) gives t = (y − 1)/x, and the answer is `x/2·y − atan((y − 1)/x)`. The argument tends to 0 as x → 0, so there is no jump.
+
+**Not supported:**
+- deg U ≥ 3 (elliptic and beyond);
+- conics without a rational point;
+- two radicands in one expression;
+- roots of rational functions;
+- roots together with exp, ln, sin or cos;
+- definite integrals with roots.
+
+**Tests.**
+- `test_reg_integrate_sqrt` pins 17 answers, each checked by its numeric derivative, plus 7 unsupported inputs and 4 simplify/differentiate forms.
+- `test_prop_integrate_sqrt` integrates `r(x)·y + s(x)/y` and `D(p·y + q)` over the three kinds of U, each checked numerically.
+- The SymPy stream `check_sqrt` differentiates every answer back to 35 digits: 149 of 150 integrate, and the remaining one is a perfect-square radicand, correctly refused.
+
 ## 12. CLI Pipeline
 
 The `main.c` entry point ties everything together:
@@ -1390,7 +1431,7 @@ The `main.c` entry point ties everything together:
 The pipeline for every action:
 
 ```
-1. parse_and_simplify(input)
+1. parse_and_simplify(input)        (trees with a square root go to algsqrt.c, with exp/ln/sin/cos to risch.c)
    │
    ├─ parse_expression(&input)   ← shunting-yard → Expr* tree
    │

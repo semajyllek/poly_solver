@@ -1,5 +1,6 @@
-// Indefinite integrals: rational functions (integrate), and exp/ln/sin/cos (integrate_exp,
-// the Risch algorithm), which also proves when no elementary antiderivative exists.
+// Indefinite integrals: rational functions (integrate), exp/ln/sin/cos (integrate_exp, the
+// Risch algorithm, which also proves when no elementary antiderivative exists), and one square
+// root of a quadratic (integrate_sqrt).
 #include "polysolver.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -35,6 +36,15 @@ int main(void) {
     risch("exp(x)/(exp(3x)+2)");                  // cubic residues: a RootSum over exp
     risch("exp(x^2)");                            // proved non-elementary
     risch("ln(x)/(x+1)");
+
+    const char* roots[] = { "sqrt(x^2+1)", "1/sqrt(1-x^2)", "x/sqrt(x+1)" };
+    for (size_t i = 0; i < 3; i++) {              // integrate_sqrt: RISCH_OK or RISCH_UNSUPPORTED
+        Expr* f = parse_input(roots[i]);
+        RischResult r = integrate_sqrt(f);
+        char* s = r.result ? expr_to_string(r.result) : NULL;
+        printf("∫ %-22s = %s\n", roots[i], s ? s : r.reason);
+        free(s); free_expr(r.result); free_expr(f);
+    }
 
     const char* why = NULL;                       // differentiate_exp: the same expressions
     Expr* g = parse_input("x*exp(x)*sin(x)");

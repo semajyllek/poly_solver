@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 #include "parser.h"
 #include "expression.h"
 #include "polynomial.h"
@@ -9,6 +10,7 @@
 #include "matrix.h"
 #include "definite.h"
 #include "risch.h"
+#include "algsqrt.h"
 
 static void print_usage(const char* program_name) {
     fprintf(stderr, "Usage: %s <action> \"<expression>\"\n", program_name);
@@ -82,7 +84,11 @@ static int handle_definite(const char* f_text, const char* a_text, const char* b
     Expr* f = parse_integrand(f_text);
     int rc = 1;
     Bounds ab = { { &a, 0, false }, { &b, 0, false } };
-    if (!f) fprintf(stderr, "Error: not a polynomial, rational function, or expression in exp, sin and cos.\n");
+    Expr* probe = f ? NULL : parse_input(f_text);
+    bool root = probe && expr_has_sqrt(probe);
+    free_expr(probe);
+    if (!f && root) fprintf(stderr, "Error: definite integrals with square roots are not supported yet (the indefinite integral is: integrate \"f\").\n");
+    else if (!f) fprintf(stderr, "Error: not a polynomial, rational function, or expression in exp, sin and cos.\n");
     else if (!parse_endpoint(&a, &ab.a, a_text) || !parse_endpoint(&b, &ab.b, b_text))
         fprintf(stderr, "Error: bounds must be rational numbers, rational multiples of pi, inf or -inf.\n");
     else {
@@ -90,7 +96,13 @@ static int handle_definite(const char* f_text, const char* a_text, const char* b
         if (r.error) fprintf(stderr, "Error: %s.\n", r.error);
         else {
             if (r.exact && r.note) { char* s = expr_to_string(r.exact); printf("%s (%s)\n", s, r.note); free(s); }
-            else if (r.exact) { char* s = expr_to_string(r.exact); printf("%s ~ %.10g\n", s, r.approx); free(s); }
+            else if (r.exact) {                                // the decimal of the exact value (quadrature only checked it)
+                bool ok = true;
+                double v = expr_eval(r.exact, 0, &ok);
+                char* s = expr_to_string(r.exact);
+                printf("%s ~ %.10g\n", s, ok && isfinite(v) ? v : r.approx);
+                free(s);
+            }
             else printf("~ %.10g (%s)\n", r.approx, r.note);
             rc = 0;
         }
@@ -133,6 +145,23 @@ static int handle_exp(const char* action, Expr* raw) {
     } else {
         fprintf(stderr, "Error: '%s' works on polynomials; exp, ln, sin and cos are supported by simplify, differentiate and integrate.\n", action);
     }
+    free_expr(raw);
+    return rc;
+}
+
+// actions on an expression with a square root: simplify, differentiate, integrate
+static int handle_sqrt(const char* action, Expr* raw) {
+    const char* why = NULL;
+    int rc = 1;
+    if (strcmp(action, "integrate") == 0) {
+        RischResult r = integrate_sqrt(raw);
+        if (r.status == RISCH_OK) rc = print_and_free(r.result);
+        else fprintf(stderr, "Error: could not integrate: %s.\n", r.reason);
+    } else if (strcmp(action, "differentiate") == 0 || strcmp(action, "simplify") == 0) {
+        Expr* out = action[0] == 'd' ? differentiate_sqrt(raw, &why) : simplify_sqrt(raw, &why);
+        if (out) rc = print_and_free(out);
+        else fprintf(stderr, "Error: %s.\n", why);
+    } else fprintf(stderr, "Error: '%s' works on polynomials; square roots are supported by simplify, differentiate and integrate.\n", action);
     free_expr(raw);
     return rc;
 }
@@ -196,6 +225,7 @@ int main(int argc, char* argv[]) {
 
     const char* input = argv[2];
     Expr* raw = parse_input(input);
+    if (raw && expr_has_sqrt(raw)) return handle_sqrt(action, raw);
     if (raw && (expr_has_exp(raw) || expr_has_ln(raw) || expr_has_trig(raw))) return handle_exp(action, raw);
     Expr* expr = raw ? simplify(raw) : NULL;
     free_expr(raw);

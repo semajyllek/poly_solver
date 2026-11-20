@@ -1,6 +1,6 @@
 # polysolver
 
-A fast C library and CLI for exact symbolic algebra: simplification, factoring, equation solving, differentiation, indefinite and definite integration (rational functions, and exp, ln, sin and cos through the Risch algorithm), and linear algebra. Every number is an arbitrary-precision GMP rational, so nothing is ever rounded. When an integral has no elementary antiderivative, you get a proof of that, not a failure.
+A fast C library and CLI for exact symbolic algebra: simplification, factoring, equation solving, differentiation, indefinite and definite integration (rational functions, square roots of quadratics, and exp, ln, sin and cos through the Risch algorithm), and linear algebra. Every number is an arbitrary-precision GMP rational, so nothing is ever rounded. When an integral has no elementary antiderivative, you get a proof of that, not a failure.
 
 ```console
 $ ./polysolver factor "x^4 + 4"
@@ -32,6 +32,7 @@ no elementary antiderivative: the part exp(x^2) (Risch: y' + k·v'·y = a has no
 - **Equation solving**: exact rational roots and radicals for quadratics, including complex roots. Binomial and cyclotomic-type factors (`x^6 + 2`, `x^5 - 1`) get every root exactly. Other factors get certified real-root intervals (Descartes/VCA) and a count of their non-real roots.
 - **Rational integration**: Hermite reduction plus Lazard–Rioboo–Trager. The logs and arctangents come out real. Radicals are used when the roots are known, and an exact `RootSum` otherwise.
 - **Risch integration** with exp, ln, sin, cos and tan. It covers one exponential or logarithmic tower, sums of exponentials, sin/cos in a denominator (through `tan(x)` or `tan(x/2)`), and ln over an exp or ln tower. Every answer is checked exactly, and "no elementary antiderivative" is always a proof.
+- **Square roots**: expressions with one square root `sqrt(U)` (or half-integer powers) simplify and differentiate for any polynomial U, and integrate when deg U <= 2. The conic y² = U is parametrized rationally (Euler's substitutions, or a line through a rational point), the integral is done exactly as a rational one, and the substitution is undone. That is how `sqrt(x^2+1)`, `1/sqrt(1-x^2)` and `x/sqrt(x+1)` come out in closed form.
 - **Definite integrals**:
   - exact values with constants folded (`ln(4/3)`, `1/9 * sqrt(3) * pi`);
   - infinite bounds and bounds at rational multiples of π;
@@ -326,6 +327,62 @@ no elementary antiderivative: the part -exp(x) / x (Risch: y' + k·v'·y = a has
 
 $ ./polysolver integrate "ln(ln(x))"
 no elementary antiderivative: the part -1 / ln(abs(x)) (Risch: its residues are not constants)
+```
+
+### Square roots
+
+Here the input has one square root `sqrt(U)` of a polynomial U, or powers like `x^(3/2)`. Every root must be of the same U up to a constant square: `sqrt(4x+4)` is `2*sqrt(x+1)`. `simplify` and `differentiate` work for any U, and `integrate` for deg U <= 2. Integration parametrizes the conic y² = U rationally (`t = y` for linear U, Euler's `t = y + s·x` when the leading coefficient is `s²`, otherwise a line through a rational point). It integrates the rational function of t exactly and substitutes back, after checking that the parametrization inverts exactly.
+
+These are reported as not supported:
+- degree 3 or more (elliptic integrals and beyond);
+- conics with no rational point, such as `3 - x^2`;
+- two different roots;
+- roots of rational functions;
+- square roots mixed with exp, ln, sin or cos;
+- definite integrals with square roots.
+
+```console
+$ ./polysolver integrate "sqrt(x+1)"
+(2/3x + 2/3) * sqrt(x + 1)
+
+$ ./polysolver integrate "x/sqrt(x+1)"
+(2/3x - 4/3) * sqrt(x + 1)
+
+$ ./polysolver integrate "1/sqrt(x^2+1)"
+ln(abs(x + sqrt(x^2 + 1)))
+
+$ ./polysolver integrate "sqrt(x^2+1)"
+1/2x * sqrt(x^2 + 1) + 1/2 * ln(abs(x + sqrt(x^2 + 1)))
+
+$ ./polysolver integrate "x^3*sqrt(x^2+1)"
+(1/5x^4 + 1/15x^2 - 2/15) * sqrt(x^2 + 1)
+
+$ ./polysolver integrate "sqrt(1-x^2)"
+1/2x * sqrt(-x^2 + 1) - atan((-1 + sqrt(-x^2 + 1)) / x)
+
+$ ./polysolver integrate "1/(x^2*sqrt(1-x^2))"
+-sqrt(-x^2 + 1) / x
+
+$ ./polysolver integrate "1/(x*sqrt(x^2-1))"
+2 * atan(x + sqrt(x^2 - 1))
+
+$ ./polysolver integrate "sqrt(x)/(1+x)"
+2 * sqrt(x) - 2 * atan(sqrt(x))
+
+$ ./polysolver integrate "x^(3/2)+x^(-1/2)"
+(2/5x^2 + 2) * sqrt(x)
+
+$ ./polysolver differentiate "x*sqrt(1-x^2)"
+(2x^2 - 1) * sqrt(-x^2 + 1) / (x^2 - 1)
+
+$ ./polysolver simplify "1/(1+sqrt(x+1))"
+(-1 + sqrt(x + 1)) / x
+
+$ ./polysolver integrate "1/sqrt(x^3+1)"
+Error: could not integrate: square roots of polynomials of degree 3 or more (elliptic integrals and beyond) are not supported.
+
+$ ./polysolver integrate "1/sqrt(3-x^2)"
+Error: could not integrate: this square root of a quadratic has no rational parametrization over Q (the conic y^2 = U has no rational point), so it is not supported yet.
 ```
 
 ### Definite integrals of rational functions
@@ -742,11 +799,13 @@ simplify_exp:  1 + exp(x)
   - `RISCH_NONELEMENTARY` with the part that has no elementary integral (a proof);
   - `RISCH_UNSUPPORTED` with a reason.
 - **`integrate_rootsum`** works like `integrate` but always keeps a `RootSum` instead of rewriting it in radicals.
+- **`integrate_sqrt(f)`** handles one square root of a polynomial of degree 2 or less. It returns `RISCH_OK` with the antiderivative, or `RISCH_UNSUPPORTED` with a reason; it never claims non-elementarity. `differentiate_sqrt` and `simplify_sqrt` work for any polynomial radicand.
 
 ```c
 // examples/integrate.c
-// Indefinite integrals: rational functions (integrate), and exp/ln/sin/cos (integrate_exp,
-// the Risch algorithm), which also proves when no elementary antiderivative exists.
+// Indefinite integrals: rational functions (integrate), exp/ln/sin/cos (integrate_exp, the
+// Risch algorithm, which also proves when no elementary antiderivative exists), and one square
+// root of a quadratic (integrate_sqrt).
 #include "polysolver.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -783,6 +842,15 @@ int main(void) {
     risch("exp(x^2)");                            // proved non-elementary
     risch("ln(x)/(x+1)");
 
+    const char* roots[] = { "sqrt(x^2+1)", "1/sqrt(1-x^2)", "x/sqrt(x+1)" };
+    for (size_t i = 0; i < 3; i++) {              // integrate_sqrt: RISCH_OK or RISCH_UNSUPPORTED
+        Expr* f = parse_input(roots[i]);
+        RischResult r = integrate_sqrt(f);
+        char* s = r.result ? expr_to_string(r.result) : NULL;
+        printf("∫ %-22s = %s\n", roots[i], s ? s : r.reason);
+        free(s); free_expr(r.result); free_expr(f);
+    }
+
     const char* why = NULL;                       // differentiate_exp: the same expressions
     Expr* g = parse_input("x*exp(x)*sin(x)");
     Expr* dg = differentiate_exp(g, &why);
@@ -808,6 +876,9 @@ Output:
 ∫ exp(x)/(exp(3x)+2)     = RootSum(108t^3 - 1, t -> t * ln(exp(x) + 6 * t))
 ∫ exp(x^2)               : no elementary antiderivative (the part exp(x^2))
 ∫ ln(x)/(x+1)            : no elementary antiderivative (the part ln(abs(x)) / (x + 1))
+∫ sqrt(x^2+1)            = 1/2x * sqrt(x^2 + 1) + 1/2 * ln(abs(x + sqrt(x^2 + 1)))
+∫ 1/sqrt(1-x^2)          = -2 * atan((-1 + sqrt(-x^2 + 1)) / x)
+∫ x/sqrt(x+1)            = (2/3x - 4/3) * sqrt(x + 1)
 d/dx x*exp(x)*sin(x) = (x + 1) * exp(x) * sin(x) + x * exp(x) * cos(x)
 ```
 
@@ -997,13 +1068,20 @@ det      = 9999999999999999997900000000000000000021/99999999999999999999
 - Exponents must be integers: `x^(1/2)` is rejected, and so is division by zero.
 - Anything left over after a complete expression (e.g. `= 4`) is an error.
 - Functions:
-  - `exp(u)`, `ln(u)`, `sin(u)`, `cos(u)`, and `tan(u)` (read as `sin(u)/cos(u)`, printed back as `tan(u)`);
+  - `exp(u)`, `ln(u)`, `sin(u)`, `cos(u)`, `tan(u)` (read as `sin(u)/cos(u)`, printed back as `tan(u)`), `sqrt(u)`, and half-integer powers such as `x^(3/2)`;
   - accepted by `simplify`, `differentiate` and `integrate`, with the limits below;
   - `factor` and `solve` take polynomials only.
+- The variable is `x`. Any other name is an error that names it: `y`, `pi` inside an expression, or a misspelt function.
 
 ## Limits
 
 - When a logarithm's coefficient is an algebraic number of degree 3 or more, the answer is an exact `RootSum(q(t), t -> t * ln(S(t, x)))`: the sum of `t·ln(S(t, x))` over the roots of `q`. For rational functions this happens only when the roots aren't known in closed form. Over exp, ln or tan (and an outer ln) the RootSum is always kept, with S a polynomial in the tower written as `Σ t^i·(…)`; definite integrals over it give the numeric value.
+- Square roots: one radicand per expression, integrated for degree 2 or less. These are reported as not supported:
+  - `1/sqrt(x^3+1)` (elliptic);
+  - `1/sqrt(3-x^2)`: the conic x² + y² = 3 has no rational point, so its parametrization needs `sqrt(3)`;
+  - square roots with exp/ln/sin/cos, of rational functions, and in definite integrals.
+
+  `sqrt(x^2)` is `|x|`, which is not supported.
 - Complex roots of other irreducible factors of degree 3 or more (for example `x^3 + x + 1`, or the Capelli factors `x^4 ± 2x^2 + 2` of `x^8 + 4`) are counted but not located.
 - Exp, sin and cos arguments must be polynomials. A denominator involving exp may use only one exponential tower: every `exp` argument a rational multiple of one polynomial. A denominator involving sin or cos needs every argument to be an integer multiple of one polynomial (`sin(x)` and `cos(2x)`). These are reported as not supported yet:
   - denominators whose residues are algebraic numbers of degree 7 or more, such as `exp(x)/(exp(7x)+2)` or `1/(sin(x)^7+2)`. These are elementary;
@@ -1058,9 +1136,10 @@ It confirms each factorization multiplies back, each root and root count (every 
 6. **Factoring** (`factor.c`, `zx_factor.c`, `modgcd.c`): Yun square-free decomposition (modular gcds, exactly checked) + Berlekamp–Zassenhaus
 7. **Roots and solver** (`roots.c`, `solver.c`): Descartes/VCA isolation, exact refinement, radicals
 8. **Integration** (`integrate.c`, `logpart.c`, `subres.c`, `rootform.c`, `surd.c`, `partial_frac.c`): Hermite reduction, log/atan terms, Lazard–Rioboo–Trager, radical forms, partial fractions
-9. **Risch** (`expfield.c`, `risch.c`, `kpoly.c`, `residue.c`, `logpair_tmpl.h`, `rootsum_tmpl.h`, `cfield.c`, `expsum.c`, `tanfield.c`, `risch2.c`, `k2poly.c`): exp/ln towers, residues, exponential sums, tan(x) and tan(x/2), two levels
-10. **Definite integrals** (`definite.c`, `deftower.c`, `constfold.c`): pole detection, exact evaluation with atan jump corrections, constant folding with Q(√m) arithmetic (`qsurd.c`), quadrature check
-11. **Linear algebra** (`matrix.c`): Gaussian elimination over exact rationals
+9. **Square roots** (`algsqrt.c`): Q(x)(sqrt(U)) arithmetic, Euler and rational-point parametrizations, back-substitution
+10. **Risch** (`expfield.c`, `risch.c`, `kpoly.c`, `residue.c`, `logpair_tmpl.h`, `rootsum_tmpl.h`, `cfield.c`, `expsum.c`, `tanfield.c`, `risch2.c`, `k2poly.c`): exp/ln towers, residues, exponential sums, tan(x) and tan(x/2), two levels
+11. **Definite integrals** (`definite.c`, `deftower.c`, `constfold.c`): pole detection, exact evaluation with atan jump corrections, constant folding with Q(√m) arithmetic (`qsurd.c`), quadrature check
+12. **Linear algebra** (`matrix.c`): Gaussian elimination over exact rationals
 
 See [INTERNALS.md](INTERNALS.md) for how each algorithm works.
 

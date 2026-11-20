@@ -17,7 +17,7 @@ typedef enum {
     TOKEN_END
 } TokenType;
 
-typedef enum { FN_EXP, FN_LN, FN_SIN, FN_COS, FN_TAN } FunctionName;
+typedef enum { FN_EXP, FN_LN, FN_SIN, FN_COS, FN_TAN, FN_SQRT } FunctionName;
 
 typedef struct {
     TokenType type; // Type of token

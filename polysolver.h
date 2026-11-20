@@ -13,6 +13,7 @@
 #include "expression.h"   // Expr: build, canonicalize, differentiate, integrate (rational), print, eval
 #include "parser.h"       // parse_input: text -> Expr
 #include "risch.h"        // integrate_exp: exp/ln/sin/cos (Risch), with proofs of non-elementarity
+#include "algsqrt.h"      // integrate_sqrt, differentiate_sqrt, simplify_sqrt: one square root sqrt(U)
 #include "definite.h"     // integrate_definite: exact values with a quadrature check
 #include "matrix.h"       // Matrix/Vector: rref, rank, det, inverse, linear systems
 

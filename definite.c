@@ -421,22 +421,42 @@ static double numeric_value(const RatFn* f, const Span* s) {
     return v;
 }
 
+#define NEAR_SPAN 32.0 // an infinite end is integrated directly this far before the mapped tail
+
+// the pieces of ∫ e: Integrands over u-ranges [a, b]
+typedef struct {
+    Integrand g[4];
+    double a[4], b[4];
+    int n;
+} Pieces;
+
+static void piece(Pieces* P, Integrand g, double a, double b) {
+    P->g[P->n] = g; P->a[P->n] = a; P->b[P->n] = b;
+    P->n++;
+}
+
+// from o toward side (±1): [o, o ± NEAR_SPAN] directly, then the half-line beyond mapped onto
+// t ∈ [0, 1]; the map alone would squeeze infinitely many oscillations of sin(k·x)·e^(-x)
+// next to t = 0, where Simpson cannot follow them (the tail beyond is ~e^(-32) of the whole)
+static void half_line(Pieces* P, const Expr* e, double o, int side) {
+    piece(P, (Integrand){ .e = e, .o = o }, side > 0 ? 0 : -NEAR_SPAN, side > 0 ? NEAR_SPAN : 0);
+    piece(P, (Integrand){ .e = e, .o = o + side * NEAR_SPAN, .side = side }, 0, 1);
+}
+
 // ∫ e over the span, for an e that is finite on it and decays exponentially at an infinite
 // end (tail 0): [lo, hi], or half-lines from the finite end (from 0 for the whole line).
 // *scale is the rough ∫|e| the tolerance is relative to
 static double numeric_value_expr(const Expr* e, const Span* s, double* scale) {
     double lo = rat_to_double(&s->lo), hi = rat_to_double(&s->hi);
-    Integrand g[2];
-    double b[2] = { 1, 1 };
-    int n = 0;
-    if (!s->lo_inf && !s->hi_inf) { g[n] = (Integrand){ .e = e, .o = lo }; b[n++] = hi - lo; }
-    else if (!s->lo_inf) g[n++] = (Integrand){ .e = e, .o = lo, .side = 1 };
-    else if (!s->hi_inf) g[n++] = (Integrand){ .e = e, .o = hi, .side = -1 };
-    else { g[n++] = (Integrand){ .e = e, .side = -1 }; g[n++] = (Integrand){ .e = e, .side = 1 }; }
+    Pieces P = { .n = 0 };
+    if (!s->lo_inf && !s->hi_inf) piece(&P, (Integrand){ .e = e, .o = lo }, 0, hi - lo);
+    else if (!s->lo_inf) half_line(&P, e, lo, 1);
+    else if (!s->hi_inf) half_line(&P, e, hi, -1);
+    else { half_line(&P, e, 0, -1); half_line(&P, e, 0, 1); }
     double rough = 0, v = 0;
-    for (int i = 0; i < n; i++) rough += rough_of(&g[i], 0, b[i]);
+    for (int i = 0; i < P.n; i++) rough += rough_of(&P.g[i], P.a[i], P.b[i]);
     long budget = 4000000;
-    for (int i = 0; i < n; i++) v += adaptive(&g[i], 0, b[i], (Tol){ 1e-10 * (rough + 1e-300) / n, 40, &budget });
+    for (int i = 0; i < P.n; i++) v += adaptive(&P.g[i], P.a[i], P.b[i], (Tol){ 1e-10 * (rough + 1e-300) / P.n, 40, &budget });
     *scale = rough;
     return v;
 }

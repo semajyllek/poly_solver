@@ -461,6 +461,29 @@ def check_tower2(rng):
     return compare_risch(f, None, numeric=True, limit=20)
 
 
+def check_sqrt(rng):
+    """f = r(x)·sqrt(U) + s(x)/sqrt(U) with U linear, a square leading coefficient, or with the
+    rational point (0, k); half are derivatives of p(x)·sqrt(U) + c·ln(x + sqrt(U)) style
+    antiderivatives. Our answer must differentiate back to f (35 digits); SymPy is not consulted
+    for a verdict, since every such integral is elementary."""
+    a, b, k = rng.randint(1, 3), rng.randint(-2, 2), rng.randint(1, 3)
+    U = rng.choice([a * x + rng.randint(1, 3), a**2 * x**2 + b * x + rng.randint(1, 4), -(a + 1) * x**2 + b * x + k**2])
+    y = sp.sqrt(U)
+    if rng.random() < 0.5:
+        F = (rng.randint(-2, 2) * x**2 + rng.randint(-2, 2) * x + rng.randint(1, 3)) * y
+        f = sp.diff(F, x)
+    else:
+        r = (rng.randint(-3, 3) * x + rng.randint(1, 3)) / (x + rng.choice([-3, -2, 2, 3, 4]))
+        f = r * y + (rng.randint(-2, 2) * x + rng.randint(1, 3)) / y
+    code, out, err = run_cli("integrate", to_cli(f))
+    if code != 0:
+        assert "not supported" in err, f"failed on {f}: {err}"
+        return "unsupported"
+    d = sp.diff(to_sympy(out), x) - f
+    assert numerically_zero(d, f), f"d/dx of our {out} differs from {f}"
+    return "elementary"
+
+
 PI_BOUNDS = {"pi": sp.pi, "pi/4": sp.pi / 4, "-pi/2": -sp.pi / 2, "3pi/2": 3 * sp.pi / 2, "2pi": 2 * sp.pi, "-pi": -sp.pi}
 
 
@@ -580,6 +603,7 @@ def main():
     rng_dexp = random.Random(args.seed + 9)
     rng_dtow = random.Random(args.seed + 10)
     rng_tw2 = random.Random(args.seed + 11)
+    rng_sq = random.Random(args.seed + 12)
     rootsums = radicals = 0
     definite = {"exact": 0, "numeric": 0, "pole": 0}
     infinite = {"exact": 0, "numeric": 0, "divergent": 0}
@@ -591,6 +615,7 @@ def main():
     dexps = {"exact": 0, "numeric": 0, "refused": 0}
     dtows = {"exact": 0, "numeric": 0, "pole": 0, "refused": 0, "skipped": 0}
     tw2s = dict(exps)
+    sqs = dict(exps)
     for t in range(args.trials):
         p = random_poly(rng)
         check_factor(p)
@@ -610,6 +635,7 @@ def main():
         dexps[check_definite_exp(rng_dexp)] += 1
         dtows[check_definite_tower(rng_dtow)] += 1
         tw2s[check_tower2(rng_tw2)] += 1
+        sqs[check_sqrt(rng_sq)] += 1
         check_matrix(rng)
         print(f"  trial {t + 1}/{args.trials} ok", flush=True)
     print(f"crosscheck OK: {args.trials} trials (factor, solve, integrate, det); "
@@ -633,7 +659,8 @@ def main():
           f"{dtows['exact']} exact, {dtows['numeric']} numeric-only, {dtows['pole']} poles, "
           f"{dtows['refused']} refused, {dtows['skipped']} skipped; ln over exp/ln: {tw2s['elementary']} elementary ({tw2s['rootsum']} more with a RootSum), "
           f"{tw2s['nonelementary']} proved non-elementary (SymPy agrees), {tw2s['unconfirmed']} unconfirmed, "
-          f"{tw2s['unsupported']} unsupported")
+          f"{tw2s['unsupported']} unsupported; square roots: {sqs['elementary']} elementary (checked to 35 digits), "
+          f"{sqs['unsupported']} unsupported")
 
 
 if __name__ == "__main__":

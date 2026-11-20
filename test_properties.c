@@ -26,6 +26,7 @@
 #include "modgcd.h"
 #include "risch.h"
 #include "expfield.h"
+#include "algsqrt.h"
 #include <complex.h>
 
 static bool derivative_is(const Expr* F, const Polynomial* num, const Polynomial* den);
@@ -487,7 +488,8 @@ static void test_lrt_direct(void) {
 }
 
 static void test_reg_parser_rejects_partial(void) {
-    const char* bad[] = { "x^2 = 4", "2x $ 3", "2x)", "(2x", "2 +", "*3" };
+    const char* bad[] = { "x^2 = 4", "2x $ 3", "2x)", "(2x", "2 +", "*3",
+                          "y^2", "sqr(x)", "3*pi*x", "x+t" };     // every letter used to be read as x
     for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) assert(parse_and_simplify(bad[i]) == NULL);
     expect_str(simplify_str("  3x  "), "3x");
     expect_str(simplify_str("-x^2 + 1"), "-x^2 + 1");  // used to parse as (-x)^2
@@ -2258,6 +2260,7 @@ static void test_reg_definite_exp(void) {
         { "x*exp(x)", "0", "1", "1" },                                  // exp(0) = 1, 0·exp(1) = 0
         { "exp(x)", "0", "1", "exp(1) - 1" },
         { "exp(-x)*cos(x)", "0", "inf", "1/2" },
+        { "(3-x)*exp(-x)*sin(2x)+(2x-4)*exp(-x)*cos(2x)+(1-2x)*exp(-x)*sin(3x)+(6x+3)*exp(-x)*cos(3x)", "0", "inf", "0" }, // oscillations: [0, 32] directly
         { "x*exp(-x)*sin(x)", "0", "inf", "1/2" },
         { "exp(x)", "-inf", "0", "1" },
         { "x*sin(x)", "-1", "1", "-2 * cos(1) + 2 * sin(1)" },          // sin(-1) = -sin(1)
@@ -2397,6 +2400,7 @@ static void test_prop_definite_exp(void) {
         Bounds ab = { { &ra, 0, false }, { &rb, 0, false } };
         assert(parse_endpoint(&ra, &ab.a, a) && parse_endpoint(&rb, &ab.b, b));
         DefiniteResult r = integrate_definite(fe, &ab);
+        if (r.error || !r.exact) { char* fs = expr_to_string(f); fprintf(stderr, "definite exp f = %s on [%s, %s]: %s\n", fs, a, b, r.error ? r.error : r.note); free(fs); }
         assert(!r.error && r.exact);
         char* s = expr_to_string(r.exact);
         assert(!strstr(s, "sin(") && !strstr(s, "cos("));          // kx at q·π: on the table
@@ -2516,6 +2520,108 @@ static void test_prop_print_parse_roundtrip(void) {
 }
 
 // runs one test (or skips it when POLY_ONLY names another); with POLY_TIME set, prints its CPU time to stderr
+// --- one square root: Q(x)(sqrt(U)), integrals through a rational parametrization of y² = U ---
+
+static void test_reg_integrate_sqrt(void) {
+    const char* ok[][2] = {
+        { "sqrt(x+1)", "(2/3x + 2/3) * sqrt(x + 1)" },                                      // U linear: t = y
+        { "x/sqrt(x+1)", "(2/3x - 4/3) * sqrt(x + 1)" },
+        { "1/((x+2)*sqrt(x+1))", "2 * atan(sqrt(x + 1))" },
+        { "x^(3/2)+x^(-1/2)", "(2/5x^2 + 2) * sqrt(x)" },                                   // half-integer powers
+        { "1/sqrt(x^2+1)", "ln(abs(x + sqrt(x^2 + 1)))" },                                  // a square: Euler's t = y + x
+        { "sqrt(x^2+1)", "1/2x * sqrt(x^2 + 1) + 1/2 * ln(abs(x + sqrt(x^2 + 1)))" },
+        { "x^3*sqrt(x^2+1)", "(1/5x^4 + 1/15x^2 - 2/15) * sqrt(x^2 + 1)" },
+        { "(x+1)/sqrt(x^2+2x+5)", "sqrt(x^2 + 2x + 5)" },
+        { "x*sqrt(x^2-1)", "(1/3x^2 - 1/3) * sqrt(x^2 - 1)" },
+        { "1/(x*sqrt(x^2-1))", "2 * atan(x + sqrt(x^2 - 1))" },
+        { "sqrt(1-x^2)", "1/2x * sqrt(-x^2 + 1) - atan((-1 + sqrt(-x^2 + 1)) / x)" },       // the point (0, 1)
+        { "1/(x^2*sqrt(1-x^2))", "-sqrt(-x^2 + 1) / x" },
+        { "sqrt(2-x^2)", "1/2x * sqrt(-x^2 + 2) - 2 * atan((-1 + sqrt(-x^2 + 2)) / (x - 1))" }, // the point (1, 1)
+        { "sqrt(x)/(1+x)", "2 * sqrt(x) - 2 * atan(sqrt(x))" },
+        { "(1+sqrt(x))^2/x", "x + ln(abs(x)) + 4 * sqrt(x)" },                              // a + b·y: both parts
+        { "sqrt(4x+4)+sqrt(x+1)", "(2x + 2) * sqrt(x + 1)" },                               // 2·sqrt(x + 1): one radicand
+        { "sqrt(2)*x", "1/2x^2 * sqrt(2)" },                                                // a constant radicand
+    };
+    for (size_t i = 0; i < sizeof ok / sizeof ok[0]; i++) {
+        Expr* f = parse_input(ok[i][0]);
+        RischResult r = integrate_sqrt(f);
+        if (r.status != RISCH_OK) fprintf(stderr, "sqrt: %s: %s\n", ok[i][0], r.reason);
+        assert(r.status == RISCH_OK);
+        expect_str(expr_to_string(r.result), ok[i][1]);
+        assert(derivative_matches(r.result, f));
+        free_expr(r.result); free_expr(f);
+    }
+    const char* outside[] = { "1/sqrt(x^3+1)",                     // elliptic
+                              "1/sqrt(3-x^2)",                     // x² + y² = 3 has no rational point
+                              "sqrt(x)*sqrt(x+1)", "sqrt(x)*exp(x)", "sqrt(x^2)", "sqrt(-2)", "sqrt(1/x)" };
+    for (size_t i = 0; i < sizeof outside / sizeof outside[0]; i++) {
+        Expr* f = parse_input(outside[i]);
+        RischResult r = integrate_sqrt(f);
+        assert(r.status == RISCH_UNSUPPORTED && !r.result && r.reason);
+        free_expr(f);
+    }
+    const char* forms[][3] = {                                     // simplify, differentiate
+        { "(sqrt(x)+1)^2 - 2sqrt(x)", "x + 1", NULL },
+        { "1/(1+sqrt(x+1))", "(-1 + sqrt(x + 1)) / x", NULL },
+        { "sqrt(x^2+1)", NULL, "x * sqrt(x^2 + 1) / (x^2 + 1)" },
+        { "x*sqrt(1-x^2)", NULL, "(2x^2 - 1) * sqrt(-x^2 + 1) / (x^2 - 1)" },
+    };
+    for (size_t i = 0; i < sizeof forms / sizeof forms[0]; i++) {
+        Expr* f = parse_input(forms[i][0]);
+        const char* why = NULL;
+        if (forms[i][1]) expect_str(expr_to_string_free(simplify_sqrt(f, &why)), forms[i][1]);
+        if (forms[i][2]) expect_str(expr_to_string_free(differentiate_sqrt(f, &why)), forms[i][2]);
+        free_expr(f);
+    }
+    printf("  test_reg_integrate_sqrt PASSED (%zu exact, %zu unsupported, %zu forms)\n",
+           sizeof ok / sizeof ok[0], sizeof outside / sizeof outside[0], sizeof forms / sizeof forms[0]);
+}
+
+// U for a trial: linear, a square leading coefficient (Euler), or -a·x² + b·x + k² (the point (0, k))
+static Expr* random_radicand(int kind) {
+    long a = rnd(1, 3), b = rnd(-2, 2), k = rnd(2, 3);
+    switch (kind) {
+        case 0: return create_poly_expr(poly_si((long[]){ rnd(1, 3), a }, 1));
+        case 1: {
+            long c = rnd(1, 4);
+            if (b * b == 4 * a * a * c) c++;                        // a perfect square is |p|: not this setting
+            return create_poly_expr(poly_si((long[]){ c, b, a * a }, 2));
+        }
+        default: return create_poly_expr(poly_si((long[]){ k * k, b, -(a + 1) }, 2));
+    }
+}
+
+// (c1·x + c0)/(x + d)·sqrt(U) + (e1·x + e0)/sqrt(U) integrates (deg U <= 2 with a parametrization),
+// and so does D(p·sqrt(U) + q) for polynomials p, q; every answer is checked by the numeric derivative
+static void test_prop_integrate_sqrt(void) {
+    int checked = 0;
+    for (int trial = 0; trial < TRIALS; trial++) {
+        Expr* U = random_radicand(trial % 3);
+        Expr* y = create_sqrt(expr_copy(U));
+        Expr* f;
+        if (trial % 2) {
+            Expr* r = create_div(create_poly_expr(poly_si((long[]){ rnd(-3, 3), rnd(1, 3) }, 1)),
+                                 create_add(create_var("x"), create_const(rnd(3, 5))));   // poles outside the sample range
+            f = create_add(create_mul(r, expr_copy(y)),
+                           create_div(create_poly_expr(poly_si((long[]){ rnd(-3, 3), rnd(-2, 2) }, 1)), expr_copy(y)));
+        } else {
+            Expr* F = create_add(create_mul(create_poly_expr(poly_si((long[]){ rnd(-3, 3), rnd(-2, 2), rnd(1, 2) }, 2)), expr_copy(y)),
+                                 create_poly_expr(poly_si((long[]){ 0, rnd(-3, 3) }, 1)));
+            const char* why = NULL;
+            f = differentiate_sqrt(F, &why);
+            assert(f);
+            free_expr(F);
+        }
+        RischResult r = integrate_sqrt(f);
+        if (r.status != RISCH_OK) { char* s = expr_to_string(f); fprintf(stderr, "sqrt f = %s: %s\n", s, r.reason); free(s); }
+        assert(r.status == RISCH_OK);
+        assert(derivative_matches(r.result, f));
+        checked++;
+        free_expr(r.result); free_expr(f); free_expr(y); free_expr(U);
+    }
+    printf("  test_prop_integrate_sqrt PASSED (%d trials, each checked by its derivative)\n", checked);
+}
+
 static void run_timed(const char* name, void (*t)(void)) {
     const char* only = getenv("POLY_ONLY"); // run just this one test (profiling)
     if (only && strcmp(only, name) != 0) return;
@@ -2554,6 +2660,7 @@ void run_property_tests(void) {
     RUN(test_reg_integrate_trig);
     RUN(test_reg_integrate_tan);
     RUN(test_reg_integrate_tower2);
+    RUN(test_reg_integrate_sqrt);
     RUN(test_lrt_direct);
     printf("\nProperty Tests (seed %s):\n", env ? env : "default");
     RUN(test_prop_factor_roundtrip);
@@ -2575,6 +2682,7 @@ void run_property_tests(void) {
     RUN(test_prop_integrate_tan);
     RUN(test_prop_k2poly);
     RUN(test_prop_integrate_tower2);
+    RUN(test_prop_integrate_sqrt);
     RUN(test_prop_definite_exp);
     RUN(test_prop_definite_tan);
 }

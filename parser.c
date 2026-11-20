@@ -167,7 +167,8 @@ static bool apply_function(ExprStack* exprs, OpStack* ops) {
     Expr* arg = estack_pop(exprs);
     if (!arg) return false;
     Expr* call = f.fn == FN_EXP ? create_exp(arg) : f.fn == FN_LN ? create_ln(arg) : f.fn == FN_SIN ? create_sin(arg)
-               : f.fn == FN_COS ? create_cos(arg) : create_div(create_sin(arg), create_cos(expr_copy(arg))); // tan = sin/cos
+               : f.fn == FN_COS ? create_cos(arg) : f.fn == FN_SQRT ? create_sqrt(arg)
+               : create_div(create_sin(arg), create_cos(expr_copy(arg)));     // tan = sin/cos
     estack_push(exprs, call);
     return true;
 }
@@ -280,6 +281,13 @@ Expr* parse_input(const char* input) {
     if (expression && *p != '\0') { // never silently ignore trailing input such as "= 4"
         fprintf(stderr, "Error: unexpected '%c' at position %ld.\n", *p, (long)(p - input) + 1);
         free_expr(expression);
+        return NULL;
+    }
+    if (expression == NULL && isalpha((unsigned char)*p)) {      // "y", "pi", "sqr(": a name we do not know
+        int n = 0;
+        while (isalpha((unsigned char)p[n])) n++;
+        fprintf(stderr, "Error: unknown name '%.*s' at position %ld (the variable is x; functions are exp, ln, sin, cos, tan, sqrt).\n",
+                n, p, (long)(p - input) + 1);
         return NULL;
     }
     if (expression == NULL) {

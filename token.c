@@ -30,9 +30,9 @@ Token* get_next_token(const char** input) {
         return token;
     }
 
-    // functions: exp( ln( sin( cos( tan( (only when the name is followed by an opening parenthesis)
+    // functions: exp( ln( sin( cos( tan( sqrt( (only when the name is followed by an opening parenthesis)
     static const struct { const char* name; FunctionName fn; } FUNCTIONS[] = {
-        { "exp", FN_EXP }, { "ln", FN_LN }, { "sin", FN_SIN }, { "cos", FN_COS }, { "tan", FN_TAN } };
+        { "exp", FN_EXP }, { "ln", FN_LN }, { "sin", FN_SIN }, { "cos", FN_COS }, { "tan", FN_TAN }, { "sqrt", FN_SQRT } };
     for (size_t i = 0; i < sizeof FUNCTIONS / sizeof FUNCTIONS[0]; i++) {
         size_t n = strlen(FUNCTIONS[i].name);
         if (strncmp(*input, FUNCTIONS[i].name, n) != 0) continue;   // also stops at the string's end
@@ -46,8 +46,8 @@ Token* get_next_token(const char** input) {
         }
     }
 
-    // Handle variables
-    if (isalpha(**input)) {
+    // the variable: x only (any other letter is an error, not a silent second name for x)
+    if (**input == 'x') {
         token->type = TOKEN_VARIABLE;
         token->variable = strndup(*input, 1); // Store the variable character
         (*input)++;
