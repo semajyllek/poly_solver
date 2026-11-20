@@ -1,5 +1,5 @@
 // Definite integrals: exact values (constants folded) checked against quadrature at run time.
-#include "poly_solver.h"
+#include "polysolver.h"
 #include <stdio.h>
 #include <stdlib.h>
 

@@ -6,11 +6,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 make              # Build test binary (test_symbolic_solver)
-make cli          # Build CLI binary (poly_solver)
+make cli          # Build CLI binary (polysolver)
 make clean        # Remove object files and binaries
 make sanitize     # Rebuild the tests with AddressSanitizer + UBSan
 make check        # fast lane after a change (seconds): the suite with its CPU time + golden CLI corpus
-make lib          # libpolysolver.a (LIB_SRCS); poly_solver.h is the umbrella header for library users
+make lib          # libpolysolver.a (LIB_SRCS); polysolver.h is the umbrella header for library users
 make examples     # build and run examples/*.c against the library (the README's C examples and their output)
 POLY_SEED=7 ./test_symbolic_solver          # property tests with another seed
 POLY_TIME=1 ./test_symbolic_solver          # CPU time of each regression/property test, on stderr
@@ -24,25 +24,25 @@ python3 crosscheck_sympy.py --trials 40     # optional differential test vs SymP
 
 CLI usage:
 ```bash
-./poly_solver simplify "5x^3 + 3x^3 - 2x + 4"
-./poly_solver factor "x^2 - 5x + 6"
-./poly_solver differentiate "3x^2 + 4x + 2"
-./poly_solver integrate "6x^2 + 4x"
-./poly_solver integrate "1/(x^2+1)" 0 1            # definite: exact value ~ decimal
-./poly_solver integrate "1/(x^4+1)" -inf inf       # infinite bounds: inf, -inf (or oo, -oo)
-./poly_solver integrate "x^2*sin(x)" 0 pi           # exp/sin/cos and bounds q·pi: pi^2 - 4
-./poly_solver integrate "x^2*exp(3x)"               # Risch: answer, or a proof there is none (exp(x^2))
-./poly_solver integrate "x^2*ln(x)^3"               # Risch, ln case (ln(x)/(x+1): proved non-elementary)
-./poly_solver integrate "1/(1+exp(x))"              # denominators in θ: Hermite + residue test (1/ln(x): proof)
-./poly_solver integrate "x*exp(x)*sin(x)"           # sin/cos as complex exponentials (sin(x)/x: proof)
-./poly_solver integrate "1/(2+cos(x))"              # sin/cos denominators: θ = tan(x) or tan(x/2) (x*tan(x): proof)
-./poly_solver integrate "exp(x)*(ln(x)+1/x)"        # ln over an exp/ln tower: exp(x)·ln|x| (exp(x)*ln(x): proof)
-./poly_solver solve "x^3 - 6x^2 + 11x - 6"
-./poly_solver solve_system "[[1,2],[3,4]]" "[5,11]"
-./poly_solver det "[[1,2],[3,4]]"
-./poly_solver inverse "[[1,2],[3,4]]"
-./poly_solver rank "[[1,2,3],[4,5,6]]"
-./poly_solver rref "[[1,2,3],[4,5,6]]"
+./polysolver simplify "5x^3 + 3x^3 - 2x + 4"
+./polysolver factor "x^2 - 5x + 6"
+./polysolver differentiate "3x^2 + 4x + 2"
+./polysolver integrate "6x^2 + 4x"
+./polysolver integrate "1/(x^2+1)" 0 1            # definite: exact value ~ decimal
+./polysolver integrate "1/(x^4+1)" -inf inf       # infinite bounds: inf, -inf (or oo, -oo)
+./polysolver integrate "x^2*sin(x)" 0 pi           # exp/sin/cos and bounds q·pi: pi^2 - 4
+./polysolver integrate "x^2*exp(3x)"               # Risch: answer, or a proof there is none (exp(x^2))
+./polysolver integrate "x^2*ln(x)^3"               # Risch, ln case (ln(x)/(x+1): proved non-elementary)
+./polysolver integrate "1/(1+exp(x))"              # denominators in θ: Hermite + residue test (1/ln(x): proof)
+./polysolver integrate "x*exp(x)*sin(x)"           # sin/cos as complex exponentials (sin(x)/x: proof)
+./polysolver integrate "1/(2+cos(x))"              # sin/cos denominators: θ = tan(x) or tan(x/2) (x*tan(x): proof)
+./polysolver integrate "exp(x)*(ln(x)+1/x)"        # ln over an exp/ln tower: exp(x)·ln|x| (exp(x)*ln(x): proof)
+./polysolver solve "x^3 - 6x^2 + 11x - 6"
+./polysolver solve_system "[[1,2],[3,4]]" "[5,11]"
+./polysolver det "[[1,2],[3,4]]"
+./polysolver inverse "[[1,2],[3,4]]"
+./polysolver rank "[[1,2,3],[4,5,6]]"
+./polysolver rref "[[1,2,3],[4,5,6]]"
 ```
 
 ## Architecture

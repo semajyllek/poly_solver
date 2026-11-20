@@ -1,15 +1,15 @@
-# poly_solver
+# polysolver
 
 A fast C library and CLI for exact symbolic algebra: simplification, factoring, equation solving, differentiation, indefinite and definite integration (rational functions, and exp, ln, sin and cos through the Risch algorithm), and linear algebra. Every number is an arbitrary-precision GMP rational, so nothing is ever rounded. When an integral has no elementary antiderivative, you get a proof of that, not a failure.
 
 ```console
-$ ./poly_solver factor "x^4 + 4"
+$ ./polysolver factor "x^4 + 4"
 (x^2 - 2x + 2)(x^2 + 2x + 2)
 
-$ ./poly_solver integrate "x^2*exp(3x)"
+$ ./polysolver integrate "x^2*exp(3x)"
 (1/3x^2 - 2/9x + 2/27) * exp(3x)
 
-$ ./poly_solver integrate "exp(x^2)"
+$ ./polysolver integrate "exp(x^2)"
 no elementary antiderivative: the part exp(x^2) (Risch: y' + k·v'·y = a has no rational solution)
 ```
 
@@ -43,7 +43,7 @@ no elementary antiderivative: the part exp(x^2) (Risch: y' + k·v'·y = a has no
 
 ```bash
 make              # the test binary (test_symbolic_solver)
-make cli          # the command-line tool (poly_solver)
+make cli          # the command-line tool (polysolver)
 make lib          # the static library (libpolysolver.a)
 make examples     # build and run the C examples in examples/
 make check        # the suite plus the golden CLI corpus (a few seconds)
@@ -55,9 +55,9 @@ You need `gcc` (or `clang`), `make` and [GMP](https://gmplib.org/): `brew instal
 ## Command-line cookbook
 
 ```bash
-./poly_solver <action> "<expression>"
-./poly_solver integrate "<expression>" <a> <b>        # definite: bounds are rationals, q·pi, inf or -inf
-./poly_solver solve_system "<matrix>" "<vector>"      # also det, inverse, rank, rref "<matrix>"
+./polysolver <action> "<expression>"
+./polysolver integrate "<expression>" <a> <b>        # definite: bounds are rationals, q·pi, inf or -inf
+./polysolver solve_system "<matrix>" "<vector>"      # also det, inverse, rank, rref "<matrix>"
 ```
 
 Every output below was produced by the current build. A trailing `~ 1.234` is a decimal beside an exact value. Answers write `ln(abs(u))`, which is valid on both sides of a sign change of `u`.
@@ -67,22 +67,22 @@ Every output below was produced by the current build. A trailing `~ 1.234` is a 
 Like terms combine, rational functions are reduced by their gcd, decimals become exact fractions, and exponentials and sin/cos reach a canonical form.
 
 ```console
-$ ./poly_solver simplify "5x^3 + 3x^3 - 2x + 4"
+$ ./polysolver simplify "5x^3 + 3x^3 - 2x + 4"
 8x^3 - 2x + 4
 
-$ ./poly_solver simplify "(x+1)^3 - (x-1)^3"
+$ ./polysolver simplify "(x+1)^3 - (x-1)^3"
 6x^2 + 2
 
-$ ./poly_solver simplify "(x^2-1)/(x^2+2x+1)"
+$ ./polysolver simplify "(x^2-1)/(x^2+2x+1)"
 (x - 1) / (x + 1)
 
-$ ./poly_solver simplify "0.25x + 1/3x"
+$ ./polysolver simplify "0.25x + 1/3x"
 7/12x
 
-$ ./poly_solver simplify "(exp(2x) - 1)/(exp(x) - 1)"
+$ ./polysolver simplify "(exp(2x) - 1)/(exp(x) - 1)"
 1 + exp(x)
 
-$ ./poly_solver simplify "sin(x)^2 + cos(x)^2"
+$ ./polysolver simplify "sin(x)^2 + cos(x)^2"
 1
 ```
 
@@ -91,25 +91,25 @@ $ ./poly_solver simplify "sin(x)^2 + cos(x)^2"
 The factorization is complete over Q. The content stays in front, and factors are primitive integer polynomials sorted deterministically.
 
 ```console
-$ ./poly_solver factor "x^2 - 5x + 6"
+$ ./polysolver factor "x^2 - 5x + 6"
 (x - 2)(x - 3)
 
-$ ./poly_solver factor "6x^4 + 5x^3 - 38x^2 + 5x + 6"
+$ ./polysolver factor "6x^4 + 5x^3 - 38x^2 + 5x + 6"
 (x + 3)(3x + 1)(2x - 1)(x - 2)
 
-$ ./poly_solver factor "x^4 + 4"
+$ ./polysolver factor "x^4 + 4"
 (x^2 - 2x + 2)(x^2 + 2x + 2)
 
-$ ./poly_solver factor "x^6 - 1"
+$ ./polysolver factor "x^6 - 1"
 (x + 1)(x - 1)(x^2 - x + 1)(x^2 + x + 1)
 
-$ ./poly_solver factor "x^8 + 4"
+$ ./polysolver factor "x^8 + 4"
 (x^4 - 2x^2 + 2)(x^4 + 2x^2 + 2)
 
-$ ./poly_solver factor "2x^6 - 2x^4 + 8x^2 - 8"
+$ ./polysolver factor "2x^6 - 2x^4 + 8x^2 - 8"
 2(x + 1)(x - 1)(x^2 - 2x + 2)(x^2 + 2x + 2)
 
-$ ./poly_solver factor "(x^2+1)^20*(x-3)^7"
+$ ./polysolver factor "(x^2+1)^20*(x-3)^7"
 (x - 3)^7(x^2 + 1)^20
 ```
 
@@ -118,50 +118,50 @@ $ ./poly_solver factor "(x^2+1)^20*(x-3)^7"
 The equation is `p(x) = 0`. Rational roots are exact. Quadratic factors give radicals, real or complex. Binomials and cyclotomic-type factors give every root exactly, with `cos(kπ/N)` where no square root form exists. Other factors give certified decimals (each interval is proved to hold exactly one root) and a count of their non-real roots.
 
 ```console
-$ ./poly_solver solve "x^3 - 6x^2 + 11x - 6"
+$ ./polysolver solve "x^3 - 6x^2 + 11x - 6"
 x = 1, x = 2, x = 3
 
-$ ./poly_solver solve "x^2 - x - 1"
+$ ./polysolver solve "x^2 - x - 1"
 x = 1/2 - 1/2*sqrt(5) ~ -0.6180339887, x = 1/2 + 1/2*sqrt(5) ~ 1.6180339887
 
-$ ./poly_solver solve "x^2 - 2x + 5"
+$ ./polysolver solve "x^2 - 2x + 5"
 x = 1 +/- 2*i
 
-$ ./poly_solver solve "x^3 - 2"
+$ ./polysolver solve "x^3 - 2"
 x = 2^(1/3) ~ 1.2599210498, x = -1/2 * 2^(1/3) +/- 1/2 * 2^(1/3) * sqrt(3) * i ~ (-0.6299605249 +/- 1.0911236360i)
 
-$ ./poly_solver solve "x^5 - 1"
+$ ./polysolver solve "x^5 - 1"
 x = 1, x = cos(2*pi/5) +/- sin(2*pi/5) * i ~ (0.3090169944 +/- 0.9510565163i), x = -cos(pi/5) +/- sin(pi/5) * i ~ (-0.8090169944 +/- 0.5877852523i)
 
-$ ./poly_solver solve "x^6 + 2"
+$ ./polysolver solve "x^6 + 2"
 x = 1/2 * 2^(1/6) * sqrt(3) +/- 1/2 * 2^(1/6) * i ~ (0.9720806486 +/- 0.5612310242i), x = +/- 2^(1/6) * i ~ (0.0000000000 +/- 1.1224620483i), x = -1/2 * 2^(1/6) * sqrt(3) +/- 1/2 * 2^(1/6) * i ~ (-0.9720806486 +/- 0.5612310242i)
 
-$ ./poly_solver solve "x^4 - 10x^2 + 1"
+$ ./polysolver solve "x^4 - 10x^2 + 1"
 x ~ -3.1462643699, x ~ -0.3178372451, x ~ 0.3178372451, x ~ 3.1462643699
 
-$ ./poly_solver solve "x^3 + x + 1"
+$ ./polysolver solve "x^3 + x + 1"
 x ~ -0.6823278038, 2 non-real roots of (x^3 + x + 1)
 ```
 
 ### Differentiate
 
 ```console
-$ ./poly_solver differentiate "3x^2 + 4x + 2"
+$ ./polysolver differentiate "3x^2 + 4x + 2"
 6x + 4
 
-$ ./poly_solver differentiate "x^3/(x^2+1)"
+$ ./polysolver differentiate "x^3/(x^2+1)"
 (x^4 + 3x^2) / (x^4 + 2x^2 + 1)
 
-$ ./poly_solver differentiate "x^2*exp(3x)"
+$ ./polysolver differentiate "x^2*exp(3x)"
 (3x^2 + 2x) * exp(3x)
 
-$ ./poly_solver differentiate "exp(x^2)*sin(3x)"
+$ ./polysolver differentiate "exp(x^2)*sin(3x)"
 2x * exp(x^2) * sin(3x) + 3 * exp(x^2) * cos(3x)
 
-$ ./poly_solver differentiate "ln(x^2+1)^2"
+$ ./polysolver differentiate "ln(x^2+1)^2"
 4x * ln(abs(x^2 + 1)) / (x^2 + 1)
 
-$ ./poly_solver differentiate "tan(x)"
+$ ./polysolver differentiate "tan(x)"
 tan(x)^2 + 1
 ```
 
@@ -170,28 +170,28 @@ tan(x)^2 + 1
 Every rational function integrates. The answer uses logs and arctangents with real arguments. Radicals appear when the factor's roots are known in closed form, and a `RootSum` otherwise. `RootSum(q(t), t -> t * ln(S))` is the sum of `t·ln(S)` over the roots `t` of `q`; `x^5 + x + 3` has no roots in radicals at all (its Galois group is S5).
 
 ```console
-$ ./poly_solver integrate "6x^2 + 4x"
+$ ./polysolver integrate "6x^2 + 4x"
 2x^3 + 2x^2
 
-$ ./poly_solver integrate "(3x^2+1)/(x^3+x)"
+$ ./polysolver integrate "(3x^2+1)/(x^3+x)"
 ln(abs(x)) + ln(abs(x^2 + 1))
 
-$ ./poly_solver integrate "1/((x-1)(x^2+1))"
+$ ./polysolver integrate "1/((x-1)(x^2+1))"
 1/2 * ln(abs(x - 1)) - 1/4 * ln(abs(x^2 + 1)) - 1/2 * atan(x)
 
-$ ./poly_solver integrate "x/(x^4+1)"
+$ ./polysolver integrate "x/(x^4+1)"
 1/2 * atan(x^2)
 
-$ ./poly_solver integrate "1/(x^2-2)"
+$ ./polysolver integrate "1/(x^2-2)"
 1/4 * sqrt(2) * ln(abs((x - sqrt(2)) / (x + sqrt(2))))
 
-$ ./poly_solver integrate "1/(x^4+1)"
+$ ./polysolver integrate "1/(x^4+1)"
 -1/8 * sqrt(2) * ln(abs(x^2 - sqrt(2) * x + 1)) + 1/4 * sqrt(2) * atan(sqrt(2) * x - 1) + 1/8 * sqrt(2) * ln(abs(x^2 + sqrt(2) * x + 1)) + 1/4 * sqrt(2) * atan(sqrt(2) * x + 1)
 
-$ ./poly_solver integrate "1/(x^3-2)"
+$ ./polysolver integrate "1/(x^3-2)"
 1/6 * 2^(1/3) * ln(abs(x - 2^(1/3))) - 1/12 * 2^(1/3) * ln(abs(x^2 + 2^(1/3) * x + 2^(2/3))) - 1/6 * 2^(1/3) * sqrt(3) * atan(1/3 * 2^(2/3) * sqrt(3) * x + 1/3 * sqrt(3))
 
-$ ./poly_solver integrate "1/(x^5+x+3)"
+$ ./polysolver integrate "1/(x^5+x+3)"
 RootSum(253381t^5 - 160t^3 - 80t^2 - 15t - 1, t -> t * ln(x + (-16216384/16875t^4 + 4054096/16875t^3 - 111476/1875t^2 + 255941/16875t + 256/16875)))
 ```
 
@@ -200,41 +200,41 @@ RootSum(253381t^5 - 160t^3 - 80t^2 - 15t - 1, t -> t * ln(x + (-16216384/16875t^
 Here `r(x)·exp(k·v)` sums are handled, `v` a polynomial, one Risch differential equation per power. Products of different exponentials merge. A "no elementary antiderivative" result is a proof, and it names the part that fails.
 
 ```console
-$ ./poly_solver integrate "x^2*exp(3x)"
+$ ./polysolver integrate "x^2*exp(3x)"
 (1/3x^2 - 2/9x + 2/27) * exp(3x)
 
-$ ./poly_solver integrate "x^3*exp(-x^2)"
+$ ./polysolver integrate "x^3*exp(-x^2)"
 (-1/2x^2 - 1/2) * exp(-x^2)
 
-$ ./poly_solver integrate "(x-1)*exp(x)/x^2"
+$ ./polysolver integrate "(x-1)*exp(x)/x^2"
 exp(x) / x
 
-$ ./poly_solver integrate "exp(x)*exp(x^2)*(2x+1)"
+$ ./polysolver integrate "exp(x)*exp(x^2)*(2x+1)"
 exp(x^2 + x)
 
-$ ./poly_solver integrate "exp(x)/x"
+$ ./polysolver integrate "exp(x)/x"
 no elementary antiderivative: the part exp(x) / x (Risch: y' + k·v'·y = a has no rational solution)
 
-$ ./poly_solver integrate "exp(x^2)"
+$ ./polysolver integrate "exp(x^2)"
 no elementary antiderivative: the part exp(x^2) (Risch: y' + k·v'·y = a has no rational solution)
 ```
 
 ### Integrate with ln
 
 ```console
-$ ./poly_solver integrate "ln(x)^2"
+$ ./polysolver integrate "ln(x)^2"
 x * ln(abs(x))^2 - 2x * ln(abs(x)) + 2x
 
-$ ./poly_solver integrate "x^2*ln(x)^3"
+$ ./polysolver integrate "x^2*ln(x)^3"
 1/3x^3 * ln(abs(x))^3 - 1/3x^3 * ln(abs(x))^2 + 2/9x^3 * ln(abs(x)) - 2/27x^3
 
-$ ./poly_solver integrate "ln(x)/x^2"
+$ ./polysolver integrate "ln(x)/x^2"
 -ln(abs(x)) / x - 1 / x
 
-$ ./poly_solver integrate "ln(x^2+1)"
+$ ./polysolver integrate "ln(x^2+1)"
 x * ln(abs(x^2 + 1)) - 2x + 2 * atan(x)
 
-$ ./poly_solver integrate "ln(x)/(x+1)"
+$ ./polysolver integrate "ln(x)/(x+1)"
 no elementary antiderivative: the part ln(abs(x)) / (x + 1) (Risch: a ln level needs a logarithm other than the one present)
 ```
 
@@ -243,25 +243,25 @@ no elementary antiderivative: the part ln(abs(x)) / (x + 1) (Risch: a ln level n
 These go through Hermite reduction and the residue test. Rational residues give logs, and quadratic ones give logs or arctangents of polynomials in the tower. Residues of degree 3 to 6 give an exact RootSum over the tower. Residues that aren't constant are a proof of non-elementarity (`1/ln(x)` is the logarithmic integral).
 
 ```console
-$ ./poly_solver integrate "1/(1+exp(x))"
+$ ./polysolver integrate "1/(1+exp(x))"
 x - ln(exp(x) + 1)
 
-$ ./poly_solver integrate "exp(x)/(1+exp(2x))"
+$ ./polysolver integrate "exp(x)/(1+exp(2x))"
 atan(exp(x))
 
-$ ./poly_solver integrate "1/(x*ln(x))"
+$ ./polysolver integrate "1/(x*ln(x))"
 ln(abs(ln(abs(x))))
 
-$ ./poly_solver integrate "1/(x*(ln(x)^2+3))"
+$ ./polysolver integrate "1/(x*(ln(x)^2+3))"
 1/3 * sqrt(3) * atan(1/3 * sqrt(3) * ln(abs(x)))
 
-$ ./poly_solver integrate "exp(x)/(exp(3x)+2)"
+$ ./polysolver integrate "exp(x)/(exp(3x)+2)"
 RootSum(108t^3 - 1, t -> t * ln(exp(x) + 6 * t))
 
-$ ./poly_solver integrate "1/ln(x)"
+$ ./polysolver integrate "1/ln(x)"
 no elementary antiderivative: the part 1 / ln(abs(x)) (Risch: its residues are not constants)
 
-$ ./poly_solver integrate "x/(1+exp(x))"
+$ ./polysolver integrate "x/(1+exp(x))"
 no elementary antiderivative: the part x / (exp(x) + 1) (Risch: its residues are not constants)
 ```
 
@@ -270,31 +270,31 @@ no elementary antiderivative: the part x / (exp(x) + 1) (Risch: its residues are
 Sums of exponentials cover the numerators, and a sin/cos denominator is rewritten in θ = `tan(x)` when Bioche's rule allows it, else `tan(x/2)`.
 
 ```console
-$ ./poly_solver integrate "x*sin(x)"
+$ ./polysolver integrate "x*sin(x)"
 sin(x) - x * cos(x)
 
-$ ./poly_solver integrate "exp(x)*sin(2x)"
+$ ./polysolver integrate "exp(x)*sin(2x)"
 1/5 * exp(x) * sin(2x) - 2/5 * exp(x) * cos(2x)
 
-$ ./poly_solver integrate "sin(x)^3*cos(x)^2"
+$ ./polysolver integrate "sin(x)^3*cos(x)^2"
 -1/8 * cos(x) - 1/48 * cos(3x) + 1/80 * cos(5x)
 
-$ ./poly_solver integrate "tan(x)"
+$ ./polysolver integrate "tan(x)"
 -ln(abs(cos(x)))
 
-$ ./poly_solver integrate "1/(2+cos(x))"
+$ ./polysolver integrate "1/(2+cos(x))"
 2/3 * sqrt(3) * atan(1/3 * sqrt(3) * tan(1/2x))
 
-$ ./poly_solver integrate "1/(1+sin(x))"
+$ ./polysolver integrate "1/(1+sin(x))"
 -2 / (tan(1/2x) + 1)
 
-$ ./poly_solver integrate "1/(sin(x)+cos(x)^2)"
+$ ./polysolver integrate "1/(sin(x)+cos(x)^2)"
 RootSum(25t^4 - 5t^2 - 1, t -> t * ln(tan(1/2x) + t + 5 * t^2 - 10 * t^3))
 
-$ ./poly_solver integrate "sin(x)/x"
+$ ./polysolver integrate "sin(x)/x"
 no elementary antiderivative: the part sin(x) / x (Risch: y' + w'·y = c has no rational solution over Q(i))
 
-$ ./poly_solver integrate "x*tan(x)"
+$ ./polysolver integrate "x*tan(x)"
 no elementary antiderivative: the part x * tan(x) (Risch: p·tan(H) needs p/(2H') constant)
 ```
 
@@ -303,28 +303,28 @@ no elementary antiderivative: the part x * tan(x) (Risch: p·tan(H) needs p/(2H'
 These are two levels, rational in the outer ln. This works for `integrate` only, not `differentiate` or `simplify`.
 
 ```console
-$ ./poly_solver integrate "exp(x)*(ln(x)+1/x)"
+$ ./polysolver integrate "exp(x)*(ln(x)+1/x)"
 exp(x) * ln(abs(x))
 
-$ ./poly_solver integrate "ln(ln(x))/x"
+$ ./polysolver integrate "ln(ln(x))/x"
 ln(abs(x)) * ln(abs(ln(abs(x)))) - ln(abs(x))
 
-$ ./poly_solver integrate "ln(x)+ln(x+1)"
+$ ./polysolver integrate "ln(x)+ln(x+1)"
 x * ln(abs(x + 1)) + x * ln(abs(x)) - 2x + ln(abs(x + 1))
 
-$ ./poly_solver integrate "1/(x*ln(x)*ln(ln(x)))"
+$ ./polysolver integrate "1/(x*ln(x)*ln(ln(x)))"
 ln(abs(ln(abs(ln(abs(x))))))
 
-$ ./poly_solver integrate "1/(x*ln(x)*(ln(ln(x))^2+1))"
+$ ./polysolver integrate "1/(x*ln(x)*(ln(ln(x))^2+1))"
 atan(ln(abs(ln(abs(x)))))
 
-$ ./poly_solver integrate "1/(x*ln(x)*(ln(ln(x))^3-2))"
+$ ./polysolver integrate "1/(x*ln(x)*(ln(ln(x))^3-2))"
 RootSum(108t^3 - 1, t -> t * ln(ln(abs(ln(abs(x)))) - 6 * t))
 
-$ ./poly_solver integrate "exp(x)*ln(x)"
+$ ./polysolver integrate "exp(x)*ln(x)"
 no elementary antiderivative: the part -exp(x) / x (Risch: y' + k·v'·y = a has no rational solution)
 
-$ ./poly_solver integrate "ln(ln(x))"
+$ ./polysolver integrate "ln(ln(x))"
 no elementary antiderivative: the part -1 / ln(abs(x)) (Risch: its residues are not constants)
 ```
 
@@ -333,25 +333,25 @@ no elementary antiderivative: the part -1 / ln(abs(x)) (Risch: its residues are 
 The result is exact, with logs merged and arctangents combined in Q(√m), plus a decimal checked against adaptive quadrature. Poles in range and too-slow decay at infinity are reported.
 
 ```console
-$ ./poly_solver integrate "1/(x^2+1)" 0 1
+$ ./polysolver integrate "1/(x^2+1)" 0 1
 1/4 * pi ~ 0.7853981634
 
-$ ./poly_solver integrate "1/(x^2+x+1)" 0 1
+$ ./polysolver integrate "1/(x^2+x+1)" 0 1
 1/9 * sqrt(3) * pi ~ 0.6045997881
 
-$ ./poly_solver integrate "1/(x^4+1)" 0 1
+$ ./polysolver integrate "1/(x^4+1)" 0 1
 1/4 * sqrt(2) * ln(1 + sqrt(2)) + 1/8 * sqrt(2) * pi ~ 0.8669729873
 
-$ ./poly_solver integrate "1/(x^4+1)" -inf inf
+$ ./polysolver integrate "1/(x^4+1)" -inf inf
 1/2 * sqrt(2) * pi ~ 2.221441469
 
-$ ./poly_solver integrate "x/(x^2+1)^2" 0 inf
+$ ./polysolver integrate "x/(x^2+1)^2" 0 inf
 1/2 ~ 0.5
 
-$ ./poly_solver integrate "1/x" -1 1
+$ ./polysolver integrate "1/x" -1 1
 Error: the integrand has a pole in [a, b], so the integral diverges.
 
-$ ./poly_solver integrate "1/x" 1 inf
+$ ./polysolver integrate "1/x" 1 inf
 Error: the integral diverges at infinity (the denominator's degree must exceed the numerator's by 2 or more).
 ```
 
@@ -360,31 +360,31 @@ Error: the integral diverges at infinity (the denominator's degree must exceed t
 Bounds may be rational multiples of π (`pi`, `pi/2`, `3pi/4`, `2pi`, `-pi`). sin and cos of rational multiples of π take exact values, and other constants stay symbolic (`exp(1)`). For `1/(2+cos(x))` over a full period, the jump of `atan(tan(x/2)/√3)` at π is corrected. Without an elementary antiderivative, the numeric value is given alone.
 
 ```console
-$ ./poly_solver integrate "x^2*sin(x)" 0 pi
+$ ./polysolver integrate "x^2*sin(x)" 0 pi
 pi^2 - 4 ~ 5.869604401
 
-$ ./poly_solver integrate "sin(x)^2" 0 pi
+$ ./polysolver integrate "sin(x)^2" 0 pi
 1/2 * pi ~ 1.570796327
 
-$ ./poly_solver integrate "exp(-x)*cos(x)" 0 inf
+$ ./polysolver integrate "exp(-x)*cos(x)" 0 inf
 1/2 ~ 0.5
 
-$ ./poly_solver integrate "x*exp(-x)" 0 inf
+$ ./polysolver integrate "x*exp(-x)" 0 inf
 1 ~ 1
 
-$ ./poly_solver integrate "exp(x)" 0 1
+$ ./polysolver integrate "exp(x)" 0 1
 exp(1) - 1 ~ 1.718281828
 
-$ ./poly_solver integrate "1/(2+cos(x))" 0 2pi
+$ ./polysolver integrate "1/(2+cos(x))" 0 2pi
 2/3 * sqrt(3) * pi ~ 3.627598728
 
-$ ./poly_solver integrate "1/(1+exp(x))" 0 1
+$ ./polysolver integrate "1/(1+exp(x))" 0 1
 -ln(1 + exp(1)) + ln(2) + 1 ~ 0.379885493
 
-$ ./poly_solver integrate "1/(1+cos(x))" 0 pi
+$ ./polysolver integrate "1/(1+cos(x))" 0 pi
 Error: the integrand has a pole in [a, b], so the integral diverges.
 
-$ ./poly_solver integrate "exp(-x^2)" -inf inf
+$ ./polysolver integrate "exp(-x^2)" -inf inf
 ~ 1.772453851 (no elementary antiderivative, so only the numeric value is given)
 ```
 
@@ -393,36 +393,36 @@ $ ./poly_solver integrate "exp(-x^2)" -inf inf
 Matrices use bracket notation. Entries may be integers, fractions or decimals of any size, and all arithmetic is exact.
 
 ```console
-$ ./poly_solver solve_system "[[1,2],[3,4]]" "[5,11]"
+$ ./polysolver solve_system "[[1,2],[3,4]]" "[5,11]"
 x1 = 1, x2 = 2
 
-$ ./poly_solver solve_system "[[1,1,1],[1,2,3],[1,4,9]]" "[6,14,36]"
+$ ./polysolver solve_system "[[1,1,1],[1,2,3],[1,4,9]]" "[6,14,36]"
 x1 = 1, x2 = 2, x3 = 3
 
-$ ./poly_solver solve_system "[[1,2],[2,4]]" "[3,6]"
+$ ./polysolver solve_system "[[1,2],[2,4]]" "[3,6]"
 Infinitely many solutions (rank = 1)
 
-$ ./poly_solver solve_system "[[1,2],[2,4]]" "[3,7]"
+$ ./polysolver solve_system "[[1,2],[2,4]]" "[3,7]"
 No solution (inconsistent system, rank = 1)
 
-$ ./poly_solver det "[[1,2],[3,4]]"
+$ ./polysolver det "[[1,2],[3,4]]"
 -2
 
-$ ./poly_solver det "[[1/2, 1/3], [1/4, 1/5]]"
+$ ./polysolver det "[[1/2, 1/3], [1/4, 1/5]]"
 1/60
 
-$ ./poly_solver inverse "[[2, 1, 1], [1, 3, 2], [1, 0, 0]]"
+$ ./polysolver inverse "[[2, 1, 1], [1, 3, 2], [1, 0, 0]]"
 [[0, 0, 1]
  [-2, 1, 3]
  [3, -1, -5]]
 
-$ ./poly_solver inverse "[[1,2],[2,4]]"
+$ ./polysolver inverse "[[1,2],[2,4]]"
 Matrix is singular (no inverse).
 
-$ ./poly_solver rank "[[1,2,3],[4,5,6],[7,8,9]]"
+$ ./polysolver rank "[[1,2,3],[4,5,6],[7,8,9]]"
 2
 
-$ ./poly_solver rref "[[2,4,-2,2],[4,9,-3,8],[-2,-3,7,10]]"
+$ ./polysolver rref "[[2,4,-2,2],[4,9,-3,8],[-2,-3,7,10]]"
 [[1, 0, 0, -1]
  [0, 1, 0, 2]
  [0, 0, 1, 2]]
@@ -433,56 +433,56 @@ $ ./poly_solver rref "[[2,4,-2,2],[4,9,-3,8],[-2,-3,7,10]]"
 Nothing is limited by machine precision: 20- and 40-digit numbers factor and solve exactly, a determinant of `1e300` against `1e-300` is exactly 0, and `2` vs `4.0000000000000000000000001` is a genuine rank difference. Roots near zero are refined to relative precision and printed in scientific form.
 
 ```console
-$ ./poly_solver simplify "(2x + 0.000000000000000000001)^2"
+$ ./polysolver simplify "(2x + 0.000000000000000000001)^2"
 4x^2 + 1/250000000000000000000x + 1/1000000000000000000000000000000000000000000
 
-$ ./poly_solver factor "(x - 98765432109876543210)^2*(x+1)"
+$ ./polysolver factor "(x - 98765432109876543210)^2*(x+1)"
 (x + 1)(x - 98765432109876543210)^2
 
-$ ./poly_solver factor "x^128 - 1"
+$ ./polysolver factor "x^128 - 1"
 (x + 1)(x - 1)(x^2 + 1)(x^4 + 1)(x^8 + 1)(x^16 + 1)(x^32 + 1)(x^64 + 1)
 
-$ ./poly_solver solve "(x - 12345678901234567890/7)(x + 1)"
+$ ./polysolver solve "(x - 12345678901234567890/7)(x + 1)"
 x = -1, x = 12345678901234567890/7
 
-$ ./poly_solver solve "x^2 - 100000000000000000000000000000000000000001"
+$ ./polysolver solve "x^2 - 100000000000000000000000000000000000000001"
 x = -sqrt(100000000000000000000000000000000000000001) ~ -316227766016837933199.8893544432, x = sqrt(100000000000000000000000000000000000000001) ~ 316227766016837933199.8893544432
 
-$ ./poly_solver solve "x^3 - 1000000000000000000000000000000x + 1"
+$ ./polysolver solve "x^3 - 1000000000000000000000000000000x + 1"
 x ~ -1000000000000000.0000000000, x ~ 1.000000000e-30, x ~ 999999999999999.9999999999
 
-$ ./poly_solver integrate "123456789012345678901234567890*x^2*exp(98765x)"
+$ ./polysolver integrate "123456789012345678901234567890*x^2*exp(98765x)"
 (24691357802469135780246913578/19753x^2 - 49382715604938271560493827156/1950905045x + 49382715604938271560493827156/192681136769425) * exp(98765x)
 
-$ ./poly_solver integrate "x^99999" 0 1
+$ ./polysolver integrate "x^99999" 0 1
 1/100000 ~ 1e-05
 
-$ ./poly_solver integrate "1/(x^2+1)" 0 "1e40"
+$ ./polysolver integrate "1/(x^2+1)" 0 "1e40"
 atan(10000000000000000000000000000000000000000) ~ 1.570796327
 
-$ ./poly_solver integrate "1/(x^2+1e-300)" 0 1
+$ ./polysolver integrate "1/(x^2+1e-300)" 0 1
 1000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000 * atan(1000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000) ~ 1.570796327e+150
 
-$ ./poly_solver integrate "x^2" 0 "1e200"
+$ ./polysolver integrate "x^2" 0 "1e200"
 1000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000/3 (beyond double precision, so not compared with quadrature)
 
-$ ./poly_solver det "[[1e300, 1], [1, 1e-300]]"
+$ ./polysolver det "[[1e300, 1], [1, 1e-300]]"
 0
 
-$ ./poly_solver det "[[123456789012345678901, 2], [3, 4]]"
+$ ./polysolver det "[[123456789012345678901, 2], [3, 4]]"
 493827156049382715598
 
-$ ./poly_solver rank "[[1,2],[2,4.0000000000000000000000001]]"
+$ ./polysolver rank "[[1,2],[2,4.0000000000000000000000001]]"
 2
 ```
 
 ## Using the C library
 
-`make lib` builds `libpolysolver.a`. Include the umbrella header `poly_solver.h` (it pulls in every public header) and link with GMP:
+`make lib` builds `libpolysolver.a`. Include the umbrella header `polysolver.h` (it pulls in every public header) and link with GMP:
 
 ```bash
 make lib
-cc -I/path/to/poly_solver my_prog.c /path/to/poly_solver/libpolysolver.a -lgmp -lm
+cc -I/path/to/polysolver my_prog.c /path/to/polysolver/libpolysolver.a -lgmp -lm
 ```
 
 Conventions that hold everywhere:
@@ -499,7 +499,7 @@ Each program below is a complete file in [`examples/`](examples/); `make example
 ```c
 // examples/rationals.c
 // Exact rationals: literals are parsed exactly (0.1 is 1/10), and nothing is rounded.
-#include "poly_solver.h"
+#include "polysolver.h"
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -542,7 +542,7 @@ Output:
 ```c
 // examples/polynomials.c
 // Polynomials over Q: build from text or term by term, then arithmetic, gcd and calculus.
-#include "poly_solver.h"
+#include "polysolver.h"
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -621,7 +621,7 @@ a(1/2) =         5/8
 ```c
 // examples/factor_solve.c
 // Factoring over Q, and solving: exact roots where they exist, certified intervals elsewhere.
-#include "poly_solver.h"
+#include "polysolver.h"
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -691,7 +691,7 @@ Constructors (`create_add`, `create_pow`, `create_var`, ...) take ownership of t
 // examples/expressions.c
 // Building expressions in code instead of parsing text, then simplifying, differentiating
 // and evaluating them.
-#include "poly_solver.h"
+#include "polysolver.h"
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -747,7 +747,7 @@ simplify_exp:  1 + exp(x)
 // examples/integrate.c
 // Indefinite integrals: rational functions (integrate), and exp/ln/sin/cos (integrate_exp,
 // the Risch algorithm), which also proves when no elementary antiderivative exists.
-#include "poly_solver.h"
+#include "polysolver.h"
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -818,7 +818,7 @@ d/dx x*exp(x)*sin(x) = (x + 1) * exp(x) * sin(x) + x * exp(x) * cos(x)
 ```c
 // examples/definite.c
 // Definite integrals: exact values (constants folded) checked against quadrature at run time.
-#include "poly_solver.h"
+#include "polysolver.h"
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -870,7 +870,7 @@ Output:
 ```c
 // examples/linear.c
 // Exact linear algebra: matrices of rationals, parsed from bracket notation or filled directly.
-#include "poly_solver.h"
+#include "polysolver.h"
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -930,7 +930,7 @@ rref S =   [[1, 0, 1]
 // examples/big_numbers.c
 // Big numbers: every coefficient is an arbitrary-precision GMP rational, so nothing overflows
 // or rounds, in factoring, roots, integrals or matrices.
-#include "poly_solver.h"
+#include "polysolver.h"
 #include <stdio.h>
 #include <stdlib.h>
 

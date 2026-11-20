@@ -19,7 +19,7 @@ CORPUS = "golden.jsonl"
 
 def run(args):
     try:
-        r = subprocess.run(["./poly_solver", *args], capture_output=True, text=True, timeout=60)
+        r = subprocess.run(["./polysolver", *args], capture_output=True, text=True, timeout=60)
         return r.returncode, r.stdout.strip()
     except subprocess.TimeoutExpired:
         return None, "TIMEOUT"

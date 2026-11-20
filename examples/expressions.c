@@ -1,6 +1,6 @@
 // Building expressions in code instead of parsing text, then simplifying, differentiating
 // and evaluating them.
-#include "poly_solver.h"
+#include "polysolver.h"
 #include <stdio.h>
 #include <stdlib.h>
 

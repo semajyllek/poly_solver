@@ -1,5 +1,5 @@
 *.o
-poly_solver
+polysolver
 test_symbolic_solver
 *.d
 __pycache__/

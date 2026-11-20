@@ -1,5 +1,5 @@
 // Exact rationals: literals are parsed exactly (0.1 is 1/10), and nothing is rounded.
-#include "poly_solver.h"
+#include "polysolver.h"
 #include <stdio.h>
 #include <stdlib.h>
 

@@ -1,5 +1,5 @@
 // Factoring over Q, and solving: exact roots where they exist, certified intervals elsewhere.
-#include "poly_solver.h"
+#include "polysolver.h"
 #include <stdio.h>
 #include <stdlib.h>
 

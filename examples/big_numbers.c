@@ -1,6 +1,6 @@
 // Big numbers: every coefficient is an arbitrary-precision GMP rational, so nothing overflows
 // or rounds, in factoring, roots, integrals or matrices.
-#include "poly_solver.h"
+#include "polysolver.h"
 #include <stdio.h>
 #include <stdlib.h>
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Differential test: compare ./poly_solver against SymPy on seeded random inputs.
+"""Differential test: compare ./polysolver against SymPy on seeded random inputs.
 
 Requires SymPy (pip install sympy). Usage:
     make cli && python3 crosscheck_sympy.py [--trials N] [--seed S]
@@ -38,7 +38,7 @@ TRANSFORMS = standard_transformations + (implicit_multiplication_application,)
 
 
 def run_cli(*args):
-    r = subprocess.run(["./poly_solver", *args], capture_output=True, text=True, timeout=60)
+    r = subprocess.run(["./polysolver", *args], capture_output=True, text=True, timeout=60)
     return r.returncode, r.stdout.strip(), r.stderr.strip()
 
 

@@ -1,5 +1,5 @@
 // Polynomials over Q: build from text or term by term, then arithmetic, gcd and calculus.
-#include "poly_solver.h"
+#include "polysolver.h"
 #include <stdio.h>
 #include <stdlib.h>
 

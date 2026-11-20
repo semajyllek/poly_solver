@@ -1,6 +1,6 @@
 // Indefinite integrals: rational functions (integrate), and exp/ln/sin/cos (integrate_exp,
 // the Risch algorithm), which also proves when no elementary antiderivative exists.
-#include "poly_solver.h"
+#include "polysolver.h"
 #include <stdio.h>
 #include <stdlib.h>
 

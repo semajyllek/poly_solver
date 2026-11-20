@@ -14,7 +14,7 @@ TEST_TARGET = test_symbolic_solver
 # CLI binary
 CLI_SRCS = $(LIB_SRCS) main.c
 CLI_OBJS = $(CLI_SRCS:.c=.o)
-CLI_TARGET = poly_solver
+CLI_TARGET = polysolver
 
 all: $(TEST_TARGET)
 
@@ -42,7 +42,7 @@ $(LIB_TARGET): $(LIB_OBJS)
 EXAMPLES = rationals polynomials factor_solve expressions integrate definite linear big_numbers
 EXAMPLE_BINS = $(addprefix examples/,$(EXAMPLES))
 
-examples/%: examples/%.c $(LIB_TARGET) poly_solver.h
+examples/%: examples/%.c $(LIB_TARGET) polysolver.h
 	$(CC) $(CFLAGS) -I. -o $@ $< $(LIB_TARGET) $(LDFLAGS)
 
 examples: $(EXAMPLE_BINS)

@@ -1,5 +1,5 @@
 // Exact linear algebra: matrices of rationals, parsed from bracket notation or filled directly.
-#include "poly_solver.h"
+#include "polysolver.h"
 #include <stdio.h>
 #include <stdlib.h>
 

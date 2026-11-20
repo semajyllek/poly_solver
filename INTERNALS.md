@@ -1,6 +1,6 @@
-# poly_solver Internals
+# polysolver Internals
 
-A comprehensive guide to how every algorithm, data structure, and module in poly_solver works, illustrated with toy examples.
+A comprehensive guide to how every algorithm, data structure, and module in polysolver works, illustrated with toy examples.
 
 ---
 
@@ -23,7 +23,7 @@ A comprehensive guide to how every algorithm, data structure, and module in poly
 
 ## 1. System Overview
 
-poly_solver is a symbolic algebra engine written in C. It takes a string like `"x^2 - 5x + 6"`, parses it into an internal tree representation, reduces it to a canonical polynomial form, and then applies operations—simplification, factoring, differentiation, integration, or equation solving.
+polysolver is a symbolic algebra engine written in C. It takes a string like `"x^2 - 5x + 6"`, parses it into an internal tree representation, reduces it to a canonical polynomial form, and then applies operations—simplification, factoring, differentiation, integration, or equation solving.
 
 The data flows through a pipeline:
 
@@ -1011,7 +1011,7 @@ Anything else stays `RootSum`. For example, `x^5 + x + 3` has Galois group S5, s
 
 ### 11.5 Definite integrals (`definite.c`, `constfold.c`)
 
-`./poly_solver integrate "f" a b` with rational bounds, or `inf`/`-inf` (also `oo`/`-oo`):
+`./polysolver integrate "f" a b` with rational bounds, or `inf`/`-inf` (also `oo`/`-oo`):
 
 1. **Divergence.** If the denominator has a root in `[a, b]`, the integral diverges (every pole of a rational function has order ≥ 1). This is decided exactly: zero tests at `a` and `b`, then isolating intervals refined until each root is clearly inside or outside. An infinite side imposes no condition on the roots there. With an infinite bound, the integral converges only when `deg den ≥ deg num + 2`, since `f ~ c·x^(deg num − deg den)` far out.
 2. **Antiderivative.** `F = integrate(f)`. If it contains a `RootSum`, only the numeric value is given: its complex logarithms have branch cuts, so `F(b) − F(a)` would not be trustworthy.
@@ -1384,7 +1384,7 @@ Examples:
 The `main.c` entry point ties everything together:
 
 ```
-./poly_solver <action> "<expression>"
+./polysolver <action> "<expression>"
 ```
 
 The pipeline for every action:
@@ -1411,7 +1411,7 @@ The pipeline for every action:
 3. free_expr(expr) → clean up
 ```
 
-**Full trace for** `./poly_solver factor "x^2 - 5x + 6"`:
+**Full trace for** `./polysolver factor "x^2 - 5x + 6"`:
 
 ```
 1. Lexer produces: x, ^, 2, -, 5, x, +, 6

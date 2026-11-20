@@ -1,9 +1,9 @@
-// poly_solver: the whole public API in one include. Link with libpolysolver.a and GMP:
+// polysolver: the whole public API in one include. Link with libpolysolver.a and GMP:
 //   make lib && cc -I. my_prog.c libpolysolver.a -lgmp -lm
 // Ownership: every function returns new allocations that the caller frees (free_expr,
 // free_polynomial, free(char*) for strings, ...), and no function frees or changes its inputs.
-#ifndef POLY_SOLVER_H
-#define POLY_SOLVER_H
+#ifndef POLYSOLVER_H
+#define POLYSOLVER_H
 
 #include "rational_num.h" // Rational: exact GMP rationals, rat_parse_literal
 #include "polynomial.h"   // Polynomial: arithmetic, gcd/xgcd, derivative, exact evaluation
