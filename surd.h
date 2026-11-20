@@ -44,6 +44,9 @@ void rc_clear(RealConst* k);
 // k · body (a parenthesized sum when k has several monomials); takes body; NULL when k = 0
 Expr* rc_scale(const RealConst* k, Expr* body);
 Expr* rc_x_pow(int power); // the polynomial x^power
+// sin/cos(angle·π) exactly: a rational times a square root on the table (cos(π/3) = 1/2,
+// sin(π/4) = sqrt(2)/2), else ± a symbolic value with angle in (0, 1/2)
+Expr* trig_value(TrigKind kind, const Rational* angle);
 // acc + Σ_i mono_i · x^power, one term per monomial (power < 0: the bare constant)
 Expr* rc_add_terms(Expr* acc, const RealConst* k, int power);
 

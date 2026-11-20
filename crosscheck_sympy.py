@@ -405,6 +405,45 @@ def check_tan(rng):
     return compare_risch(f, f.rewrite(sp.exp), numeric=True, limit=20)
 
 
+PI_BOUNDS = {"pi": sp.pi, "pi/4": sp.pi / 4, "-pi/2": -sp.pi / 2, "3pi/2": 3 * sp.pi / 2, "2pi": 2 * sp.pi, "-pi": -sp.pi}
+
+
+def check_definite_exp(rng):
+    """integrate f a b for f = F' with F = Σ r(x)·exp(e·x)·sin/cos(k·x), sometimes plus exp(-x²)
+    (no elementary antiderivative: the number only), on rational, q·π and infinite bounds: the
+    value matches mpmath.quad to 28 digits; an infinite end is refused unless every term decays."""
+    def term():
+        e = rng.choice([-1, -1, 0, 1])
+        trig = rng.choice([sp.sin, sp.cos, None])
+        t = (rng.randint(-2, 2) + rng.randint(1, 2) * x) * sp.exp(e * x)
+        return (t * trig(rng.randint(1, 2) * x) if trig else t), e
+    terms = [term() for _ in range(rng.randint(1, 2))]
+    f = sp.diff(sum(t for t, _ in terms), x)
+    gauss = rng.random() < 0.2
+    if gauss:
+        f += sp.exp(-x**2)
+    names = list(PI_BOUNDS) + [str(sp.Rational(rng.randint(-6, 6), rng.randint(1, 3)))]
+    a = rng.choice(names)
+    b = "inf" if rng.random() < 0.3 else rng.choice(names)
+    code, out, err = run_cli("integrate", to_cli(f), a, b)
+    val = lambda n: PI_BOUNDS[n] if n in PI_BOUNDS else (mp.inf if n == "inf" else sp.Rational(n))
+    decays = all(e == -1 for _, e in terms)
+    if b == "inf" and not decays:
+        assert code != 0 and ("decay" in err or "diverges" in err), f"f={f} on [{a}, inf): {out} {err}"
+        return "refused"
+    assert code == 0, f"f={f} on [{a}, {b}]: {err}"
+    fl = sp.lambdify(x, f, "mpmath")
+    with mp.workdps(45):
+        lo, hi = mp.mpf(sp.N(val(a), 50)), (mp.inf if b == "inf" else mp.mpf(sp.N(val(b), 50)))
+        ref = mp.quad(fl, [lo, hi] if b == "inf" else mp.linspace(lo, hi, 9))
+    if out.startswith("~"):
+        assert gauss and abs(float(out.split()[1]) - float(ref)) < 1e-8 * (1 + abs(float(ref))), f"f={f}: {out}"
+        return "numeric"
+    v = sp.N(to_sympy(out.split(" ~ ")[0].replace("ln(abs(", "log(Abs(")), 40)
+    assert abs(v - sp.Float(str(ref), 40)) < sp.Float("1e-28") * (1 + abs(v)), f"f={f} on [{a}, {b}]: {out} vs {ref}"
+    return "exact"
+
+
 def check_matrix(rng):
     n = rng.randint(1, 4)
     M = sp.Matrix(n, n, lambda i, j: sp.Rational(rng.randint(-9, 9), rng.randint(1, 4)))
@@ -427,6 +466,7 @@ def main():
     rng_frac = random.Random(args.seed + 6)
     rng_trig = random.Random(args.seed + 7)
     rng_tan = random.Random(args.seed + 8)
+    rng_dexp = random.Random(args.seed + 9)
     rootsums = radicals = 0
     definite = {"exact": 0, "numeric": 0, "pole": 0}
     infinite = {"exact": 0, "numeric": 0, "divergent": 0}
@@ -435,6 +475,7 @@ def main():
     fracs = dict(exps)
     trigs = dict(exps)
     tans = dict(exps)
+    dexps = {"exact": 0, "numeric": 0, "refused": 0}
     for t in range(args.trials):
         p = random_poly(rng)
         check_factor(p)
@@ -451,6 +492,7 @@ def main():
         fracs[check_frac(rng_frac)] += 1
         trigs[check_trig(rng_trig)] += 1
         tans[check_tan(rng_tan)] += 1
+        dexps[check_definite_exp(rng_dexp)] += 1
         check_matrix(rng)
         print(f"  trial {t + 1}/{args.trials} ok", flush=True)
     print(f"crosscheck OK: {args.trials} trials (factor, solve, integrate, det); "
@@ -468,7 +510,9 @@ def main():
           f"sin/cos: {trigs['elementary']} elementary, {trigs['nonelementary']} proved non-elementary (SymPy agrees), "
           f"{trigs['unconfirmed']} unconfirmed, {trigs['unsupported']} unsupported; "
           f"sin/cos denominators: {tans['elementary']} elementary, {tans['nonelementary']} proved non-elementary "
-          f"(SymPy agrees), {tans['unconfirmed']} unconfirmed, {tans['unsupported']} unsupported")
+          f"(SymPy agrees), {tans['unconfirmed']} unconfirmed, {tans['unsupported']} unsupported; "
+          f"definite exp/sin/cos: {dexps['exact']} exact (28 digits), {dexps['numeric']} numeric-only, "
+          f"{dexps['refused']} refused at infinity")
 
 
 if __name__ == "__main__":

@@ -75,35 +75,16 @@ static int handle_matrix_action(const char* action, const char* input) {
     return 0;
 }
 
-// a bound such as "1/2" or "-3": a constant expression with a rational value
-// inf, +inf, oo, +oo → +1; -inf, -oo → -1; else 0
-static int infinity_sign(const char* text) {
-    int sign = 1;
-    if (*text == '+' || *text == '-') sign = *text++ == '-' ? -1 : 1;
-    return strcmp(text, "inf") == 0 || strcmp(text, "oo") == 0 ? sign : 0;
-}
-
-// a bound: ±∞ (sets *inf), or a constant expression evaluated exactly into *out
-static bool parse_bound(Rational* out, int* inf, const char* text) {
-    *inf = infinity_sign(text);
-    if (*inf) return true;
-    Expr* e = parse_and_simplify(text);
-    bool ok = e && e->type == EXPR_POLY && polynomial_degree(e->poly) <= 0;
-    if (ok) poly_coeff(out, e->poly, 0);
-    if (e) free_expr(e);
-    return ok;
-}
-
 // "exact ~ decimal", or "~ decimal (reason)" when only the number is available
 static int handle_definite(const char* f_text, const char* a_text, const char* b_text) {
     Rational a, b;
     rat_init(&a); rat_init(&b);
-    Expr* f = parse_and_simplify(f_text);
+    Expr* f = parse_integrand(f_text);
     int rc = 1;
-    Bounds ab = { { &a, 0 }, { &b, 0 } };
-    if (!f) fprintf(stderr, "Error: not a polynomial or rational function.\n");
-    else if (!parse_bound(&a, &ab.a.inf, a_text) || !parse_bound(&b, &ab.b.inf, b_text))
-        fprintf(stderr, "Error: bounds must be rational numbers, inf or -inf.\n");
+    Bounds ab = { { &a, 0, false }, { &b, 0, false } };
+    if (!f) fprintf(stderr, "Error: not a polynomial, rational function, or expression in exp, sin and cos.\n");
+    else if (!parse_endpoint(&a, &ab.a, a_text) || !parse_endpoint(&b, &ab.b, b_text))
+        fprintf(stderr, "Error: bounds must be rational numbers, rational multiples of pi, inf or -inf.\n");
     else {
         DefiniteResult r = integrate_definite(f, &ab);
         if (r.error) fprintf(stderr, "Error: %s.\n", r.error);

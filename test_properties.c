@@ -241,7 +241,7 @@ static DefiniteResult definite_str(const char* f, const char* a, const char* b) 
     Expr* e = parse_and_simplify(f);
     Rational ra, rb;
     rat_init(&ra); rat_init(&rb);
-    Bounds ab = { { &ra, bound_str(&ra, a) }, { &rb, bound_str(&rb, b) } };
+    Bounds ab = { { &ra, bound_str(&ra, a), false }, { &rb, bound_str(&rb, b), false } };
     DefiniteResult r = integrate_definite(e, &ab);
     rat_clear(&ra); rat_clear(&rb);
     free_expr(e);
@@ -1242,7 +1242,7 @@ static void test_prop_integrate_definite(void) {
         rat_init(&a); rat_init(&b);
         random_bound(&a);
         random_bound(&b);
-        DefiniteResult r = integrate_definite(f, &(Bounds){ { &a, 0 }, { &b, 0 } });
+        DefiniteResult r = integrate_definite(f, &(Bounds){ { &a, 0, false }, { &b, 0, false } });
         if (r.note && strstr(r.note, "internal")) {
             char* fs = expr_to_string(f);
             fprintf(stderr, "    definite integral check failed: %s on [%g, %g]\n", fs, rat_to_double(&a), rat_to_double(&b));
@@ -1287,7 +1287,7 @@ static void test_prop_integrate_infinite(void) {
         random_bound(&a);
         random_bound(&b);
         int kind = trial % 3;                                 // both infinite, then each side alone
-        Bounds ab = { { &a, kind == 2 ? 0 : -1 }, { &b, kind == 1 ? 0 : 1 } };
+        Bounds ab = { { &a, kind == 2 ? 0 : -1, false }, { &b, kind == 1 ? 0 : 1, false } };
         DefiniteResult r = integrate_definite(f, &ab);
         if (r.error || (r.note && strstr(r.note, "internal"))) {
             char* fs = expr_to_string(f);
@@ -1324,8 +1324,8 @@ static void test_prop_definite_symmetric(void) {
         rat_set_si(&a, rnd(0, 6), rnd(1, 3));
         rat_set_si(&b, rnd(7, 12), rnd(1, 3));
         rat_neg(&na, &a); rat_neg(&nb, &b);
-        DefiniteResult r1 = integrate_definite(f, &(Bounds){ { &a, 0 }, { &b, 0 } });
-        DefiniteResult r2 = integrate_definite(f, &(Bounds){ { &nb, 0 }, { &na, 0 } });
+        DefiniteResult r1 = integrate_definite(f, &(Bounds){ { &a, 0, false }, { &b, 0, false } });
+        DefiniteResult r2 = integrate_definite(f, &(Bounds){ { &nb, 0, false }, { &na, 0, false } });
         if (r1.exact && r2.exact) {
             char *s1 = expr_to_string(r1.exact), *s2 = expr_to_string(r2.exact);
             if (strcmp(s1, s2) != 0) { fprintf(stderr, "    asymmetric:\n    %s\n    %s\n", s1, s2); assert(0); }
@@ -1935,6 +1935,111 @@ static void test_prop_integrate_tan(void) {
     printf("  test_prop_integrate_tan PASSED (%d round trips, %d non-elementary by construction, %d unsupported)\n", roundtrips, rejected, skipped);
 }
 
+// a definite integral from text, as the CLI reads it (bounds q·π, raw exp/sin/cos trees)
+static DefiniteResult definite_text(const char* f, const char* a, const char* b) {
+    Expr* e = parse_integrand(f);
+    Rational ra, rb;
+    rat_init(&ra); rat_init(&rb);
+    Bounds ab = { { &ra, 0, false }, { &rb, 0, false } };
+    assert(e && parse_endpoint(&ra, &ab.a, a) && parse_endpoint(&rb, &ab.b, b));
+    DefiniteResult r = integrate_definite(e, &ab);
+    rat_clear(&ra); rat_clear(&rb);
+    free_expr(e);
+    return r;
+}
+
+// definite integrals of exponential sums and with bounds q·π: exact values (π powers, exp(1),
+// sin/cos at rational multiples of π and shifted by quarter turns), numeric-only values without
+// an elementary antiderivative, and the cases reported as divergent or unsupported
+static void test_reg_definite_exp(void) {
+    const char* cases[][4] = {
+        { "x*sin(x)", "0", "pi", "pi" },
+        { "x^2*sin(x)", "0", "pi", "pi^2 - 4" },
+        { "x*exp(x)", "0", "1", "1" },                                  // exp(0) = 1, 0·exp(1) = 0
+        { "exp(x)", "0", "1", "exp(1) - 1" },
+        { "exp(-x)*cos(x)", "0", "inf", "1/2" },
+        { "x*exp(-x)*sin(x)", "0", "inf", "1/2" },
+        { "exp(x)", "-inf", "0", "1" },
+        { "x*sin(x)", "-1", "1", "-2 * cos(1) + 2 * sin(1)" },          // sin(-1) = -sin(1)
+        { "cos(x)^2", "0", "pi", "1/2 * pi" },
+        { "sin(x)", "0", "3pi/4", "1/2 * sqrt(2) + 1" },
+        { "cos(x)", "0", "pi/5", "sin(pi/5)" },                         // off the table: symbolic
+        { "cos(x+1)", "0", "pi", "-2 * sin(1)" },                       // sin(1 + π) = -sin(1)
+        { "sin(x+1)", "0", "pi/2", "cos(1) + sin(1)" },                 // cos(1 + π/2) = -sin(1)
+        { "cos(x-1)", "pi/2", "3pi/2", "-2 * cos(1)" },                 // sin(a + π/2), sin(a + 3π/2)
+        { "exp(x)*sin(x)", "0", "pi", "1/2 * exp(pi) + 1/2" },
+        { "x", "0", "pi", "1/2 * pi^2" },                               // rational integrand, π bound
+        { "1/(x-4)", "0", "pi", "ln(abs(4 - pi)) - 2 * ln(2)" },
+        { "1/(1+x^2)", "-inf", "pi", "atan(pi) + 1/2 * pi" },
+        { "sin(x)", "2pi", "0", "0" },
+    };
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        DefiniteResult r = definite_text(cases[i][0], cases[i][1], cases[i][2]);
+        assert(!r.error && r.exact);
+        expect_str(expr_to_string(r.exact), cases[i][3]);
+        definite_free(&r);
+    }
+    const char* numeric[][4] = { { "exp(-x^2)", "0", "1", "0.7468241328" }, { "exp(-x^2)", "-inf", "inf", "1.7724538509" } };
+    for (size_t i = 0; i < sizeof numeric / sizeof numeric[0]; i++) {
+        DefiniteResult r = definite_text(numeric[i][0], numeric[i][1], numeric[i][2]);
+        assert(!r.error && !r.exact && r.note && fabs(r.approx - atof(numeric[i][3])) < 1e-9);
+    }
+    const char* refused[][3] = {
+        { "cos(x)", "0", "inf" }, { "exp(x)", "0", "inf" }, { "sin(x)/x", "0", "1" },   // oscillating, growing, 0/0
+        { "1/(1+exp(x))", "0", "1" }, { "1/(x-3)", "0", "pi" }, { "exp(-x)+1/x", "1", "inf" },
+    };
+    for (size_t i = 0; i < sizeof refused / sizeof refused[0]; i++) {
+        DefiniteResult r = definite_text(refused[i][0], refused[i][1], refused[i][2]);
+        assert(r.error && !r.exact);
+    }
+    Expr* x = create_var("x");                                     // a bare x at q·π
+    Rational q = rat_from_si(3, 2);
+    expect_str(expr_to_string_free(expr_at_pi(x, &q)), "3/2 * pi");
+    rat_clear(&q);
+    free_expr(x);
+    printf("  test_reg_definite_exp PASSED (%zu exact, %zu numeric, %zu refused)\n",
+           sizeof cases / sizeof cases[0], sizeof numeric / sizeof numeric[0], sizeof refused / sizeof refused[0]);
+}
+
+// random r(x)·exp(-x)·sin/cos(kx) sums F: ∫_a^b F' over [q1·π, q2·π] (q multiples of 1/4) or
+// [q·π, ∞) is exact, equals F(b) - F(a) numerically, and has every sin/cos folded away
+static void test_prop_definite_exp(void) {
+    const char* qs[] = { "0", "pi/4", "pi/2", "pi", "3pi/2", "2pi", "-pi/4", "-pi" };
+    int exact = 0;
+    for (int trial = 0; trial < TRIALS; trial++) {
+        Expr* F = NULL;
+        for (long n = rnd(1, 2); n > 0; n--) {
+            Expr* arg = create_mul(create_const(rnd(1, 3)), create_var("x"));
+            Expr* t = create_mul(create_mul(create_poly_expr(poly_si((long[]){ rnd(-2, 2), rnd(1, 3) }, 1)),
+                                            create_exp(create_neg(create_var("x")))), rnd(0, 1) ? create_sin(arg) : create_cos(arg));
+            F = F ? create_add(F, t) : t;
+        }
+        const char* why = NULL;
+        Expr* f = differentiate_exp(F, &why);
+        const char *a = qs[rnd(0, 7)], *b = rnd(0, 3) ? qs[rnd(0, 7)] : "inf";
+        Expr* fe = expr_copy(f);
+        Rational ra, rb;
+        rat_init(&ra); rat_init(&rb);
+        Bounds ab = { { &ra, 0, false }, { &rb, 0, false } };
+        assert(parse_endpoint(&ra, &ab.a, a) && parse_endpoint(&rb, &ab.b, b));
+        DefiniteResult r = integrate_definite(fe, &ab);
+        assert(!r.error && r.exact);
+        char* s = expr_to_string(r.exact);
+        assert(!strstr(s, "sin(") && !strstr(s, "cos("));          // kx at q·π: on the table
+        bool ok = true;
+        double pa = rat_to_double(&ra) * (ab.a.pi ? M_PI : 1), Fa = expr_eval(F, pa, &ok);
+        double Fb = ab.b.inf ? 0 : expr_eval(F, rat_to_double(&rb) * (ab.b.pi ? M_PI : 1), &ok);
+        double v = expr_eval(r.exact, 0, &ok);
+        assert(ok && fabs(v - (Fb - Fa)) < 1e-9 * (1 + fabs(Fa) + fabs(Fb)));
+        exact++;
+        free(s);
+        definite_free(&r);
+        rat_clear(&ra); rat_clear(&rb);
+        free_expr(fe); free_expr(f); free_expr(F);
+    }
+    printf("  test_prop_definite_exp PASSED (%d exact values, each F(b) - F(a))\n", exact);
+}
+
 // r(x)·exp(E)·trig(F) with E = 0 or ±x, F = k·x or x², trig = sin or cos
 static Expr* random_trig_term(void) {
     Expr* x = create_var("x");
@@ -2054,6 +2159,7 @@ void run_property_tests(void) {
     test_reg_integrate_lrt();
     test_reg_integrate_radicals();
     test_reg_integrate_definite();
+    test_reg_definite_exp();
     test_reg_expr_lead();
     test_reg_qsurd();
     test_reg_radical_products();
@@ -2081,4 +2187,5 @@ void run_property_tests(void) {
     test_prop_integrate_tower_fractions();
     test_prop_integrate_trig();
     test_prop_integrate_tan();
+    test_prop_definite_exp();
 }

@@ -8,6 +8,9 @@
 // ln|c·m^e| splits into logs of rationals, and atan takes its exact values at 0, ±1,
 // ±sqrt(3), ±1/sqrt(3), ±(sqrt(2) ∓ 1) and ±(2 ∓ sqrt(3)). e must not contain a RootSum.
 Expr* expr_at(const Expr* e, const Rational* x0);
+// the same at x = q·π: polynomials become Σ c·π^k, sin/cos(r·π) take exact table values
+// (cos(π) = -1, sin(π/4) = sqrt(2)/2), exp(0) = 1, and other values stay symbolic (exp(1), sin(1))
+Expr* expr_at_pi(const Expr* e, const Rational* q);
 
 // the folded sum of n owned constant terms. ln and atan terms over one Q(sqrt(m)) with the
 // same non-rational coefficient merge (qsurd.c), every log argument is made canonical

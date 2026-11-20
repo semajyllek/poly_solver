@@ -4,6 +4,7 @@
 // multiple of π, logs of rationals c·ln(v) merged by v, and other terms merged when their
 // factors print the same.
 #include "constfold.h"
+#include "surd.h"
 #include "qsurd.h"
 #include <stdlib.h>
 #include <string.h>
@@ -826,16 +827,7 @@ static Expr* fold_atan(Expr* a) {
     return e;
 }
 
-// --- evaluation at a point ---
-
-static Expr* const_value(const Polynomial* p, const Rational* x0) {
-    Rational v;
-    rat_init(&v);
-    poly_eval_rat(&v, p, x0);
-    Expr* c = create_const_rat(&v);
-    rat_clear(&v);
-    return c;
-}
+// --- evaluation at a point: x0 = q, or x0 = q·π ---
 
 // 1/r when r = c·sqrt(m_1)·...·sqrt(m_k), c ≠ 0: (1/(c·Π m_i))·Π sqrt(m_i); else NULL
 static Expr* invert_surd(const Expr* r) {
@@ -885,18 +877,124 @@ static Expr* fold_binop(BinOp op, Expr* l, Expr* r) {
     return NULL;
 }
 
-Expr* expr_at(const Expr* e, const Rational* x0) {
+
+typedef struct {
+    const Rational* q;
+    bool pi;
+} Point;
+
+static Expr* rat_expr(const Rational* r) { return create_const_rat(r); }
+
+// π^k (k >= 1): π itself lands in the sum's multiple-of-π slot, higher powers are factors
+static Expr* pi_power(long k) { return k == 1 ? create_pi() : create_pow(create_pi(), create_const(k)); }
+
+// p(x0) folded: Σ c_k·q^k·π^k at q·π (π is transcendental, so this is p's value in Q[π])
+static Expr* poly_at(const Polynomial* p, const Point* x0) {
+    Rational v;
+    rat_init(&v);
+    if (!x0->pi) { poly_eval_rat(&v, p, x0->q); Expr* c = rat_expr(&v); rat_clear(&v); return c; }
+    Expr* acc = create_const(0);
+    for (const Term* t = p->head; t; t = t->next) {
+        rat_pow_int(&v, x0->q, t->exponent);
+        rat_mul(&v, &v, &t->coeff);
+        acc = fold_sum2(acc, t->exponent ? fold_product(rat_expr(&v), pi_power(t->exponent)) : rat_expr(&v), 1);
+    }
+    rat_clear(&v);
+    return acc;
+}
+
+// p(x0) = a + r·π for p of degree <= 1 (r = 0 at a rational x0); false for higher degree at q·π
+typedef struct {
+    Rational a, r;
+} Linear;
+
+static bool linear_at(const Polynomial* p, const Point* x0, Linear* L) {
+    if (!x0->pi) { poly_eval_rat(&L->a, p, x0->q); return true; }
+    if (polynomial_degree(p) > 1) return false;
+    poly_coeff(&L->a, p, 0);
+    poly_coeff(&L->r, p, 1);
+    rat_mul(&L->r, &L->r, x0->q);
+    return true;
+}
+
+static Expr* at(const Expr* e, const Point* x0);
+
+// exp(c): exp(0) = 1, else exp(c) itself
+static Expr* fold_exp(Expr* c) {
+    if (is_const(c) && rat_is_zero(&c->constant)) { free_expr(c); return create_const(1); }
+    return create_exp(c);
+}
+
+// sin/cos(r) for rational r: sin(0) = 0, cos(0) = 1, sin(-r) = -sin(r), cos(-r) = cos(r)
+static Expr* trig_of_rational(bool sine, const Rational* r) {
+    if (rat_is_zero(r)) return create_const(sine ? 0 : 1);
+    Rational a;
+    rat_init(&a);
+    rat_abs(&a, r);
+    Expr* t = sine ? create_sin(rat_expr(&a)) : create_cos(rat_expr(&a));
+    rat_clear(&a);
+    return sine && rat_is_negative(r) ? fold_product(create_const(-1), t) : t;
+}
+
+// sin/cos(a + r·π) when 2r is an integer: a quarter-turn shift of sin/cos(a), sin(a + π/2) = cos(a)
+static Expr* shifted_trig(bool sine, const Linear* L) {
+    Rational t;
+    rat_init(&t);
+    rat_add(&t, &L->r, &L->r);
+    mpz_t k;
+    mpz_init(k);
+    mpz_fdiv_r_ui(k, mpq_numref(t.val), 4);                // quarter turns mod 4
+    int q = (int)mpz_get_ui(k);
+    mpz_clear(k);
+    rat_clear(&t);
+    bool use_sin = sine ? q % 2 == 0 : q % 2 == 1;         // sin(a + π/2) = cos a, cos(a + π/2) = -sin a
+    bool neg = sine ? q >= 2 : (q == 1 || q == 2);
+    Expr* v = trig_of_rational(use_sin, &L->a);
+    return neg ? fold_product(create_const(-1), v) : v;
+}
+
+// sin/cos of a polynomial argument at x0: exact at rational multiples of π, shifted by
+// quarter turns around a rational, else symbolic
+static Expr* fold_trig(const Expr* e, const Point* x0) {
+    bool sine = e->type == EXPR_SIN;
+    Linear L;
+    rat_init(&L.a); rat_init(&L.r);
+    Expr* r = NULL;
+    if (e->fn_arg->type == EXPR_POLY && linear_at(e->fn_arg->poly, x0, &L)) {
+        Rational t;
+        rat_init(&t);
+        rat_add(&t, &L.r, &L.r);
+        bool quarter = mpz_cmp_ui(mpq_denref(t.val), 1) == 0;
+        rat_clear(&t);
+        if (rat_is_zero(&L.a) && !rat_is_zero(&L.r)) r = trig_value(sine ? TRIG_SIN : TRIG_COS, &L.r);
+        else if (quarter) r = shifted_trig(sine, &L);
+    }
+    if (!r) {
+        Expr* a = at(e->fn_arg, x0);
+        if (is_const(a)) { r = trig_of_rational(sine, &a->constant); free_expr(a); }
+        else r = sine ? create_sin(a) : create_cos(a);
+    }
+    rat_clear(&L.a); rat_clear(&L.r);
+    return fold_product(create_const(1), r);
+}
+
+static Expr* at(const Expr* e, const Point* x0) {
     switch (e->type) {
-        case EXPR_VAR: return create_const_rat(x0);
-        case EXPR_POLY: return const_value(e->poly, x0);
-        case EXPR_RATIONAL_FN: return fold_div(const_value(e->ratfn.num, x0), const_value(e->ratfn.den, x0));
-        case EXPR_BINOP: return fold_binop(e->binop.op, expr_at(e->binop.left, x0), expr_at(e->binop.right, x0));
-        case EXPR_NEG: return fold_product(create_const(-1), expr_at(e->operand, x0));
-        case EXPR_LN: return fold_ln(expr_at(e->ln_arg, x0));
-        case EXPR_ATAN: return fold_atan(expr_at(e->fn_arg, x0));
+        case EXPR_VAR: return x0->pi ? fold_product(rat_expr(x0->q), create_pi()) : rat_expr(x0->q);
+        case EXPR_POLY: return poly_at(e->poly, x0);
+        case EXPR_RATIONAL_FN: return fold_div(poly_at(e->ratfn.num, x0), poly_at(e->ratfn.den, x0));
+        case EXPR_BINOP: return fold_binop(e->binop.op, at(e->binop.left, x0), at(e->binop.right, x0));
+        case EXPR_NEG: return fold_product(create_const(-1), at(e->operand, x0));
+        case EXPR_LN: return fold_ln(at(e->ln_arg, x0));
+        case EXPR_ATAN: return fold_atan(at(e->fn_arg, x0));
+        case EXPR_EXP: return fold_exp(at(e->fn_arg, x0));
+        case EXPR_SIN: case EXPR_COS: return fold_trig(e, x0);
         default: return expr_copy(e);                     // CONST, SQRT, TRIG: no x inside
     }
 }
+
+Expr* expr_at(const Expr* e, const Rational* x0) { return at(e, &(Point){ x0, false }); }
+Expr* expr_at_pi(const Expr* e, const Rational* q) { return at(e, &(Point){ q, true }); }
 
 Expr* const_fold_sum(Expr** terms, int n) {
     Sum S = sum_new();

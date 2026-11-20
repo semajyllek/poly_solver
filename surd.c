@@ -306,3 +306,16 @@ Expr* rc_scale(const RealConst* k, Expr* body) {
     if (k->count == 1) return mono_expr(&k->t[0], body);
     return create_mul(rc_add_terms(NULL, k, -1), body);
 }
+
+Expr* trig_value(TrigKind kind, const Rational* angle) {
+    Rational one = rat_one_val(), zero = rat_zero_val();
+    Mono x;
+    mono_init_radical(&x, &one, &(Power){ &one, &zero });
+    mono_mul_trig(&x, kind, angle);
+    RealConst k = rc_zero();
+    rc_add(&k, &x);
+    Expr* e = rc_scale(&k, NULL);
+    rc_clear(&k);
+    rat_clear(&one); rat_clear(&zero);
+    return e ? e : create_const(0);
+}

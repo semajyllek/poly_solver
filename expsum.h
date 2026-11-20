@@ -14,6 +14,18 @@ RischResult integrate_expsum(const Expr* f);
 extern const char EXPSUM_SUM_DIVISOR[];               // the reason for a divisor with several terms (integrate_exp then tries tan)
 Expr* differentiate_expsum(const Expr* f, const char** reason);
 Expr* simplify_expsum(const Expr* f, const char** reason);
+// f = c_0 + Σ_{w≠0} c_w·e^w seen from outside: c_0 (real), the product of every coefficient's
+// denominator (f is finite away from its real roots; at one it may still be, as sin(x)/x),
+// and per end (0: x → -∞, 1: x → +∞) whether every w ≠ 0 has Re w → -∞ there
+typedef struct {
+    Polynomial *c0_num, *c0_den;
+    Polynomial* poles;
+    bool decays[2];
+    bool pure;    // f = c_0
+} ExpSumShape;
+
+bool expsum_shape(const Expr* f, ExpSumShape* out, const char** why);
+void expsum_shape_free(ExpSumShape* s);
 bool small_integer(const Expr* e, long* k);           // e is an integer constant with |k| <= 256
 
 #endif

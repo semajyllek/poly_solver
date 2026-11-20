@@ -428,3 +428,39 @@ Expr* simplify_expsum(const Expr* f, const char** reason) {
     es_free(&s);
     return r;
 }
+
+// Re w = E → -∞ as x → side·∞: E nonconstant with sign(lc E)·side^deg E < 0
+static bool real_part_falls(const CPoly* w, int side) {
+    int d = poly_is_zero(w->re) ? -1 : polynomial_degree(w->re);
+    if (d < 1) return false;
+    int sign = lead_sign(w->re) * (d % 2 ? side : 1);
+    return sign < 0;
+}
+
+bool expsum_shape(const Expr* f, ExpSumShape* out, const char** why) {
+    ESum s = es_from(f, why);
+    if (*why) return false;
+    Rational one = rat_one_val();
+    *out = (ExpSumShape){ create_polynomial(), poly_constant(&one), poly_constant(&one), { true, true }, true };
+    rat_clear(&one);
+    for (int i = 0; i < s.n; i++) {
+        const ETerm* t = &s.t[i];
+        Polynomial* p = poly_multiply(out->poles, t->c.den);
+        free_polynomial(out->poles);
+        out->poles = p;
+        if (cp_is_zero(&t->w)) {                          // c_0, real for a real f
+            free_polynomial(out->c0_num); free_polynomial(out->c0_den);
+            out->c0_num = poly_copy(t->c.n.re);
+            out->c0_den = poly_copy(t->c.den);
+            continue;
+        }
+        out->pure = false;
+        for (int side = 0; side < 2; side++) out->decays[side] = out->decays[side] && real_part_falls(&t->w, side ? 1 : -1);
+    }
+    es_free(&s);
+    return true;
+}
+
+void expsum_shape_free(ExpSumShape* s) {
+    free_polynomial(s->c0_num); free_polynomial(s->c0_den); free_polynomial(s->poles);
+}

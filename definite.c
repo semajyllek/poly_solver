@@ -9,9 +9,24 @@
 //      (the c·deg(u)·ln|x| parts cancel between the logs, because the integral converges).
 //   5. The exact value is compared with adaptive Simpson quadrature of f. On disagreement, or
 //      when F has a RootSum (complex logs with branch cuts), only the number is reported.
+// Exponential sums f = c_0 + Σ c_w·e^w (exp, sin, cos; expsum.h) and bounds q·π follow the
+// same steps, with these differences (definite_exp):
+//   * a root of a coefficient denominator in [a, b] is reported as unsupported, not as a pole
+//     (sin(x)/x is finite at 0), unless f = c_0 is rational;
+//   * an infinite end needs Re w → -∞ there for every w ≠ 0 (then those terms of F tend to 0)
+//     and c_0 decaying like 1/x²; slower decay of c_0 is divergence, while an oscillating
+//     term such as cos(x)/x is unsupported (quadrature cannot confirm a conditional limit);
+//   * q·π is replaced by a 50-digit rational inside a band that must hold no root of the
+//     relevant polynomials (a rational polynomial never vanishes at q·π, so the band only has
+//     to be narrow enough), and F is evaluated at q·π exactly (constfold.h: expr_at_pi);
+//   * without an elementary antiderivative, the numeric value is given alone.
 #include "definite.h"
 #include "constfold.h"
+#include "expsum.h"
+#include "risch.h"
 #include "roots.h"
+#include "parser.h"
+#include <string.h>
 #include <math.h>
 #include <stdlib.h>
 
@@ -20,8 +35,9 @@
 // --- real roots in an open interval ---
 
 typedef struct {
-    Rational lo, hi;     // lo < hi on the finite sides (0 on an infinite one)
+    Rational lo, hi;     // lo < hi on the finite sides (0 on an infinite one); q·π as a 50-digit rational
     bool lo_inf, hi_inf; // the span reaches -∞ / +∞
+    const Bounds* ab;    // the bounds it was made from (for the bands around q·π)
 } Span;
 
 // P / gcd(P, P'): the same roots, all simple
@@ -109,6 +125,56 @@ static bool vanishes_on(const Polynomial* P, const Span* s) {
     return any;
 }
 
+// --- bounds q·π ---
+
+#define PI_50 "3.14159265358979323846264338327950288419716939937511" // |π - PI_50| < 1e-50
+
+// the value of a finite end: x, or x·PI_50
+static void end_value(const Endpoint* p, Rational* v) {
+    rat_set(v, p->x);
+    if (!p->pi) return;
+    Rational pi;
+    rat_init(&pi);
+    rat_parse_literal(&pi, PI_50);
+    rat_mul(v, v, &pi);
+    rat_clear(&pi);
+}
+
+// the band [v - δ, v + δ] around a q·π end, δ = (|q| + 1)·1e-49, holding the true q·π
+static Span band_of(const Endpoint* p) {
+    Span b = { .lo_inf = false, .hi_inf = false, .ab = NULL };
+    rat_init(&b.lo); rat_init(&b.hi);
+    Rational v, d;
+    rat_init(&v); rat_init(&d);
+    end_value(p, &v);
+    rat_abs(&d, p->x);
+    Rational one = rat_one_val(), eps;
+    rat_init(&eps);
+    rat_add(&d, &d, &one);
+    rat_parse_literal(&eps, "1e-49");
+    rat_mul(&d, &d, &eps);
+    rat_sub(&b.lo, &v, &d);
+    rat_add(&b.hi, &v, &d);
+    rat_clear(&v); rat_clear(&d); rat_clear(&one); rat_clear(&eps);
+    return b;
+}
+
+// no q·π end of s has a root of P (or the other, rational, end) in its band, so the
+// 50-digit stand-in for q·π sees the same roots on each side
+static bool clear_of_bands(const Polynomial* P, const Span* s) {
+    const Endpoint* ends[2] = { &s->ab->a, &s->ab->b };
+    bool clear = true;
+    for (int i = 0; i < 2 && clear; i++) {
+        if (!ends[i]->pi || ends[i]->inf) continue;
+        Span b = band_of(ends[i]);
+        clear = !vanishes_on(P, &b);
+        const Endpoint* o = ends[1 - i];
+        if (clear && !o->inf && !o->pi) clear = rat_cmp(o->x, &b.lo) < 0 || rat_cmp(o->x, &b.hi) > 0;
+        rat_clear(&b.lo); rat_clear(&b.hi);
+    }
+    return clear;
+}
+
 // --- numeric value: adaptive Simpson ---
 
 typedef struct {
@@ -130,17 +196,27 @@ typedef struct {
 // evaluates without cancellation next to a narrow peak at o), on a finite u-range (side 0)
 // or on a half-line mapped onto t ∈ [0, 1] by u = side·(1 − t)/t, du = dt/t²
 typedef struct {
-    RatFn f;     // shifted to the origin
-    int side;    // 0, or ±1 for u ∈ [0, +∞) / (-∞, 0]
-    double tail; // the mapped integrand at t = 0: lim x²·f(x) as x → ±∞
+    RatFn f;       // shifted to the origin
+    int side;      // 0, or ±1 for u ∈ [0, +∞) / (-∞, 0]
+    double tail;   // the mapped integrand at t = 0: lim x²·f(x) as x → ±∞
+    const Expr* e; // instead of f: an expression, evaluated at x = o + u
+    double o;
 } Integrand;
 
 static double f_at(const RatFn* f, double x) { return poly_evaluate(f->num, x) / poly_evaluate(f->den, x); }
 
+// the integrand at u (from its origin)
+static double u_at(const Integrand* g, double u) {
+    if (!g->e) return f_at(&g->f, u);
+    bool ok = true;
+    double v = expr_eval(g->e, g->o + u, &ok);
+    return ok ? v : NAN;
+}
+
 static double g_at(const Integrand* g, double t) {
-    if (!g->side) return f_at(&g->f, t);
+    if (!g->side) return u_at(g, t);
     if (t == 0) return g->tail;
-    double v = f_at(&g->f, g->side * (1 - t) / t) / (t * t);
+    double v = u_at(g, g->side * (1 - t) / t) / (t * t);
     return isfinite(v) ? v : g->tail;                     // overflow far out, where g ≈ its limit
 }
 
@@ -235,7 +311,7 @@ static void add_window(Windows* W, const Rational* o, Range r) {
     Window* w = &W->w[W->n++];
     w->num = shift(W->f->num, o);
     w->den = shift(W->f->den, o);
-    w->g = (Integrand){ { w->num, w->den }, r.side, tail_of(W->f) };
+    w->g = (Integrand){ { w->num, w->den }, r.side, tail_of(W->f), NULL, 0 };
     w->a = r.side ? 0 : r.u0;                             // a half-line is mapped onto t ∈ [0, 1]
     w->b = r.side ? 1 : r.u1;
 }
@@ -281,6 +357,26 @@ static double numeric_value(const RatFn* f, const Span* s) {
     free(W.w);
     root_interval_list_free(&cuts);
     free_polynomial(dp);
+    return v;
+}
+
+// ∫ e over the span, for an e that is finite on it and decays exponentially at an infinite
+// end (tail 0): [lo, hi], or half-lines from the finite end (from 0 for the whole line).
+// *scale is the rough ∫|e| the tolerance is relative to
+static double numeric_value_expr(const Expr* e, const Span* s, double* scale) {
+    double lo = rat_to_double(&s->lo), hi = rat_to_double(&s->hi);
+    Integrand g[2];
+    double b[2] = { 1, 1 };
+    int n = 0;
+    if (!s->lo_inf && !s->hi_inf) { g[n] = (Integrand){ .e = e, .o = lo }; b[n++] = hi - lo; }
+    else if (!s->lo_inf) g[n++] = (Integrand){ .e = e, .o = lo, .side = 1 };
+    else if (!s->hi_inf) g[n++] = (Integrand){ .e = e, .o = hi, .side = -1 };
+    else { g[n++] = (Integrand){ .e = e, .side = -1 }; g[n++] = (Integrand){ .e = e, .side = 1 }; }
+    double rough = 0, v = 0;
+    for (int i = 0; i < n; i++) rough += rough_of(&g[i], 0, b[i]);
+    long budget = 4000000;
+    for (int i = 0; i < n; i++) v += adaptive(&g[i], 0, b[i], (Tol){ 1e-10 * (rough + 1e-300) / n, 40, &budget });
+    *scale = rough;
     return v;
 }
 
@@ -347,9 +443,10 @@ static int sign_at(const Expr* arg, double x) {
 #define NUDGE 1e-7 // offset from a pole that is an exact rational, for reading signs
 
 // Σ over the poles of arg inside s of the jump of atan(arg), in units of π
-static int atan_jumps(const Expr* arg, const Span* s) {
+static int atan_jumps(const Expr* arg, const Span* s, bool* ok) {
     const Polynomial* W = atan_pole_poly(arg);
     if (!W) return 0;
+    if (s->ab && !clear_of_bands(W, s)) { *ok = false; return 0; }
     RootIntervalList in = roots_in(W, s);
     int jumps = 0;
     for (int i = 0; i < in.count; i++) {                  // ±∞ on either side: ±π/2 → ∓π/2
@@ -406,8 +503,10 @@ static Expr* fn_limit(const Expr* term, const Expr* node, int side) {
     return e;
 }
 
-// lim of term as x → side·∞; NULL when its leading behaviour is not found or it grows
+// lim of term as x → side·∞; NULL when its leading behaviour is not found or it grows. A term
+// with exp, sin or cos is 0 there: the caller has checked that every e^w decays at that end
 static Expr* term_limit(const Expr* term, int side) {
+    if (expr_has_exp(term) || expr_has_trig(term)) return create_const(0);
     const Expr* node = find_atan(term);
     if (!node) node = find_fn(term, EXPR_LN);
     if (node) return fn_limit(term, node, side);
@@ -423,10 +522,12 @@ typedef struct {
     const Rational* x0;
     int inward; // +1 when the range lies to the right of x0
     int inf;    // ±1: the bound is ±∞ and x0 is unused
+    bool pi;    // the bound is x0·π (never a pole of an atan argument: π is transcendental)
 } Bound;
 
 static Expr* term_at(const Expr* term, const Bound* bd) {
     if (bd->inf) return term_limit(term, bd->inf);
+    if (bd->pi) return expr_at_pi(term, bd->x0);
     const Expr* atan_node = find_atan(term);
     const Polynomial* W = atan_node ? atan_pole_poly(atan_node->fn_arg) : NULL;
     if (!W || !zero_at(W, bd->x0)) return expr_at(term, bd->x0);
@@ -437,10 +538,18 @@ static Expr* term_at(const Expr* term, const Bound* bd) {
     return e;
 }
 
-// the order of two points of the extended real line
+// the order of two points of the extended real line (q·π against a rational by its 50-digit
+// value: clear_of_bands rules out a tie inside the band)
 static int end_cmp(const Endpoint* p, const Endpoint* q) {
     if (p->inf != q->inf) return p->inf < q->inf ? -1 : 1;
-    return p->inf ? 0 : rat_cmp(p->x, q->x);
+    if (p->inf) return 0;
+    if (p->pi == q->pi) return rat_cmp(p->x, q->x);
+    Rational u, v;
+    rat_init(&u); rat_init(&v);
+    end_value(p, &u); end_value(q, &v);
+    int c = rat_cmp(&u, &v);
+    rat_clear(&u); rat_clear(&v);
+    return c;
 }
 
 // F(b) - F(a) plus the atan jump corrections over s, folded; NULL when a limit is not found
@@ -448,7 +557,7 @@ static Expr* exact_value(const Expr* F, const Bounds* ab, const Span* s) {
     int dir = end_cmp(&ab->a, &ab->b) < 0 ? 1 : -1;
     Terms T = { NULL, 0 }, parts = { NULL, 0 };
     collect(F, 1, &T);
-    Bound at_b = { ab->b.x, -dir, ab->b.inf }, at_a = { ab->a.x, dir, ab->a.inf };
+    Bound at_b = { ab->b.x, -dir, ab->b.inf, ab->b.pi }, at_a = { ab->a.x, dir, ab->a.inf, ab->a.pi };
     bool ok = true;
     for (int i = 0; i < T.n; i++) {
         Expr* hi = ok ? term_at(T.t[i], &at_b) : NULL;
@@ -457,7 +566,7 @@ static Expr* exact_value(const Expr* F, const Bounds* ab, const Span* s) {
         if (hi) push(&parts, hi);
         if (lo) push(&parts, negated(lo));
         const Expr* atan_node = find_atan(T.t[i]);
-        int k = ok && atan_node ? atan_jumps(atan_node->fn_arg, s) : 0;
+        int k = ok && atan_node ? atan_jumps(atan_node->fn_arg, s, &ok) : 0;
         Rational kk = rat_from_int(-(long)dir * k);
         if (k) push(&parts, pi_multiple(T.t[i], atan_node, &kk));
         rat_clear(&kk);
@@ -477,31 +586,38 @@ typedef struct {
     Expr* f;
     const Bounds* ab;
     const Span* s;
+    double scale; // ∫|f| roughly: agreement is also relative to it (F(b) - F(a) may cancel to 0)
 } Problem;
 
-// the exact value when it agrees with the quadrature, else NULL with r->note set
-static void exact_or_note(DefiniteResult* r, const Problem* pb) {
-    Expr* F = integrate(pb->f, "x");
-    if (!F) { r->note = integrate_error(); return; }
+// the exact value from the antiderivative F (taken) when it agrees with the quadrature, else
+// NULL with r->note set
+static void exact_or_note(DefiniteResult* r, const Problem* pb, Expr* F) {
     Expr* v = expr_has_rootsum(F) ? NULL : exact_value(F, pb->ab, pb->s);
     bool ok = true;
     double d = v ? expr_eval(v, 0, &ok) : 0;
     if (expr_has_rootsum(F)) r->note = "the antiderivative has RootSum terms, so only the numeric value is given";
     else if (!v) r->note = "the limit of the antiderivative at infinity was not found exactly";
-    else if (ok && fabs(d - r->approx) <= AGREE * (1 + fabs(r->approx))) r->exact = v;
+    else if (ok && fabs(d - r->approx) <= AGREE * (1 + fabs(r->approx) + pb->scale)) r->exact = v;
     else r->note = "internal check failed: exact value disagrees with quadrature";
     if (v && !r->exact) free_expr(v);
     free_expr(F);
+}
+
+// the rational integrator's antiderivative, or NULL with r->note set
+static Expr* rational_antiderivative(DefiniteResult* r, const Expr* f) {
+    Expr* F = integrate((Expr*)f, "x");
+    if (!F) r->note = integrate_error();
+    return F;
 }
 
 // the span from the lower to the upper bound
 static Span span_of(const Bounds* ab) {
     bool up = end_cmp(&ab->a, &ab->b) <= 0;
     const Endpoint *lo = up ? &ab->a : &ab->b, *hi = up ? &ab->b : &ab->a;
-    Span s = { .lo_inf = lo->inf != 0, .hi_inf = hi->inf != 0 };
+    Span s = { .lo_inf = lo->inf != 0, .hi_inf = hi->inf != 0, .ab = ab };
     rat_init(&s.lo); rat_init(&s.hi);
-    if (!lo->inf) rat_set(&s.lo, lo->x);
-    if (!hi->inf) rat_set(&s.hi, hi->x);
+    if (!lo->inf) end_value(lo, &s.lo);
+    if (!hi->inf) end_value(hi, &s.hi);
     return s;
 }
 
@@ -510,7 +626,62 @@ static bool decays(const RatFn* f) {
     return poly_is_zero(f->num) || polynomial_degree(f->den) - polynomial_degree(f->num) >= 2;
 }
 
+#define DIVERGES_AT_INF "the integral diverges at infinity (the denominator's degree must exceed the numerator's by 2 or more)"
+
+// why ∫ over s cannot be taken in the exponential-sum setting, or NULL
+static const char* exp_obstacle(const ExpSumShape* sh, const Span* s) {
+    RatFn c0 = { sh->c0_num, sh->c0_den };
+    if (!clear_of_bands(sh->poles, s)) return "a bound q·pi lies too close to a pole or to the other bound to be decided";
+    const bool inf[2] = { s->lo_inf, s->hi_inf };
+    for (int side = 0; side < 2; side++) {
+        if (!inf[side]) continue;
+        if (!sh->decays[side])
+            return "at infinity the integrand must decay exponentially (exp(E) with E -> -inf in every term); oscillating terms such as cos(x)/x are not supported yet";
+        if (!decays(&c0)) return DIVERGES_AT_INF;
+    }
+    if (vanishes_on(sh->poles, s))
+        return sh->pure ? "the integrand has a pole in [a, b], so the integral diverges"
+                        : "a coefficient's denominator vanishes in [a, b] (as for sin(x)/x at 0); this is not supported yet";
+    return NULL;
+}
+
+// the antiderivative of an exponential sum, or NULL with r->note set (no elementary one,
+// or outside the integrator's reach: then only the number is given)
+static Expr* exp_antiderivative(DefiniteResult* r, const Expr* f, const ExpSumShape* sh) {
+    if (sh->pure) return rational_antiderivative(r, f);
+    RischResult I = integrate_exp(f);
+    if (I.status == RISCH_OK) return I.result;
+    free_expr(I.result);
+    r->note = I.status == RISCH_NONELEMENTARY ? "no elementary antiderivative, so only the numeric value is given" : I.reason;
+    return NULL;
+}
+
+// f with exp, sin or cos, or bounds q·π
+static DefiniteResult definite_exp(Expr* f, const Bounds* ab) {
+    DefiniteResult r = { NULL, 0, NULL, NULL };
+    ExpSumShape sh;
+    const char* why = NULL;
+    if (!expsum_shape(f, &sh, &why)) {
+        r.error = "definite integrals need a rational function or exp, sin and cos without ln or a sum in a denominator for now";
+        return r;
+    }
+    Span s = span_of(ab);
+    int dir = end_cmp(&ab->a, &ab->b);
+    r.error = exp_obstacle(&sh, &s);
+    if (!r.error && (dir == 0 || (sh.pure && poly_is_zero(sh.c0_num)))) r.exact = create_const(0);
+    else if (!r.error) {
+        double scale = 0;
+        r.approx = (dir < 0 ? 1 : -1) * numeric_value_expr(f, &s, &scale);
+        Expr* F = exp_antiderivative(&r, f, &sh);
+        if (F) exact_or_note(&r, &(Problem){ f, ab, &s, scale }, F);
+    }
+    rat_clear(&s.lo); rat_clear(&s.hi);
+    expsum_shape_free(&sh);
+    return r;
+}
+
 DefiniteResult integrate_definite(Expr* f, const Bounds* ab) {
+    if (expr_has_exp(f) || expr_has_trig(f) || expr_has_ln(f) || ab->a.pi || ab->b.pi) return definite_exp(f, ab);
     DefiniteResult r = { NULL, 0, NULL, NULL };
     Expr* c = canonicalize(f);
     if (!c) { r.error = "only polynomials and rational functions can be integrated"; return r; }
@@ -522,17 +693,79 @@ DefiniteResult integrate_definite(Expr* f, const Bounds* ab) {
     Span s = span_of(ab);
     int dir = end_cmp(&ab->a, &ab->b);
     if ((s.lo_inf || s.hi_inf) && !decays(&fn))            // before the empty range: ∫_∞^∞ x² is not 0
-        r.error = "the integral diverges at infinity (the denominator's degree must exceed the numerator's by 2 or more)";
+        r.error = DIVERGES_AT_INF;
     else if (dir == 0 || poly_is_zero(fn.num)) r.exact = create_const(0);
     else if (vanishes_on(fn.den, &s)) r.error = "the integrand has a pole in [a, b], so the integral diverges";
     else {
         r.approx = (dir < 0 ? 1 : -1) * numeric_value(&fn, &s);
-        exact_or_note(&r, &(Problem){ f, ab, &s });
+        Expr* F = rational_antiderivative(&r, f);
+        if (F) exact_or_note(&r, &(Problem){ f, ab, &s, 0 }, F);
     }
     rat_clear(&s.lo); rat_clear(&s.hi);
     free_polynomial(one);
     free_expr(c);
     return r;
+}
+
+// --- bounds from text ---
+
+// inf, +inf, oo, +oo → +1; -inf, -oo → -1; else 0
+static int infinity_sign(const char* text) {
+    int sign = 1;
+    if (*text == '+' || *text == '-') sign = *text++ == '-' ? -1 : 1;
+    return strcmp(text, "inf") == 0 || strcmp(text, "oo") == 0 ? sign : 0;
+}
+
+// a constant expression ("3/4", "-2") evaluated exactly into *out
+static bool parse_constant(Rational* out, const char* text) {
+    Expr* e = parse_and_simplify(text);
+    bool ok = e && e->type == EXPR_POLY && polynomial_degree(e->poly) <= 0;
+    if (ok) poly_coeff(out, e->poly, 0);
+    if (e) free_expr(e);
+    return ok;
+}
+
+// q·π written c·pi/d with optional c ("", "-", "3", "3*") and "/d": pi, -pi/2, 3pi/4, 2*pi
+static bool parse_pi_bound(Rational* q, const char* text) {
+    const char* p = strstr(text, "pi");
+    if (!p) return false;
+    size_t n = (size_t)(p - text);
+    char* pre = malloc(n + 1);
+    memcpy(pre, text, n);
+    pre[n] = '\0';
+    if (n && pre[n - 1] == '*') pre[--n] = '\0';
+    bool ok = true;
+    if (n == 0 || strcmp(pre, "+") == 0) rat_set_si(q, 1, 1);
+    else if (strcmp(pre, "-") == 0) rat_set_si(q, -1, 1);
+    else ok = parse_constant(q, pre);
+    free(pre);
+    const char* post = p + 2;
+    Rational d;
+    rat_init(&d);
+    if (ok && *post) ok = *post == '/' && parse_constant(&d, post + 1) && !rat_is_zero(&d);
+    if (ok && *post) rat_div(q, q, &d);
+    rat_clear(&d);
+    return ok;
+}
+
+bool parse_endpoint(Rational* out, Endpoint* end, const char* text) {
+    end->inf = infinity_sign(text);
+    end->pi = false;
+    if (end->inf) return true;
+    if (strstr(text, "pi")) {
+        if (!parse_pi_bound(out, text)) return false;
+        end->pi = !rat_is_zero(out);                       // 0·π = 0
+        return true;
+    }
+    return parse_constant(out, text);
+}
+
+// the integrand: the raw tree with exp, sin, cos or ln (definite.c checks it), else simplified
+Expr* parse_integrand(const char* text) {
+    Expr* raw = parse_input(text);
+    if (raw && (expr_has_exp(raw) || expr_has_ln(raw) || expr_has_trig(raw))) return raw;
+    if (raw) free_expr(raw);
+    return parse_and_simplify(text);
 }
 
 void definite_free(DefiniteResult* r) {

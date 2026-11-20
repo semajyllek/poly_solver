@@ -1072,6 +1072,31 @@ Example: `∫_{-1}^{1} (x²+1)/(x⁴+3x²+1) dx = 1/5 * sqrt(5) * pi`. The naive
 
 Infinite examples: `∫_{-∞}^{∞} 1/(x⁴+1) = 1/2 * sqrt(2) * pi`, `∫_0^∞ x/(x³+1) = 2/9 * sqrt(3) * pi`, `∫_{-∞}^{∞} 1/(x⁶+2) = 1/3 * 2^(1/6) * pi`.
 
+**Exponential sums and bounds q·π** (`definite_exp`). The same steps apply when f has exp, sin or cos, or a bound is a rational multiple of π (`pi`, `-pi/2`, `3pi/4`, parsed by `parse_endpoint`). f must be an exponential sum `c_0 + Σ c_w·e^w` (§11.7: no `ln`, no sum in a denominator). `expsum_shape` reports c_0, the product of the coefficient denominators, and, at each end, whether every `w ≠ 0` has `Re w → −∞`. The differences from the rational case:
+1. **Poles.** A root of a coefficient denominator in `[a, b]` is not necessarily a pole, because the terms can cancel: `sin(x)/x` and `(x·cos(x) − sin(x))/x²` are finite at 0. Such a range is reported as unsupported. When f = c_0 is a rational function, the root is a real pole, and divergence is reported as before.
+2. **Infinite ends.** An end at ±∞ is accepted only when every `w ≠ 0` has `Re w → −∞` there.
+   - Then each term `y_w·e^w` of F tends to 0, since its coefficients are rational and `y_w ≠ 0` only for those w.
+   - c_0 must decay like `1/x²`, as in step 1. Otherwise F's rational part is unbounded while the rest tends to 0, so the integral diverges.
+   - An oscillating term with a decaying coefficient, such as `cos(x)/x` on `[1, ∞)`, gives a conditionally convergent integral. Quadrature cannot confirm it, so it is reported as unsupported. So is a growing term (`exp(x)` on `[0, ∞)`): no divergence is claimed there.
+3. **q·π.**
+   - In the span, q·π is replaced by `q·PI_50`, where `|π − PI_50| < 10⁻⁵⁰`. A polynomial with rational coefficients never vanishes at q·π, since π is transcendental.
+   - So it is enough that the band `q·PI_50 ± (|q| + 1)·10⁻⁴⁹` holds no root of the pole polynomial, of an atan argument's denominator (for jumps), or of the other bound (for the order). `clear_of_bands` checks this exactly, and the result is reported as undecided otherwise.
+4. **Evaluation.** `expr_at_pi` evaluates F at q·π exactly (`constfold.c`):
+   - a polynomial p becomes `Σ c_k·q^k·π^k`, so π lands in the multiple-of-π slot and `π^k` becomes a factor;
+   - `sin/cos(r·π)` takes `surd.c`'s table value (`trig_value`: `cos(π/3) = 1/2`, `sin(3π/4) = sqrt(2)/2`), and stays symbolic off the table (`sin(pi/5)`);
+   - `sin/cos(a + r·π)` with 2r an integer is a quarter-turn shift: `sin(a + π) = −sin(a)`, `cos(a + π/2) = −sin(a)`;
+   - other arguments stay symbolic (`cos(pi^2)`, `exp(pi)`);
+   - at rational points, `exp(0) = 1`, `sin(0) = 0`, `cos(0) = 1`, `sin(−r) = −sin(r)` and `cos(−r) = cos(r)`.
+5. **Antiderivative.** F comes from `integrate_exp`, or from the rational integrator when f = c_0. Without an elementary antiderivative, or when the integrator does not reach f, only the number is given: `∫₀¹ exp(−x²) ~ 0.7468241328`.
+6. **Check.** Quadrature runs on `expr_eval(f)`: one window for a finite range, or half-lines mapped onto `[0, 1]` from the finite end (from 0 for the whole line). The value at `t = 0` is 0 because f decays exponentially. The exact value must agree to 10⁻⁸, relative to the larger of the value and the rough `∫|f|`. F(b) − F(a) can cancel to 0 while f reaches hundreds: D(Σ r·e^{−x}·sin/cos) on `[−π, ∞)` was the failing case.
+
+Examples: `∫₀^π x·sin(x) = pi`, `∫₀^π x²·sin(x) = pi^2 − 4`, `∫₀¹ x·exp(x) = 1`, `∫₀^∞ x·exp(−x)·sin(x) = 1/2`, `∫₀^π cos(x + 1) = −2·sin(1)`, `∫₀^π 1/(x − 4) = ln|4 − π| − 2·ln(2)`.
+
+Tests:
+- `test_reg_definite_exp` pins 19 values, 2 numeric-only values and 6 refusals.
+- `test_prop_definite_exp` integrates `D(Σ r(x)·exp(−x)·sin/cos(kx))` over random bounds `q·π` (q a multiple of 1/4) and `[q·π, ∞)`. It checks that each value equals `F(b) − F(a)` numerically and that every sin/cos is folded away.
+- The SymPy `check_definite_exp` stream compares with `mpmath.quad` to 28 digits on rational, q·π and infinite bounds, and also checks the refusals at infinity. In 300 cases (seeds 100–399) there were 0 failures: 201 exact values, 42 numeric-only (with `exp(−x²)`), and 57 refusals at a non-decaying infinite end.
+
 ### 11.6 Integration with exp and ln: the Risch algorithm (`expfield.c`, `risch.c`)
 
 **Setting.** The field is Q(x)(θ), with θ = exp(v) and v a nonconstant polynomial, so θ' = v'·θ and θ is transcendental over Q(x). The integrands are Laurent polynomials `f = Σ a_k·θ^k` with `a_k ∈ Q(x)`.
