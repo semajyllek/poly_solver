@@ -10,6 +10,8 @@ make cli          # Build CLI binary (poly_solver)
 make clean        # Remove object files and binaries
 make sanitize     # Rebuild the tests with AddressSanitizer + UBSan
 make check        # fast lane after a change (seconds): the suite with its CPU time + golden CLI corpus
+make lib          # libpolysolver.a (LIB_SRCS); poly_solver.h is the umbrella header for library users
+make examples     # build and run examples/*.c against the library (the README's C examples and their output)
 POLY_SEED=7 ./test_symbolic_solver          # property tests with another seed
 POLY_TIME=1 ./test_symbolic_solver          # CPU time of each regression/property test, on stderr
 POLY_ONLY=test_prop_k2poly ./test_symbolic_solver  # one property/regression test alone (its random inputs differ)

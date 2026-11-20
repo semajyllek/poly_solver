@@ -50,6 +50,28 @@ static void push_legacy_views(Solutions* sol, const IrrationalFactor* e) {
     }
 }
 
+#define TINY_ROOT 1e-4 // below this, roots are refined relatively and printed in scientific form
+
+static bool is_tiny(const Rational* q) { return fabs(rat_to_double(q)) < TINY_ROOT; }
+
+// a root near 0 (x^3 - 10^30·x + 1 has one near 10^-30): bisect on until the interval keeps
+// one sign and its width is 10^-12 of its size, so the digits shown are significant
+static void refine_relative(RootInterval* r, const Polynomial* f) {
+    Rational w, lo, hi;
+    rat_init(&w); rat_init(&lo); rat_init(&hi);
+    for (int step = 0; step < 4000; step++) {                 // a nonzero root: always ends far sooner
+        rat_abs(&lo, &r->lo); rat_abs(&hi, &r->hi);
+        rat_sub(&w, &r->hi, &r->lo);
+        bool one_sign = mpq_sgn(r->lo.val) * mpq_sgn(r->hi.val) > 0;
+        Rational* near = rat_cmp(&lo, &hi) < 0 ? &lo : &hi;
+        mpq_div_2exp(near->val, near->val, 40);                // 2^-40 ≈ 10^-12 of the root
+        if (one_sign && rat_cmp(&w, near) <= 0) break;
+        mpq_div_2exp(w.val, w.val, 1);                         // one more bisection
+        refine_root(r, f, &w);
+    }
+    rat_clear(&w); rat_clear(&lo); rat_clear(&hi);
+}
+
 // isolate and refine the real roots of an irreducible factor of degree >= 2
 static void solve_irrational(Solutions* sol, const Polynomial* f, int mult) {
     RootIntervalList L = isolate_real_roots(f);
@@ -57,7 +79,10 @@ static void solve_irrational(Solutions* sol, const Polynomial* f, int mult) {
     rat_init(&width);
     mpz_ui_pow_ui(mpq_denref(width.val), 10, DECIMAL_DIGITS + 2);
     mpz_set_ui(mpq_numref(width.val), 1);
-    for (int i = 0; i < L.count; i++) refine_root(&L.items[i], f, &width);
+    for (int i = 0; i < L.count; i++) {
+        refine_root(&L.items[i], f, &width);
+        if (is_tiny(&L.items[i].lo) || is_tiny(&L.items[i].hi)) refine_relative(&L.items[i], f);
+    }
     rat_clear(&width);
     sol->irr = realloc(sol->irr, (size_t)(sol->num_irr + 1) * sizeof(IrrationalFactor));
     IrrationalFactor* e = &sol->irr[sol->num_irr++];
@@ -98,7 +123,16 @@ static void append_approx(StrBuf* sb, const RootInterval* r) {
     rat_init(&mid);
     midpoint(&mid, r);
     sb_append(sb, " ~ ");
-    sb_append_owned(sb, rat_to_decimal(&mid, DECIMAL_DIGITS));
+    if (is_tiny(&mid)) {                                      // 10 significant digits: 1.000000000e-30
+        mpf_t m;
+        mpf_init2(m, 256);
+        mpf_set_q(m, mid.val);
+        char* s = NULL;
+        gmp_asprintf(&s, "%.9Fe", m);
+        sb_append(sb, s);
+        free(s);
+        mpf_clear(m);
+    } else sb_append_owned(sb, rat_to_decimal(&mid, DECIMAL_DIGITS));
     rat_clear(&mid);
 }
 
@@ -179,7 +213,8 @@ static void append_known_pair(StrBuf* sb, const RootSet* rs, const Rational* the
     else sb_append(sb, "+/- ");
     if (!(im->type == EXPR_CONST && rat_is_one(&im->constant))) { append_part(sb, im); sb_append(sb, " * "); }
     sb_append(sb, "i");
-    sb_appendf(sb, " ~ (%.10f +/- %.10fi)", a, b);
+    if (fabs(a) < TINY_ROOT && fabs(b) < TINY_ROOT) sb_appendf(sb, " ~ (%.9e +/- %.9ei)", a, b); // significant digits
+    else sb_appendf(sb, " ~ (%.10f +/- %.10fi)", a, b);
     if (re) free_expr(re);
     free_expr(im);
 }

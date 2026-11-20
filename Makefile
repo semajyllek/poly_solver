@@ -29,6 +29,25 @@ $(CLI_TARGET): $(CLI_OBJS)
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
+# static library of everything but the entry points: cc -I. prog.c libpolysolver.a -lgmp -lm
+LIB_OBJS = $(LIB_SRCS:.c=.o)
+LIB_TARGET = libpolysolver.a
+
+lib: $(LIB_TARGET)
+
+$(LIB_TARGET): $(LIB_OBJS)
+	ar rcs $@ $(LIB_OBJS)
+
+# the README's library examples, built against the library and run
+EXAMPLES = rationals polynomials factor_solve expressions integrate definite linear big_numbers
+EXAMPLE_BINS = $(addprefix examples/,$(EXAMPLES))
+
+examples/%: examples/%.c $(LIB_TARGET) poly_solver.h
+	$(CC) $(CFLAGS) -I. -o $@ $< $(LIB_TARGET) $(LDFLAGS)
+
+examples: $(EXAMPLE_BINS)
+	@for e in $(EXAMPLE_BINS); do echo "== $$e"; ./$$e || exit 1; done
+
 # the fast lane after a change: the suite (with its CPU time) and the golden CLI corpus
 check: $(TEST_TARGET) $(CLI_TARGET)
 	./$(TEST_TARGET) | tail -1
@@ -40,8 +59,8 @@ sanitize: clean
 	        LDFLAGS="$(LDFLAGS) -fsanitize=address,undefined"
 
 clean:
-	rm -f *.o *.d $(TEST_TARGET) $(CLI_TARGET)
+	rm -f *.o *.d examples/*.d $(TEST_TARGET) $(CLI_TARGET) $(LIB_TARGET) $(EXAMPLE_BINS)
 
 -include $(TEST_SRCS:.c=.d) main.d
 
-.PHONY: all cli clean sanitize check
+.PHONY: all cli lib examples clean sanitize check

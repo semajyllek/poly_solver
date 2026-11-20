@@ -89,7 +89,8 @@ static int handle_definite(const char* f_text, const char* a_text, const char* b
         DefiniteResult r = integrate_definite(f, &ab);
         if (r.error) fprintf(stderr, "Error: %s.\n", r.error);
         else {
-            if (r.exact) { char* s = expr_to_string(r.exact); printf("%s ~ %.10g\n", s, r.approx); free(s); }
+            if (r.exact && r.note) { char* s = expr_to_string(r.exact); printf("%s (%s)\n", s, r.note); free(s); }
+            else if (r.exact) { char* s = expr_to_string(r.exact); printf("%s ~ %.10g\n", s, r.approx); free(s); }
             else printf("~ %.10g (%s)\n", r.approx, r.note);
             rc = 0;
         }

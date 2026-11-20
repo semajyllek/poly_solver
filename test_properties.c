@@ -270,6 +270,11 @@ static void test_reg_integrate_definite(void) {
         { "1/(x^4+1)", "-3", "-1/2", "-1/4 * sqrt(2) * ln(5 + 19 * sqrt(2)) + 1/8 * sqrt(2) * ln(697) - 1/4 * sqrt(2) * atan(25/12 * sqrt(2)) + 1/4 * sqrt(2) * pi" }, // ln(697²)/16
         { "1/(x^2-3)", "2", "3", "1/3 * sqrt(3) * ln(1 + sqrt(3)) - 1/6 * sqrt(3) * ln(2)" },   // ln 4 = 2 ln 2
         { "x^2", "0", "3", "9" },
+        { "x^100", "0", "1", "1/101" },                                  // the quadrature check unshifted: (1+u)^100 cancels
+        { "x^2000+1", "-1", "1", "4004/2001" },                          // above the shift's degree limit
+        { "1/(x^2+1)", "0", "1e40", "atan(10000000000000000000000000000000000000000)" }, // geometric pieces from 0
+        { "1/(x^2+1e-300)", "0", "1", "1000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+          " * atan(1000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000)" }, // a peak of width 1e-150
         { "x", "2", "2", "0" },
         { "1/(x^4+1)", "-inf", "inf", "1/2 * sqrt(2) * pi" },          // infinite bounds
         { "1/(x^4+1)", "0", "inf", "1/4 * sqrt(2) * pi" },
@@ -307,7 +312,14 @@ static void test_reg_integrate_definite(void) {
     assert(d.error);
     d = definite_str("x^2/(x^4+x^2+3)", "-inf", "inf");              // RootSum: number only
     assert(!d.error && !d.exact && fabs(d.approx - 1.486903682) < 1e-8);
-    printf("  test_reg_integrate_definite PASSED (%zu exact, 7 special)\n", sizeof cases / sizeof cases[0]);
+    definite_free(&d);
+    d = definite_str("x^2", "0", "1e200");                            // 10^600/3: exact, beyond doubles
+    assert(!d.error && d.exact && d.note && strstr(d.note, "double"));
+    char* big = expr_to_string(d.exact);
+    assert(strlen(big) == 603 && strncmp(big, "1000", 4) == 0 && strcmp(big + 601, "/3") == 0);
+    free(big);
+    definite_free(&d);
+    printf("  test_reg_integrate_definite PASSED (%zu exact, 8 special)\n", sizeof cases / sizeof cases[0]);
 }
 
 // expr_lead: the leading coefficient and degree of the expression shapes that appear in
@@ -566,6 +578,10 @@ static void test_reg_solve_irrational_exact(void) {
                      "x = -1/2 * 2^(1/6) * sqrt(3) +/- 1/2 * 2^(1/6) * i ~ (-0.9720806486 +/- 0.5612310242i)" },
         { "x^5 - 1", "x = 1, x = cos(2*pi/5) +/- sin(2*pi/5) * i ~ (0.3090169944 +/- 0.9510565163i), "
                      "x = -cos(pi/5) +/- sin(pi/5) * i ~ (-0.8090169944 +/- 0.5877852523i)" },
+        { "x^3 - 1000000000000000000000000000000x + 1",                    // a root near 10^-30: significant digits
+          "x ~ -1000000000000000.0000000000, x ~ 1.000000000e-30, x ~ 999999999999999.9999999999" },
+        { "100000000000000000000x^3 - 1", "x = 1/10000000 * 10^(1/3) ~ 2.154434690e-07, "
+          "x = -1/20000000 * 10^(1/3) +/- 1/20000000 * 10^(1/3) * sqrt(3) * i ~ (-1.077217345e-07 +/- 1.865795172e-07i)" },
     };
     for (size_t i = 0; i < sizeof known / sizeof known[0]; i++) {
         q = parse_and_simplify(known[i][0]);

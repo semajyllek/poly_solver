@@ -9,7 +9,8 @@ typedef struct {
     Expr* exact;       // exact value, or NULL when only the numeric value is available
     double approx;     // adaptive quadrature, independent of the antiderivative
     const char* error; // set when there is no value at all (a pole in [a, b], not rational)
-    const char* note;  // set when exact is NULL but approx is valid: the reason
+    const char* note;  // set when exact is NULL but approx is valid: the reason (or, with exact, why
+                       // approx could not be compared: a value beyond double precision)
 } DefiniteResult;
 
 // a bound: the rational x (x·π when pi, x ≠ 0), or ±∞ when inf = ±1 (x is then unused)

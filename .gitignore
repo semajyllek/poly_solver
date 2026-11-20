@@ -3,3 +3,6 @@ poly_solver
 test_symbolic_solver
 *.d
 __pycache__/
+libpolysolver.a
+examples/*
+!examples/*.c

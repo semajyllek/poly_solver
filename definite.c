@@ -192,19 +192,27 @@ typedef struct {
     long* budget; // remaining function evaluations, shared by every piece
 } Tol;
 
-// f near an origin o as f(o + u), polynomials in u shifted exactly (so u is small and
-// evaluates without cancellation next to a narrow peak at o), on a finite u-range (side 0)
-// or on a half-line mapped onto t ∈ [0, 1] by u = side·(1 − t)/t, du = dt/t²
+// a polynomial p near an origin o, in doubles: p(o + u) = c(u + off), with c either p shifted
+// exactly to o (off = 0) or p itself (off = o), whichever rounds less over the window
 typedef struct {
-    RatFn f;       // shifted to the origin
-    DPoly dn, dd;  // f's numerator and denominator in doubles, converted once
+    DPoly c;
+    double off;
+} Near;
+
+static double near_at(const Near* p, double u) { return dpoly_eval(&p->c, u + p->off); }
+
+// f near an origin o as f(o + u) (Near: shifted, so u is small and evaluates without
+// cancellation next to a narrow peak at o, or not, when the shift itself would cancel), on a
+// finite u-range (side 0) or on a half-line mapped onto t ∈ [0, 1] by u = side·(1 − t)/t, du = dt/t²
+typedef struct {
+    Near n, d;     // f's numerator and denominator
     int side;      // 0, or ±1 for u ∈ [0, +∞) / (-∞, 0]
     double tail;   // the mapped integrand at t = 0: lim x²·f(x) as x → ±∞
     const Expr* e; // instead of f: an expression, evaluated at x = o + u
     double o;
 } Integrand;
 
-static double f_at(const Integrand* g, double x) { return dpoly_eval(&g->dn, x) / dpoly_eval(&g->dd, x); }
+static double f_at(const Integrand* g, double u) { return near_at(&g->n, u) / near_at(&g->d, u); }
 
 // the integrand at u (from its origin)
 static double u_at(const Integrand* g, double u) {
@@ -286,9 +294,8 @@ static Polynomial* shift(const Polynomial* p, const Rational* o) {
     return r;
 }
 
-// one quadrature window: f shifted to an origin, over a range of u (t ∈ [0, 1] when mapped)
+// one quadrature window: f near an origin, over a range of u (t ∈ [0, 1] when mapped)
 typedef struct {
-    Polynomial *num, *den;
     Integrand g;
     double a, b;
 } Window;
@@ -306,15 +313,68 @@ typedef struct {
     int side;
 } Range;
 
-// add the window at origin o over the range r
-static void add_window(Windows* W, const Rational* o, Range r) {
+#define SHIFT_MAX_DEGREE 32 // the exact shift costs O(deg²) big rationals; above this p stays as it is
+
+// Horner's error bound for c at t, up to the unit round-off: Σ |c_i|·|t|^i
+static double horner_bound(const DPoly* c, double t) {
+    double b = 0;
+    for (int i = c->deg; i >= 0; i--) b = b * fabs(t) + fabs(c->c[i]);
+    return b;
+}
+
+// p near o over r: shifted when that bounds the round-off lower at the window's far end |u|
+// (or u = 1 on a half-line, where the peak next to o matters), else p's own coefficients;
+// (1 + u)^100 from x^100 at o = 1 cancels catastrophically, x² - 100x + 2500.0001 at 50 does not
+static Near near_of(const Polynomial* p, const Rational* o, const Range* r) {
+    double od = rat_to_double(o), u = r->side ? 1 : fmax(fabs(r->u0), fabs(r->u1));
+    Near plain = { dpoly_from(p), od };
+    if (polynomial_degree(p) > SHIFT_MAX_DEGREE) return plain;
+    Polynomial* s = shift(p, o);
+    Near shifted = { dpoly_from(s), 0 };
+    free_polynomial(s);
+    bool use = horner_bound(&shifted.c, u) <= horner_bound(&plain.c, od + u * (r->side ? r->side : 1));
+    dpoly_free(use ? &plain.c : &shifted.c);
+    return use ? shifted : plain;
+}
+
+#define WIDE_WINDOW 64.0  // a finite window wider than this many peak scales is cut geometrically
+#define MAX_PIECES 1100   // geometric pieces per window: 2^1100 spans every double
+
+// the window at origin o over the range r
+static void push_window(Windows* W, const Rational* o, Range r) {
     W->w = realloc(W->w, (size_t)(W->n + 1) * sizeof(Window));
     Window* w = &W->w[W->n++];
-    w->num = shift(W->f->num, o);
-    w->den = shift(W->f->den, o);
-    w->g = (Integrand){ { w->num, w->den }, dpoly_from(w->num), dpoly_from(w->den), r.side, tail_of(W->f), NULL, 0 };
+    w->g = (Integrand){ .n = near_of(W->f->num, o, &r), .d = near_of(W->f->den, o, &r), .side = r.side, .tail = tail_of(W->f) };
     w->a = r.side ? 0 : r.u0;                             // a half-line is mapped onto t ∈ [0, 1]
     w->b = r.side ? 1 : r.u1;
+}
+
+// the width of a peak of 1/den at o: half the least |c_0/c_k|^(1/k) of den(o + u) = Σ c_k·u^k,
+// a lower bound on the distance from o to den's nearest root; 1 above SHIFT_MAX_DEGREE
+static double peak_scale(const Polynomial* den, const Rational* o) {
+    if (polynomial_degree(den) > SHIFT_MAX_DEGREE) return 1;
+    Polynomial* s = shift(den, o);
+    DPoly c = dpoly_from(s);
+    double m = INFINITY;
+    for (int k = 1; k <= c.deg; k++)
+        if (c.c[k] != 0) m = fmin(m, pow(fabs(c.c[0] / c.c[k]), 1.0 / k));
+    dpoly_free(&c);
+    free_polynomial(s);
+    return m / 2;
+}
+
+// add the window at origin o over r; a finite one, [0, h] or [-h, 0], wider than WIDE_WINDOW peak
+// scales s goes in pieces [0, s], [s, 2s], [2s, 4s], ... toward h, so a peak at o is not lost
+// among uniform pieces of width h/64 (1/(x^2 + 1) on [0, 1e40], 1/(x^2 + 1e-300) on [0, 1])
+static void add_window(Windows* W, const Rational* o, Range r) {
+    double h = r.u0 + r.u1;                               // the far end, signed: the other end is 0
+    double s = r.side ? INFINITY : fmax(peak_scale(W->f->den, o), fabs(h) * ldexp(1, -MAX_PIECES));
+    if (r.side || !(fabs(h) > WIDE_WINDOW * s)) { push_window(W, o, r); return; }
+    for (double a = 0, b = s; a < fabs(h); a = b, b *= 2) {
+        double e = fmin(b, fabs(h));
+        push_window(W, o, h > 0 ? (Range){ a, e, 0 } : (Range){ -e, -a, 0 });
+        b = e;
+    }
 }
 
 // the windows from p to q, where a NULL p is -∞ and a NULL q is +∞: a half-line anchored at
@@ -353,8 +413,7 @@ static double numeric_value(const RatFn* f, const Span* s) {
     long budget = 4000000;
     for (int i = 0; i < W.n; i++) {
         v += adaptive(&W.w[i].g, W.w[i].a, W.w[i].b, (Tol){ 1e-10 * (rough + 1e-300) / W.n, 40, &budget });
-        free_polynomial(W.w[i].num); free_polynomial(W.w[i].den);
-        dpoly_free(&W.w[i].g.dn); dpoly_free(&W.w[i].g.dd);
+        dpoly_free(&W.w[i].g.n.c); dpoly_free(&W.w[i].g.d.c);
     }
     free(W.w);
     root_interval_list_free(&cuts);
@@ -665,6 +724,11 @@ static void exact_or_note(DefiniteResult* r, const Problem* pb, Expr* F) {
     if (expr_has_rootsum(F)) r->note = "the antiderivative has RootSum terms, so only the numeric value is given";
     else if (!v) r->note = "a limit of the antiderivative (at infinity, or where tan is infinite) was not found exactly";
     else if (ok && fabs(d - r->approx) <= AGREE * (1 + fabs(r->approx) + pb->scale)) r->exact = v;
+    else if (ok && isinf(d)) {                            // beyond doubles (x^2 on [0, 1e200]): nothing to compare
+        r->exact = v;
+        r->approx = d;
+        r->note = "beyond double precision, so not compared with quadrature";
+    }
     else r->note = "internal check failed: exact value disagrees with quadrature";
     if (v && !r->exact) free_expr(v);
     free_expr(F);
