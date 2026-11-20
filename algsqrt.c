@@ -4,6 +4,7 @@
 #include "expfield.h"
 #include "kpoly.h"
 #include "factor.h"
+#include "residue.h"
 #include <stdlib.h>
 
 // a + b·y
@@ -248,7 +249,11 @@ static bool conv(const Expr* e, SqCtx* c, SqFn* out) {
 
 // b·sqrt(U): c·sqrt(U), p·sqrt(U), or (n·sqrt(U))/d
 static Expr* times_root(const QFn* b, const Polynomial* U) {
-    Expr* s = create_sqrt(create_poly_expr(poly_copy(U)));
+    Rational u;
+    rat_init(&u);
+    poly_coeff(&u, U, 0);
+    Expr* s = create_sqrt(polynomial_degree(U) == 0 ? create_const_rat(&u) : create_poly_expr(poly_copy(U))); // sqrt(2) a constant
+    rat_clear(&u);
     Rational k;
     rat_init(&k);
     Expr* n;
@@ -600,10 +605,171 @@ static Expr* back_sum(const Expr* F, const Back* B) {
 
 // --- integration ---
 
+// --- conics without a rational point: ∫ N/(U^m·y) by reduction (U = a·x² + b·x + c) ---
+
+// b·y = N/(U^m·y) for b = P/U^k: (N, m) = (P·U, 0) when k = 0, else (P, k - 1); false when den(b)
+// is not a power of U (the monic den is (U/lc)^k, so P = num·lc^k)
+static bool as_reduction(const Polynomial* U, const QFn* b, Polynomial** N, int* m) {
+    int k = polynomial_degree(b->den) / 2;
+    Rational lc, lk;
+    rat_init(&lc); rat_init(&lk);
+    poly_coeff(&lc, U, 2);
+    Polynomial* Um = poly_copy(U);
+    poly_make_monic(Um);
+    Polynomial* Uk = poly_pow(Um, (unsigned)k);
+    bool ok = polynomial_degree(b->den) == 2 * k && same_poly(Uk, b->den);
+    if (ok) {
+        rat_pow_int(&lk, &lc, k);
+        Polynomial* P = poly_scale(b->num, &lk);
+        *N = k == 0 ? poly_multiply(P, U) : poly_copy(P);
+        *m = k == 0 ? 0 : k - 1;
+        free_polynomial(P);
+    }
+    free_polynomial(Um); free_polynomial(Uk);
+    rat_clear(&lc); rat_clear(&lk);
+    return ok;
+}
+
+// Q'·U + h·Q·U' for the derivative of Q·y/U^m (h = 1/2 - m): D(Q·y/U^m) = (Q'U + h·Q·U')/(U^m·y)
+static Polynomial* deriv_numerator(const Polynomial* U, const Polynomial* Q, const Rational* h) {
+    Polynomial *dQ = poly_derivative(Q), *dU = poly_derivative(U), *l = poly_multiply(dQ, U), *qu = poly_multiply(Q, dU);
+    Polynomial *r = poly_scale(qu, h), *s = poly_add(l, r);
+    free_polynomial(dQ); free_polynomial(dU); free_polynomial(l); free_polynomial(qu); free_polynomial(r);
+    return s;
+}
+
+// one step for m >= 1: N/(U^m·y) = D(Q·y/U^m) + N1/(U^(m-1)·y), with Q ≡ N·U'^-1/h mod U so that
+// U divides N - (Q'U + h·Q·U'); returns N1
+static Polynomial* reduce_step(const Polynomial* U, const Polynomial* N, int m, Polynomial** Q) {
+    Rational h;
+    rat_init(&h);
+    mpq_set_si(h.val, 1 - 2 * m, 2);
+    Polynomial* dU = poly_derivative(U);
+    PolyBezout bz = poly_xgcd(dU, U);                         // s·U' + t·U = 1 (U square-free)
+    Polynomial *ns = poly_multiply(N, bz.s), *q = poly_mod(ns, U), *ih = create_polynomial();
+    Rational inv;
+    rat_init(&inv);
+    mpq_inv(inv.val, h.val);
+    *Q = poly_scale(q, &inv);
+    Polynomial *D = deriv_numerator(U, *Q, &h), *rest = poly_subtract(N, D), *N1 = poly_divide(rest, U);
+    free_polynomial(dU); free_polynomial(ns); free_polynomial(q); free_polynomial(ih); free_polynomial(D); free_polynomial(rest);
+    free_bezout(&bz);
+    rat_clear(&h); rat_clear(&inv);
+    return N1;
+}
+
+// m = 0: N/y = D(Q·y) + λ/y with N = Q'U + Q·U'/2 + λ, Q solved from the top coefficient down
+// (x^j in Q puts a·(j + 1) on x^(j+1)); returns Q
+static Polynomial* reduce_base(const Polynomial* U, const Polynomial* N, Rational* lambda) {
+    Rational a, c, half;
+    rat_init(&a); rat_init(&c); rat_init(&half);
+    poly_coeff(&a, U, 2);
+    mpq_set_si(half.val, 1, 2);
+    Polynomial *Q = create_polynomial(), *R = poly_copy(N);
+    for (int j = polynomial_degree(N) - 1; j >= 0; j--) {
+        poly_coeff(&c, R, j + 1);
+        Rational k = rat_from_int(j + 1);
+        rat_mul(&k, &k, &a);
+        rat_div(&c, &c, &k);                                  // q_j
+        Polynomial* t = create_polynomial();
+        add_term(t, &c, j);
+        Polynomial *D = deriv_numerator(U, t, &half), *R2 = poly_subtract(R, D), *Q2 = poly_add(Q, t);
+        free_polynomial(t); free_polynomial(D); free_polynomial(R); free_polynomial(Q);
+        R = R2; Q = Q2;
+        rat_clear(&k);
+    }
+    poly_coeff(lambda, R, 0);                                 // R is the constant λ now
+    free_polynomial(R);
+    rat_clear(&a); rat_clear(&c); rat_clear(&half);
+    return Q;
+}
+
+// λ·∫ 1/y for deg U = 2: (λ/√A)·atan(√A·(x + b/(2a))/y), A = -a, or (λ/√a)·ln|2a·x + b + 2√a·y|
+static Expr* base_integral(const Polynomial* U, const Rational* lambda) {
+    Rational a, b, A, r, c1, z0;
+    rat_init(&a); rat_init(&b); rat_init(&A); rat_init(&r); rat_init(&c1); rat_init(&z0);
+    poly_coeff(&a, U, 2); poly_coeff(&b, U, 1);
+    bool neg = rat_is_negative(&a);
+    rat_abs(&A, &a);
+    mpz_t m;
+    mpz_init(m);
+    rat_sqrt_split(&A, &r, m);                                // sqrt|a| = r·sqrt(m)
+    Rational mq;
+    rat_init(&mq);
+    mpq_set_z(mq.val, m);
+    rat_mul(&c1, &r, &mq);
+    mpq_inv(c1.val, c1.val);
+    rat_mul(&c1, &c1, lambda);                                // λ/sqrt|a| = c1·sqrt(m)
+    Expr* y = create_sqrt(create_poly_expr(poly_copy(U))), *body;
+    Polynomial* lin = create_polynomial();
+    if (neg) {                                                // atan(r·sqrt(m)·(x + b/(2a))/y)
+        rat_add(&z0, &a, &a);
+        rat_div(&z0, &b, &z0);
+        Rational one = rat_one_val();
+        add_term(lin, &one, 1); add_term(lin, &z0, 0);
+        rat_clear(&one);
+        body = create_atan(create_div(surd_times(&r, m, create_poly_expr(lin)), y));
+    } else {                                                  // ln|2a·x + b + 2r·sqrt(m)·y|
+        Rational a2, r2;
+        rat_init(&a2); rat_init(&r2);
+        rat_add(&a2, &a, &a); rat_add(&r2, &r, &r);
+        add_term(lin, &a2, 1); add_term(lin, &b, 0);
+        body = create_ln(create_add(create_poly_expr(lin), surd_times(&r2, m, y)));
+        rat_clear(&a2); rat_clear(&r2);
+    }
+    Expr* e = surd_times(&c1, m, body);
+    rat_clear(&a); rat_clear(&b); rat_clear(&A); rat_clear(&r); rat_clear(&c1); rat_clear(&z0); rat_clear(&mq);
+    mpz_clear(m);
+    return e;
+}
+
+// ∫ b·y by reduction when den(b) is a power of U: Σ Q_i·y/U^(m_i) + λ·∫ 1/y, the algebraic part
+// checked exactly (its derivative plus λ/y must be b·y); NULL with *why otherwise
+static Expr* integrate_by_reduction(const SqCtx* c, const QFn* b, const char** why) {
+    Polynomial* N = NULL;
+    int m = 0;
+    if (!as_reduction(c->U, b, &N, &m)) {
+        *why = "this square root of a quadratic has no rational parametrization over Q (the conic y^2 = U has no rational point), and only p(x)·sqrt(U)^(2k+1) is reduced without one";
+        return NULL;
+    }
+    QFn G = qfn_zero();                                        // Σ Q_i/U^(m_i): the coefficient of y
+    for (; m >= 1; m--) {
+        Polynomial* Q;
+        Polynomial* N1 = reduce_step(c->U, N, m, &Q);
+        Polynomial* Um = poly_pow(c->U, (unsigned)m);
+        QFn t = qfn_from(Q, Um), s = qfn_add(&G, &t, 1);
+        qfn_free(&G); qfn_free(&t);
+        G = s;
+        free_polynomial(N);
+        N = N1;
+    }
+    Rational lambda;
+    rat_init(&lambda);
+    Polynomial* Q0 = reduce_base(c->U, N, &lambda);
+    QFn q0 = qfn_poly(Q0), s = qfn_add(&G, &q0, 1);
+    qfn_free(&G); qfn_free(&q0);
+    G = s;
+    SqFn alg = { qfn_zero(), G }, d = sq_deriv(c, &alg);
+    QFn lu = qfn_from(poly_constant(&lambda), poly_copy(c->U)), nb = qfn_add(&d.b, &lu, 1);   // + λ/y = λ/U·y
+    SqFn want = { qfn_zero(), qfn_copy(b) }, got = { qfn_copy(&d.a), nb };
+    Expr* F = NULL;
+    if (!sq_equal(&got, &want)) *why = "internal check failed: the square-root reduction does not differentiate back";
+    else {
+        F = sq_is_zero(&alg) ? NULL : sq_expr(&alg, c->U);
+        if (!rat_is_zero(&lambda)) F = expr_append_sum(F, base_integral(c->U, &lambda));
+        if (!F) F = create_const(0);
+    }
+    sq_free(&alg); sq_free(&d); sq_free(&want); sq_free(&got);
+    qfn_free(&lu);
+    free_polynomial(N); free_polynomial(Q0);
+    rat_clear(&lambda);
+    return F;
+}
+
 // ∫ b·y for deg U = 1 or 2: R(t) = b(X)·Y·X', integrated over Q, then t = T(x, y)
 static Expr* integrate_root_part(const SqCtx* c, const QFn* b, const char** why) {
     Param P;
-    if (!param_of(c->U, &P)) { *why = "this square root of a quadratic has no rational parametrization over Q (the conic y^2 = U has no rational point), so it is not supported yet"; return NULL; }
+    if (!param_of(c->U, &P)) return integrate_by_reduction(c, b, why);    // no rational point: reduce
     Expr* F = NULL;
     if (!param_inverts(c, &P)) *why = "internal check failed: the parametrization of the square root does not invert";
     else {
@@ -664,4 +830,128 @@ RischResult integrate_sqrt(const Expr* f) {
     sq_free(&g);
     free_polynomial(c.U);
     return r;
+}
+
+// --- values at a point, for definite integrals ---
+
+bool sqrt_shape(const Expr* f, SqrtShape* s, const char** why) {
+    SqCtx c;
+    SqFn g;
+    *s = (SqrtShape){ NULL, NULL, NULL, NULL, NULL };
+    if (!form_of(f, &c, &g)) { *why = c.why; free_polynomial(c.U); return false; }
+    *s = (SqrtShape){ c.U, poly_copy(g.a.num), poly_copy(g.a.den), poly_copy(g.b.num), poly_copy(g.b.den) };
+    sq_free(&g);
+    return true;
+}
+
+void sqrt_shape_free(SqrtShape* s) {
+    free_polynomial(s->U); free_polynomial(s->num_a); free_polynomial(s->den_a);
+    free_polynomial(s->num_b); free_polynomial(s->den_b);
+    *s = (SqrtShape){ NULL, NULL, NULL, NULL, NULL };
+}
+
+// p = (x - x0)^k·q with q(x0) ≠ 0: returns q, sets *k (p ≠ 0)
+static Polynomial* strip_root(const Polynomial* p, const Rational* x0, int* k) {
+    Rational one = rat_one_val(), m;
+    rat_init(&m);
+    rat_neg(&m, x0);
+    Polynomial *lin = create_polynomial(), *q = poly_copy(p);
+    add_term(lin, &one, 1); add_term(lin, &m, 0);
+    for (*k = 0;; (*k)++) {
+        PolyDivResult d = poly_divmod(q, lin);
+        bool divides = poly_is_zero(d.remainder);
+        free_polynomial(d.remainder);
+        if (!divides) { free_polynomial(d.quotient); break; }
+        free_polynomial(q);
+        q = d.quotient;
+    }
+    free_polynomial(lin);
+    rat_clear(&one); rat_clear(&m);
+    return q;
+}
+
+// y0 = sqrt(u0) for u0 >= 0 in Q(sqrt(m)): the context (U0 = m, or none) and y0 as an element
+static SqFn root_constant(const Rational* u0, SqCtx* c0) {
+    *c0 = (SqCtx){ NULL, NULL };
+    if (rat_is_zero(u0)) return sq_zero();
+    Polynomial* p = poly_constant(u0);
+    SqFn y0;
+    radical(c0, p, &y0);                                      // rational, or r·sqrt(m) with c0->U = m
+    free_polynomial(p);
+    return y0;
+}
+
+// the element A0 + B0·y0 of Q(sqrt(u0)) for polynomials A, B at x0
+static SqFn at_point(const SqCtx* c0, const SqFn* y0, const Polynomial* A, const Polynomial* B, const Rational* x0) {
+    Rational va, vb;
+    rat_init(&va); rat_init(&vb);
+    poly_eval_rat(&va, A, x0); poly_eval_rat(&vb, B, x0);
+    SqFn a = sq_rat(qfn_rat(&va)), b = sq_rat(qfn_rat(&vb)), by = sq_mul(c0, &b, y0), r = sq_add(&a, &by, 1);
+    sq_free(&a); sq_free(&b); sq_free(&by);
+    rat_clear(&va); rat_clear(&vb);
+    return r;
+}
+
+// g = (A + B·y)/D at x0: directly when D(x0) ≠ 0, else (A² - B²·U)/(D·(A - B·y)) with the factor
+// (x - x0)^k of D cancelled from A² - B²·U; false when g is infinite at x0
+static bool field_value(const SqCtx* c, const SqFn* g, const Rational* x0, Expr** out) {
+    Polynomial* D = poly_lcm(g->a.den, g->b.den);
+    QFn d = qfn_poly(D), Aq = qfn_mul(&g->a, &d), Bq = qfn_mul(&g->b, &d);
+    Rational u0, dv;
+    rat_init(&u0); rat_init(&dv);
+    if (c->U) poly_eval_rat(&u0, c->U, x0);
+    SqCtx c0;
+    SqFn y0 = root_constant(&u0, &c0);
+    poly_eval_rat(&dv, D, x0);
+    bool ok = true;
+    SqFn v;
+    if (!rat_is_zero(&dv)) {                                  // (A0 + B0·y0)/D0
+        SqFn n = at_point(&c0, &y0, Aq.num, Bq.num, x0), id = sq_rat(qfn_rat(&dv)), inv = sq_inv(&c0, &id);
+        v = sq_mul(&c0, &n, &inv);
+        sq_free(&n); sq_free(&id); sq_free(&inv);
+    } else {
+        Polynomial *A2 = poly_multiply(Aq.num, Aq.num), *B2 = poly_multiply(Bq.num, Bq.num);
+        Polynomial *B2U = c->U ? poly_multiply(B2, c->U) : create_polynomial(), *N = poly_subtract(A2, B2U);
+        int kd = 0, kn = 0;
+        Polynomial *D1 = strip_root(D, x0, &kd), *N1 = poly_is_zero(N) ? poly_copy(N) : strip_root(N, x0, &kn);
+        ok = !poly_is_zero(N) && kn >= kd;
+        if (ok) {                                             // N1·(x - x0)^(kn - kd) / (D1·(A - B·y)) at x0
+            Rational nv, d1;
+            rat_init(&nv); rat_init(&d1);
+            poly_eval_rat(&nv, N1, x0);
+            if (kn > kd) mpq_set_ui(nv.val, 0, 1);
+            poly_eval_rat(&d1, D1, x0);
+            Rational m1 = rat_from_int(-1);
+            Polynomial* nB = poly_scale(Bq.num, &m1);
+            SqFn conj = at_point(&c0, &y0, Aq.num, nB, x0), dd = sq_rat(qfn_rat(&d1)), den = sq_mul(&c0, &dd, &conj);
+            ok = !sq_is_zero(&den);
+            if (ok) {
+                SqFn inv = sq_inv(&c0, &den), nn = sq_rat(qfn_rat(&nv));
+                v = sq_mul(&c0, &nn, &inv);
+                sq_free(&inv); sq_free(&nn);
+            }
+            sq_free(&conj); sq_free(&dd); sq_free(&den);
+            free_polynomial(nB);
+            rat_clear(&nv); rat_clear(&d1); rat_clear(&m1);
+        }
+        free_polynomial(A2); free_polynomial(B2); free_polynomial(B2U); free_polynomial(N); free_polynomial(D1); free_polynomial(N1);
+    }
+    if (ok) { *out = c0.U ? sq_expr(&v, c0.U) : qfn_expr(&v.a); sq_free(&v); }
+    sq_free(&y0);
+    free_polynomial(c0.U); free_polynomial(D);
+    qfn_free(&d); qfn_free(&Aq); qfn_free(&Bq);
+    rat_clear(&u0); rat_clear(&dv);
+    return ok;
+}
+
+Expr* sqrt_value_at(const Expr* g, const Polynomial* U, const Rational* x0) {
+    SqCtx c = { U ? poly_copy(U) : NULL, NULL };
+    SqFn f;
+    Expr* out = NULL;
+    if (conv(g, &c, &f)) {
+        if (!field_value(&c, &f, x0, &out)) out = NULL;
+        sq_free(&f);
+    }
+    free_polynomial(c.U);
+    return out;
 }

@@ -2541,6 +2541,12 @@ static void test_reg_integrate_sqrt(void) {
         { "(1+sqrt(x))^2/x", "x + ln(abs(x)) + 4 * sqrt(x)" },                              // a + b·y: both parts
         { "sqrt(4x+4)+sqrt(x+1)", "(2x + 2) * sqrt(x + 1)" },                               // 2·sqrt(x + 1): one radicand
         { "sqrt(2)*x", "1/2x^2 * sqrt(2)" },                                                // a constant radicand
+        { "1/sqrt(3-x^2)", "atan(x / sqrt(-x^2 + 3))" },                                    // no rational point: reduction
+        { "sqrt(3-x^2)", "1/2x * sqrt(-x^2 + 3) + 3/2 * atan(x / sqrt(-x^2 + 3))" },
+        { "x^2*sqrt(5-2x^2)", "(1/4x^3 - 5/16x) * sqrt(-2x^2 + 5) + 25/32 * sqrt(2) * atan(sqrt(2) * x / sqrt(-2x^2 + 5))" },
+        { "1/(3-x^2)^(3/2)", "-1/3x * sqrt(-x^2 + 3) / (x^2 - 3)" },                          // m = 1: one reduction step
+        { "x^3/sqrt(7-x^2)", "(-1/3x^2 - 14/3) * sqrt(-x^2 + 7)" },                           // λ = 0
+        { "sqrt(3x^2+2)", "1/2x * sqrt(3x^2 + 2) + 1/3 * sqrt(3) * ln(abs(6x + 2 * sqrt(3) * sqrt(3x^2 + 2)))" }, // a > 0
     };
     for (size_t i = 0; i < sizeof ok / sizeof ok[0]; i++) {
         Expr* f = parse_input(ok[i][0]);
@@ -2552,7 +2558,7 @@ static void test_reg_integrate_sqrt(void) {
         free_expr(r.result); free_expr(f);
     }
     const char* outside[] = { "1/sqrt(x^3+1)",                     // elliptic
-                              "1/sqrt(3-x^2)",                     // x² + y² = 3 has no rational point
+                              "1/(x*sqrt(3-x^2))",                 // no rational point, and x is not a power of U
                               "sqrt(x)*sqrt(x+1)", "sqrt(x)*exp(x)", "sqrt(x^2)", "sqrt(-2)", "sqrt(1/x)" };
     for (size_t i = 0; i < sizeof outside / sizeof outside[0]; i++) {
         Expr* f = parse_input(outside[i]);
@@ -2577,7 +2583,8 @@ static void test_reg_integrate_sqrt(void) {
            sizeof ok / sizeof ok[0], sizeof outside / sizeof outside[0], sizeof forms / sizeof forms[0]);
 }
 
-// U for a trial: linear, a square leading coefficient (Euler), or -a·x² + b·x + k² (the point (0, k))
+// U for a trial: linear, a square leading coefficient (Euler), -a·x² + b·x + k² (the point (0, k)),
+// or c - x² with no rational point at all (the reduction)
 static Expr* random_radicand(int kind) {
     long a = rnd(1, 3), b = rnd(-2, 2), k = rnd(2, 3);
     switch (kind) {
@@ -2587,7 +2594,11 @@ static Expr* random_radicand(int kind) {
             if (b * b == 4 * a * a * c) c++;                        // a perfect square is |p|: not this setting
             return create_poly_expr(poly_si((long[]){ c, b, a * a }, 2));
         }
-        default: return create_poly_expr(poly_si((long[]){ k * k, b, -(a + 1) }, 2));
+        case 2: return create_poly_expr(poly_si((long[]){ k * k, b, -(a + 1) }, 2));
+        default: {                                              // c - x², c ∈ {3, 7, 11}: no rational point
+            static const long cs[] = { 3, 7, 11 };
+            return create_poly_expr(poly_si((long[]){ cs[rnd(0, 2)], 0, -1 }, 2));
+        }
     }
 }
 
@@ -2596,10 +2607,13 @@ static Expr* random_radicand(int kind) {
 static void test_prop_integrate_sqrt(void) {
     int checked = 0;
     for (int trial = 0; trial < TRIALS; trial++) {
-        Expr* U = random_radicand(trial % 3);
+        Expr* U = random_radicand(trial % 4);
         Expr* y = create_sqrt(expr_copy(U));
         Expr* f;
-        if (trial % 2) {
+        if (trial % 4 == 3) {                                       // reduction: p(x)·y + q(x)/y
+            f = create_add(create_mul(create_poly_expr(poly_si((long[]){ rnd(-3, 3), rnd(-2, 2), rnd(-2, 2) }, 2)), expr_copy(y)),
+                           create_div(create_poly_expr(poly_si((long[]){ rnd(-3, 3), rnd(1, 3) }, 1)), expr_copy(y)));
+        } else if (trial % 2) {
             Expr* r = create_div(create_poly_expr(poly_si((long[]){ rnd(-3, 3), rnd(1, 3) }, 1)),
                                  create_add(create_var("x"), create_const(rnd(3, 5))));   // poles outside the sample range
             f = create_add(create_mul(r, expr_copy(y)),
@@ -2620,6 +2634,82 @@ static void test_prop_integrate_sqrt(void) {
         free_expr(r.result); free_expr(f); free_expr(y); free_expr(U);
     }
     printf("  test_prop_integrate_sqrt PASSED (%d trials, each checked by its derivative)\n", checked);
+}
+
+// ∫_a^b with a square root, through integrate_definite_sqrt (bounds as for definite_str)
+static DefiniteResult definite_sqrt_str(const char* f, const char* a, const char* b) {
+    Expr* e = parse_input(f);
+    Rational ra, rb;
+    rat_init(&ra); rat_init(&rb);
+    Bounds ab = { { &ra, bound_str(&ra, a), false }, { &rb, bound_str(&rb, b), false } };
+    DefiniteResult r = integrate_definite_sqrt(e, &ab);
+    rat_clear(&ra); rat_clear(&rb);
+    free_expr(e);
+    return r;
+}
+
+static void test_reg_definite_sqrt(void) {
+    const char* cases[][4] = {
+        { "sqrt(1-x^2)", "0", "1", "1/4 * pi" },                       // the point (0, 1): atan((y - 1)/x) is 0/0 at 0
+        { "sqrt(1-x^2)", "1", "0", "-1/4 * pi" },
+        { "1/sqrt(1-x^2)", "0", "1", "1/2 * pi" },                     // an infinite (integrable) end
+        { "x/sqrt(1-x^2)", "0", "1", "1" },
+        { "1/sqrt(1+x^2)", "0", "1", "ln(1 + sqrt(2))" },
+        { "sqrt(x)", "0", "4", "16/3" },
+        { "1/sqrt(x*(1-x))", "0", "1", "pi" },                         // atan(y/x) → π/2 as x → 0+
+        { "sqrt(2x-x^2)", "0", "2", "1/2 * pi" },
+        { "1/sqrt(4x-x^2)", "0", "1", "1/3 * pi" },
+        { "1/(x*sqrt(x^2-1))", "1", "2", "1/3 * pi" },
+        { "x^3*sqrt(x^2+1)", "0", "2", "10/3 * sqrt(5) + 2/15" },
+        { "1/sqrt(3-x^2)", "-1", "1", "2 * atan(1/2 * sqrt(2))" },     // the reduction (no rational point)
+        { "1/sqrt(3x^2+2)", "0", "1", "1/3 * sqrt(3) * ln(3 + sqrt(15)) - 1/6 * sqrt(3) * ln(6)" }, // sqrt(3)·sqrt(U) folded
+    };
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        DefiniteResult r = definite_sqrt_str(cases[i][0], cases[i][1], cases[i][2]);
+        if (!r.exact) fprintf(stderr, "definite sqrt %s: %s\n", cases[i][0], r.error ? r.error : r.note);
+        assert(!r.error && r.exact);
+        expect_str(expr_to_string(r.exact), cases[i][3]);
+        definite_free(&r);
+    }
+    const char* errors[][3] = { { "sqrt(x^2-1)", "0", "1" },             // not real on the range
+                                { "sqrt(x)/(x-1/2)", "0", "1" },          // a pole inside
+                                { "1/(1-x)^(3/2)", "0", "1" },            // (1 - x)^(-3/2) at 1 diverges
+                                { "sqrt(1-x^2)", "0", "inf" } };
+    for (size_t i = 0; i < sizeof errors / sizeof errors[0]; i++) {
+        DefiniteResult r = definite_sqrt_str(errors[i][0], errors[i][1], errors[i][2]);
+        assert(r.error && !r.exact);
+    }
+    DefiniteResult d = definite_sqrt_str("1/sqrt(x^3+1)", "0", "1");     // elliptic: the number only
+    assert(!d.error && !d.exact && d.note && fabs(d.approx - 0.9096042426) < 1e-9);
+    printf("  test_reg_definite_sqrt PASSED (%zu exact, %zu errors, 1 numeric)\n", sizeof cases / sizeof cases[0], sizeof errors / sizeof errors[0]);
+}
+
+// random integrands of test_prop_integrate_sqrt on [0, 1/2], where every kind of U is positive:
+// the exact value always passes the run-time quadrature check
+static void test_prop_definite_sqrt(void) {
+    int exact = 0;
+    for (int trial = 0; trial < TRIALS; trial++) {
+        Expr* U = random_radicand(trial % 4);
+        Expr* y = create_sqrt(U);
+        Expr* r = create_div(create_poly_expr(poly_si((long[]){ rnd(-3, 3), rnd(1, 3) }, 1)),
+                             create_add(create_var("x"), create_const(rnd(3, 5))));
+        Expr* f = trial % 4 == 3 ? create_add(create_mul(create_poly_expr(poly_si((long[]){ rnd(-3, 3), rnd(1, 2) }, 1)), expr_copy(y)),
+                                              create_div(create_const(rnd(1, 3)), expr_copy(y)))
+                                 : create_add(create_mul(r, expr_copy(y)), create_div(create_const(rnd(1, 3)), expr_copy(y)));
+        if (trial % 4 == 3) free_expr(r);
+        Rational a, b;
+        rat_init(&a); rat_init(&b);
+        mpq_set_si(b.val, 1, 2);
+        Bounds ab = { { &a, 0, false }, { &b, 0, false } };
+        DefiniteResult d = integrate_definite_sqrt(f, &ab);
+        if (!d.exact) { char* s = expr_to_string(f); fprintf(stderr, "definite sqrt f = %s: %s\n", s, d.error ? d.error : d.note); free(s); }
+        assert(!d.error && d.exact);
+        exact++;
+        definite_free(&d);
+        rat_clear(&a); rat_clear(&b);
+        free_expr(f); free_expr(y);
+    }
+    printf("  test_prop_definite_sqrt PASSED (%d exact values, each checked against tanh-sinh quadrature)\n", exact);
 }
 
 static void run_timed(const char* name, void (*t)(void)) {
@@ -2661,6 +2751,7 @@ void run_property_tests(void) {
     RUN(test_reg_integrate_tan);
     RUN(test_reg_integrate_tower2);
     RUN(test_reg_integrate_sqrt);
+    RUN(test_reg_definite_sqrt);
     RUN(test_lrt_direct);
     printf("\nProperty Tests (seed %s):\n", env ? env : "default");
     RUN(test_prop_factor_roundtrip);
@@ -2683,6 +2774,7 @@ void run_property_tests(void) {
     RUN(test_prop_k2poly);
     RUN(test_prop_integrate_tower2);
     RUN(test_prop_integrate_sqrt);
+    RUN(test_prop_definite_sqrt);
     RUN(test_prop_definite_exp);
     RUN(test_prop_definite_tan);
 }

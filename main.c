@@ -78,36 +78,38 @@ static int handle_matrix_action(const char* action, const char* input) {
 }
 
 // "exact ~ decimal", or "~ decimal (reason)" when only the number is available
+// "exact ~ decimal", or "~ decimal (reason)" when only the number is available
+static int print_definite(DefiniteResult* r) {
+    if (r->error) { fprintf(stderr, "Error: %s.\n", r->error); return 1; }
+    if (r->exact && r->note) { char* s = expr_to_string(r->exact); printf("%s (%s)\n", s, r->note); free(s); }
+    else if (r->exact) {                                       // the decimal of the exact value (quadrature only checked it)
+        bool ok = true;
+        double v = expr_eval(r->exact, 0, &ok);
+        char* s = expr_to_string(r->exact);
+        printf("%s ~ %.10g\n", s, ok && isfinite(v) ? v : r->approx);
+        free(s);
+    }
+    else printf("~ %.10g (%s)\n", r->approx, r->note);
+    return 0;
+}
+
 static int handle_definite(const char* f_text, const char* a_text, const char* b_text) {
     Rational a, b;
     rat_init(&a); rat_init(&b);
-    Expr* f = parse_integrand(f_text);
+    Expr* raw = parse_input(f_text);
+    bool root = raw && expr_has_sqrt(raw);
+    Expr* f = root ? NULL : parse_integrand(f_text);
     int rc = 1;
     Bounds ab = { { &a, 0, false }, { &b, 0, false } };
-    Expr* probe = f ? NULL : parse_input(f_text);
-    bool root = probe && expr_has_sqrt(probe);
-    free_expr(probe);
-    if (!f && root) fprintf(stderr, "Error: definite integrals with square roots are not supported yet (the indefinite integral is: integrate \"f\").\n");
-    else if (!f) fprintf(stderr, "Error: not a polynomial, rational function, or expression in exp, sin and cos.\n");
+    if (!f && !root) fprintf(stderr, "Error: not a polynomial, rational function, or expression in exp, sin and cos.\n");
     else if (!parse_endpoint(&a, &ab.a, a_text) || !parse_endpoint(&b, &ab.b, b_text))
         fprintf(stderr, "Error: bounds must be rational numbers, rational multiples of pi, inf or -inf.\n");
     else {
-        DefiniteResult r = integrate_definite(f, &ab);
-        if (r.error) fprintf(stderr, "Error: %s.\n", r.error);
-        else {
-            if (r.exact && r.note) { char* s = expr_to_string(r.exact); printf("%s (%s)\n", s, r.note); free(s); }
-            else if (r.exact) {                                // the decimal of the exact value (quadrature only checked it)
-                bool ok = true;
-                double v = expr_eval(r.exact, 0, &ok);
-                char* s = expr_to_string(r.exact);
-                printf("%s ~ %.10g\n", s, ok && isfinite(v) ? v : r.approx);
-                free(s);
-            }
-            else printf("~ %.10g (%s)\n", r.approx, r.note);
-            rc = 0;
-        }
+        DefiniteResult r = root ? integrate_definite_sqrt(raw, &ab) : integrate_definite(f, &ab);
+        rc = print_definite(&r);
         definite_free(&r);
     }
+    free_expr(raw);
     if (f) free_expr(f);
     rat_clear(&a); rat_clear(&b);
     return rc;

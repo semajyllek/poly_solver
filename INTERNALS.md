@@ -1407,17 +1407,48 @@ The derivative is `D(a + b·y) = a' + (b' + b·U'/(2U))·y`.
 - `∫ 1/sqrt(x²+1)`: here t = x + y, X = (t² − 1)/(2t), Y = (t² + 1)/(2t), and R(t) = 1/t, so the answer is `ln|x + sqrt(x² + 1)|`.
 - `∫ sqrt(1−x²)`: the point (0, 1) gives t = (y − 1)/x, and the answer is `x/2·y − atan((y − 1)/x)`. The argument tends to 0 as x → 0, so there is no jump.
 
+**Conics without a rational point.** Here the integrand must be `b·y = N/(U^m·y)`, with den(b) a power of U.
+- **Steps for m ≥ 1.** Use `d/dx(Q·y/U^m) = (Q'U + (½ − m)·Q·U')/(U^m·y)` and choose `Q ≡ N·U'^{-1}/(½ − m) mod U`. U is square-free, so U′ is invertible mod U. Then U divides the difference, and m drops by one.
+- **Base case m = 0.** Write `N = Q'U + Q·U'/2 + λ`. Q is solved from its top coefficient down: x^j in Q puts `a·(j + 1)` on x^(j+1).
+- **The last integral** is `∫ 1/y`:
+  - `(1/√A)·atan(√A·(x + b/2a)/y)` with A = −a > 0, continuous inside the domain;
+  - `(1/√a)·ln|2ax + b + 2√a·y|` when a > 0.
+- **The exact check.** The algebraic part is verified in Q(x)(y): `D(Σ Q_i·y/U^i) + λ/y = b·y`.
+- **Examples.**
+  - `∫ 1/sqrt(3 − x²) = atan(x/sqrt(3 − x²))`.
+  - `∫ x²·sqrt(5 − 2x²)` comes out as `(1/4x³ − 5/16x)·sqrt(5 − 2x²) + 25/32·√2·atan(√2·x/sqrt(5 − 2x²))`.
+
+**Definite integrals** (`sqrtdef.c`), for finite rational bounds.
+- **Exact range checks.**
+  - U ≥ 0 on [a, b]: no root of U strictly inside (from refined isolating intervals), and U > 0 at the middle.
+  - No pole of a in [a, b], and none of b away from the roots of U.
+  - An end e at a root of U needs (x − e)^k in den(b) with k ≤ 1, because the integrand is O((x − e)^(1/2 − k)).
+- **Evaluating F(b) − F(a)**, term by term.
+  - Constant factors stay as they are.
+  - ln and atan take their arguments' values.
+  - Algebraic pieces, and those arguments, go through Q(x)(y) (`sqrt_value_at`).
+  - **0/0 at an end.** Where the common denominator D vanishes at the end, `(A + B·y)/D = (A² − B²U)/(D·(A − B·y))`. The factor (x − e)^k is cancelled from `A² − B²U`, which handles cases like `(sqrt(1 − x²) − 1)/x` at 0.
+  - **Constant square roots.** An argument with an x-free factor such as `/sqrt(2)` has the factor peeled off first. Otherwise x is substituted everywhere, inside roots too, and `expr_at` folds the result, merging `sqrt(3)·sqrt(5)`.
+  - **Infinite atan arguments.** An atan whose argument tends to ±∞ at an end (`atan(y/x)` at 0) takes ±π/2. The sign comes from the argument just inside the range, which must grow toward the end.
+  - The constants are summed by `const_fold_sum`.
+- **The numeric check.** The value is compared with tanh-sinh quadrature, done on each half from its own end. The polynomials of `a + b·sqrt(U)` are shifted exactly there, so u near 0, a singular end, keeps its precision: sampling `1 − d` near 1 would round away a √d-sized sliver. Without an exact value, the number is given with the reason.
+- **Results.**
+  - `∫₀¹ sqrt(1 − x²) = π/4`, `∫₀¹ 1/sqrt(x(1 − x)) = π` and `∫₀¹ 1/sqrt(1 + x²) = ln(1 + √2)`.
+  - `∫₀¹ 1/sqrt(x³ + 1) ≈ 0.9096042426`, given as a number because the integral is elliptic.
+
 **Not supported:**
 - deg U ≥ 3 (elliptic and beyond);
-- conics without a rational point;
+- other denominators on conics without a rational point (definite integrals give the number);
 - two radicands in one expression;
 - roots of rational functions;
 - roots together with exp, ln, sin or cos;
-- definite integrals with roots.
+- definite integrals with roots over infinite ranges or at multiples of π.
 
 **Tests.**
-- `test_reg_integrate_sqrt` pins 17 answers, each checked by its numeric derivative, plus 7 unsupported inputs and 4 simplify/differentiate forms.
-- `test_prop_integrate_sqrt` integrates `r(x)·y + s(x)/y` and `D(p·y + q)` over the three kinds of U, each checked numerically.
+- `test_reg_integrate_sqrt` pins 23 answers (six by the reduction), each checked by its numeric derivative, plus 7 unsupported inputs and 4 simplify/differentiate forms.
+- `test_prop_integrate_sqrt` integrates `r(x)·y + s(x)/y`, `D(p·y + q)`, and on conics without a point `p·y + q/y`, over four kinds of U, each checked numerically.
+- `test_reg_definite_sqrt` pins 13 exact values, 4 errors (not real on the range, a pole, a non-integrable end, an infinite bound) and one elliptic number. `test_prop_definite_sqrt` integrates 60 random integrands on [0, 1/2], all exact and all passing the quadrature check.
+- The SymPy stream `check_definite_sqrt` compares exact values with `mpmath.quad` to 30 digits: 94 of 120 are exact and match. The rest are numeric only, on conics without a rational point with a rational factor.
 - The SymPy stream `check_sqrt` differentiates every answer back to 35 digits: 149 of 150 integrate, and the remaining one is a perfect-square radicand, correctly refused.
 
 ## 12. CLI Pipeline

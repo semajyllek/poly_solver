@@ -484,6 +484,29 @@ def check_sqrt(rng):
     return "elementary"
 
 
+def check_definite_sqrt(rng):
+    """integrate f 0 1/2 for f = r(x)·sqrt(U) + s/sqrt(U) (U positive on [0, 1/2], including c - x²
+    with no rational point): an exact value must match mpmath.quad to 30 digits."""
+    a, b, k = rng.randint(1, 3), rng.randint(-2, 2), rng.randint(1, 3)
+    c = rng.randint(1, 4)
+    c += b * b == 4 * a * a * c                          # not a perfect square
+    U = rng.choice([a * x + rng.randint(1, 3), a**2 * x**2 + abs(b) * x + c,
+                    -(a + 1) * x**2 + b * x + (k + 1)**2, rng.choice([3, 7, 11]) - x**2])
+    y = sp.sqrt(U)
+    f = (rng.randint(-3, 3) * x + rng.randint(1, 3)) / (x + rng.randint(3, 5)) * y + rng.randint(1, 3) / y
+    code, out, err = run_cli("integrate", to_cli(f), "0", "1/2")
+    assert code == 0, f"failed on {f}: {err}"
+    if out.startswith("~"):
+        return "numeric"
+    exact = to_sympy(out.split(" ~ ")[0])
+    g = sp.lambdify(x, f, "mpmath")
+    with mp.workdps(40):
+        ref = mp.quad(g, [0, mp.mpf(1) / 2])
+        val = sp.N(exact, 40)
+    assert abs(val - ref) < mp.mpf(10)**-30 * (1 + abs(ref)), f"∫_0^1/2 {f}: {out} vs {ref}"
+    return "exact"
+
+
 PI_BOUNDS = {"pi": sp.pi, "pi/4": sp.pi / 4, "-pi/2": -sp.pi / 2, "3pi/2": 3 * sp.pi / 2, "2pi": 2 * sp.pi, "-pi": -sp.pi}
 
 
@@ -604,6 +627,7 @@ def main():
     rng_dtow = random.Random(args.seed + 10)
     rng_tw2 = random.Random(args.seed + 11)
     rng_sq = random.Random(args.seed + 12)
+    rng_dsq = random.Random(args.seed + 13)
     rootsums = radicals = 0
     definite = {"exact": 0, "numeric": 0, "pole": 0}
     infinite = {"exact": 0, "numeric": 0, "divergent": 0}
@@ -616,6 +640,7 @@ def main():
     dtows = {"exact": 0, "numeric": 0, "pole": 0, "refused": 0, "skipped": 0}
     tw2s = dict(exps)
     sqs = dict(exps)
+    dsqs = {"exact": 0, "numeric": 0}
     for t in range(args.trials):
         p = random_poly(rng)
         check_factor(p)
@@ -636,6 +661,7 @@ def main():
         dtows[check_definite_tower(rng_dtow)] += 1
         tw2s[check_tower2(rng_tw2)] += 1
         sqs[check_sqrt(rng_sq)] += 1
+        dsqs[check_definite_sqrt(rng_dsq)] += 1
         check_matrix(rng)
         print(f"  trial {t + 1}/{args.trials} ok", flush=True)
     print(f"crosscheck OK: {args.trials} trials (factor, solve, integrate, det); "
@@ -660,7 +686,8 @@ def main():
           f"{dtows['refused']} refused, {dtows['skipped']} skipped; ln over exp/ln: {tw2s['elementary']} elementary ({tw2s['rootsum']} more with a RootSum), "
           f"{tw2s['nonelementary']} proved non-elementary (SymPy agrees), {tw2s['unconfirmed']} unconfirmed, "
           f"{tw2s['unsupported']} unsupported; square roots: {sqs['elementary']} elementary (checked to 35 digits), "
-          f"{sqs['unsupported']} unsupported")
+          f"{sqs['unsupported']} unsupported; definite with square roots: {dsqs['exact']} exact (30 digits), "
+          f"{dsqs['numeric']} numeric-only")
 
 
 if __name__ == "__main__":
