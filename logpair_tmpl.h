@@ -16,7 +16,7 @@
 //                 LT_FR_IS_ZERO(f), LT_FR_FREE(f)
 // The generated functions: pair_make (the gcd g_α = gcd(d, h - α·D(d)) = P + √M·Q over K(√M)),
 // pair_norm, pair_deriv, pair_free, and log_to_atan (Rioboo's arctangents, checked exactly).
-// Every macro is undefined at the end.
+// rootsum_tmpl.h follows with the same macros; logterm_undef.h then undefines them.
 
 // --- K(√M)[θ]: just enough for a monic gcd ---
 
@@ -329,39 +329,3 @@ static bool LT_PFX(log_to_atan)(const LT_PFX(Pair)* q, LT_PFX(Atans)* out) {
     LT_P_FREE(&S.A); LT_P_FREE(&S.B); rat_clear(&S.rho); rat_clear(&m);
     return ok;
 }
-
-#undef LT_P
-#undef LT_C
-#undef LT_FR
-#undef LT_CTX
-#undef LT_PFX
-#undef LT_KDIV
-#undef LT_KBEZ
-#undef LT_KDIV_FREE
-#undef LT_KBEZ_FREE
-#undef LT_C_ZERO
-#undef LT_C_RAT
-#undef LT_C_ADD
-#undef LT_C_MUL
-#undef LT_C_INV
-#undef LT_C_FREE
-#undef LT_P_ZERO
-#undef LT_P_ONE
-#undef LT_P_COPY
-#undef LT_P_FREE
-#undef LT_P_DEG
-#undef LT_P_COEFF
-#undef LT_P_TERM
-#undef LT_P_ADD
-#undef LT_P_MUL
-#undef LT_P_SCALE
-#undef LT_P_DERIV
-#undef LT_P_DIVMOD
-#undef LT_P_GCD
-#undef LT_P_EXACT_DIV
-#undef LT_P_BEZOUT
-#undef LT_FR_MAKE
-#undef LT_FR_ADD
-#undef LT_FR_ZERO
-#undef LT_FR_IS_ZERO
-#undef LT_FR_FREE

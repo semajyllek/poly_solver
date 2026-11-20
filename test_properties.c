@@ -1459,7 +1459,7 @@ static void test_reg_integrate_exp(void) {
         assert(r.status == RISCH_NONELEMENTARY && r.result);
         free_expr(r.result);
     }
-    const char* outside[] = { "exp(x)/(exp(3x)+2)", "exp(x)/(exp(x)+exp(x^2))", "exp(1/x)", "exp(3)", "exp(exp(x))", "exp(x)^(1/2)" };
+    const char* outside[] = { "exp(x)/(exp(7x)+2)", "exp(x)/(exp(x)+exp(x^2))", "exp(1/x)", "exp(3)", "exp(exp(x))", "exp(x)^(1/2)" };
     for (size_t i = 0; i < sizeof outside / sizeof outside[0]; i++) {
         RischResult r = risch_str(outside[i]);
         assert(r.status == RISCH_UNSUPPORTED && !r.result && r.reason);
@@ -1687,13 +1687,30 @@ static void test_reg_integrate_tower_fractions(void) {
         assert(r.status == RISCH_NONELEMENTARY && r.result);
         free_expr(r.result);
     }
-    const char* outside[] = { "exp(x)/(exp(3x)+2)", "1/(x*(ln(x)^3+2))" };   // cubic residues: a RootSum over θ
+    const char* roots[][2] = {                                     // residues of degree 3 .. 6: RootSum over θ, checked numerically
+        { "exp(x)/(exp(3x)+2)", "RootSum(108t^3 - 1, t -> t * ln(exp(x) + 6 * t))" },
+        { "1/(x*(ln(x)^3+2))", "RootSum(108t^3 - 1, t -> t * ln(ln(abs(x)) + 6 * t))" },
+        { "1/(1+exp(x)+exp(3x))", "x + RootSum(31t^3 + 31t^2 + 9t + 1, t -> t * ln(exp(x) - 3 - 31/2 * t - 31/2 * t^2))" },
+        { "1/(x*(ln(x)^4+ln(x)+1))",                                    // a quartic, every slice of g_α nonzero
+          "RootSum(229t^4 + 18t^2 + 8t + 1, t -> t * ln(ln(abs(x)) + 27/64 + 391/64 * t - 687/64 * t^2 + 2061/64 * t^3))" },
+        { "x*exp(x^2)/(exp(3x^2)+exp(x^2)+1)", "RootSum(248t^3 - 6t - 1, t -> t * ln(exp(x^2) + 4/9 + 62/9 * t - 248/9 * t^2))" },
+        { "exp(x)/(exp(6x)+2)", "RootSum(1492992t^6 + 1, t -> t * ln(exp(x) + 12 * t))" },   // degree 6, the limit
+    };
+    for (size_t i = 0; i < sizeof roots / sizeof roots[0]; i++) {
+        Expr* f = parse_input(roots[i][0]);
+        RischResult r = integrate_exp(f);
+        assert(r.status == RISCH_OK);
+        expect_str(expr_to_string(r.result), roots[i][1]);
+        assert(derivative_matches(r.result, f));
+        free_expr(r.result); free_expr(f);
+    }
+    const char* outside[] = { "exp(x)/(exp(7x)+2)", "1/(x*(ln(x)^7+2))" };   // residues of degree 7
     for (size_t i = 0; i < sizeof outside / sizeof outside[0]; i++) {
         RischResult r = risch_str(outside[i]);
         assert(r.status == RISCH_UNSUPPORTED && !r.result && r.reason);
     }
-    printf("  test_reg_integrate_tower_fractions PASSED (%zu exact, %zu non-elementary, %zu unsupported)\n",
-           sizeof ok / sizeof ok[0], sizeof none / sizeof none[0], sizeof outside / sizeof outside[0]);
+    printf("  test_reg_integrate_tower_fractions PASSED (%zu exact, %zu RootSums, %zu non-elementary, %zu unsupported)\n",
+           sizeof ok / sizeof ok[0], sizeof roots / sizeof roots[0], sizeof none / sizeof none[0], sizeof outside / sizeof outside[0]);
 }
 
 // θ for a trial: exp(±x), exp(2x), exp(x²), ln(x) or ln(x² + 1)
@@ -1721,13 +1738,28 @@ static Expr* shifted_theta(int kind) {
     return create_add(random_theta(kind), create_const(c));
 }
 
+// D(θ)·(c1·θ + c0)/(θ³ + a·θ + b), b ≠ 0: residues (c1·β + c0)/q'(β) (times β for exp) are constants, so
+// the integrand stays elementary, through a RootSum when q is irreducible
+static Expr* cubic_residue_term(int kind) {
+    const char* why = NULL;
+    Expr* T = random_theta(kind);
+    Expr* dT = differentiate_exp(T, &why);
+    assert(dT);
+    long b = rnd(1, 3) * (rnd(0, 1) ? 1 : -1);
+    Expr* q = create_add(create_add(create_pow(expr_copy(T), create_const(3)), create_mul(create_const(rnd(-2, 2)), expr_copy(T))), create_const(b));
+    Expr* p = create_add(create_mul(create_const(rnd(-2, 2)), expr_copy(T)), create_const(rnd(1, 3)));
+    free_expr(T);
+    return create_div(create_mul(dT, p), q);
+}
+
 // F = A/B^m + c·ln(G) + a·θ (+ atan(√e·Q/P)/√e on 2 of 3 trials, P = 1 or quadratic in θ) with
 // B, G linear or quadratic in θ: the integrand f = F' (built
 // from the pieces, since ln(G) is outside the input setting) integrates back to F up to a
-// constant, checked numerically; adding x/(θ + r) for θ = exp(c·x), or 1/(θ + r) for exp(x²)
+// constant, checked numerically (on 1 of 4 trials plus a cubic-residue term, cubic_residue_term);
+// adding x/(θ + r) for θ = exp(c·x), or 1/(θ + r) for exp(x²)
 // and ln (residues -1/(2r·x), 1/L), makes it non-elementary
 static void test_prop_integrate_tower_fractions(void) {
-    int roundtrips = 0, rejected = 0;
+    int roundtrips = 0, rejected = 0, rootsums = 0;
     for (int trial = 0; trial < TRIALS; trial++) {
         int kind = trial % 5;
         Expr* B = shifted_theta(kind);
@@ -1749,10 +1781,12 @@ static void test_prop_integrate_tower_fractions(void) {
             Expr* q = create_add(create_pow(P, create_const(2)), create_mul(create_const(rnd(1, 3)), create_pow(Q, create_const(2))));
             f = create_add(f, create_div(W, q));
         }
+        if (trial % 4 == 0) f = create_add(f, cubic_residue_term(kind));
         RischResult r = integrate_exp(f);
         assert(r.status == RISCH_OK);
         assert(derivative_matches(r.result, f));
         roundtrips++;
+        rootsums += expr_has_rootsum(r.result);
         Expr* extra = kind < 2 ? create_var("x") : create_const(1); // residue -x/(r·v') or 1/(r·v'), 1/L
         Expr* bad = create_add(expr_copy(f), create_div(extra, shifted_theta(kind)));
         RischResult rb = integrate_exp(bad);
@@ -1761,7 +1795,7 @@ static void test_prop_integrate_tower_fractions(void) {
         free_expr(rb.result); free_expr(bad);
         free_expr(r.result); free_expr(f); free_expr(part);
     }
-    printf("  test_prop_integrate_tower_fractions PASSED (%d round trips, %d non-elementary by construction)\n", roundtrips, rejected);
+    printf("  test_prop_integrate_tower_fractions PASSED (%d round trips, %d with a RootSum, %d non-elementary by construction)\n", roundtrips, rootsums, rejected);
 }
 
 // --- sin and cos: exponential sums over Q(i)(x) ---
@@ -1853,6 +1887,12 @@ static void test_reg_integrate_tower2(void) {
           "-1/4 * atan(ln(abs(ln(abs(x))))) - 1/24 * sqrt(3) * ln(abs(ln(abs(ln(abs(x)))) + sqrt(3))) + 1/24 * sqrt(3) * ln(abs(ln(abs(ln(abs(x)))) - sqrt(3)))" },
         { "1/(x*ln(x)*ln(ln(x))*(ln(ln(x))^2+1))",                                          // rational and quadratic
           "-1/2 * ln(abs(ln(abs(ln(abs(x))))^2 + 1)) + ln(abs(ln(abs(ln(abs(x))))))" },
+        { "1/(x*ln(x)*(ln(ln(x))^3-2))", "RootSum(108t^3 - 1, t -> t * ln(ln(abs(ln(abs(x)))) - 6 * t))" },   // cubic residues
+        { "1/(x*ln(x)*(ln(ln(x))^3+ln(ln(x))+1))",
+          "RootSum(31t^3 - 3t - 1, t -> t * ln(ln(abs(ln(abs(x)))) + 4/9 + 31/9 * t - 62/9 * t^2))" },
+        { "-ln(x)*(ln(x)*x-ln(x+1)*x-ln(x+1))/(x*(2*ln(x)^3-ln(x+1)^3)*(x+1))",                 // a K1 coefficient in g_α
+          "RootSum(108t^3 - 1, t -> t * ln(ln(abs(x + 1)) - 6 * ln(abs(x)) * t))" },
+        { "(exp(x)*ln(x)+exp(x)/x)/(exp(3x)*ln(x)^3+2)", "RootSum(108t^3 - 1, t -> t * ln(ln(abs(x)) + 6 * exp(-x) * t))" },
     };
     for (size_t i = 0; i < sizeof ok / sizeof ok[0]; i++) {
         Expr* f = parse_input(ok[i][0]);
@@ -1873,7 +1913,7 @@ static void test_reg_integrate_tower2(void) {
         free_expr(r.result);
     }
     const char* outside[] = { "ln(x)*ln(2x)", "exp(x)*ln(exp(x))",                       // θ2 in K1
-                              "1/(x*ln(x)*(ln(ln(x))^3-2))",                             // cubic residues
+                              "1/(x*ln(x)*(ln(ln(x))^7-2))",                             // residues of degree 7
                               "ln(ln(ln(x)))", "exp(x)*ln(x)*ln(x+1)" };                 // three levels
     for (size_t i = 0; i < sizeof outside / sizeof outside[0]; i++) {
         RischResult r = risch_str(outside[i]);
@@ -1985,15 +2025,25 @@ static Expr* quadratic_tower2_term(const char* th2) {
     return create_div(create_mul(create_const(2), create_mul(t, d)), create_add(t2, create_const(r)));
 }
 
+// D(θ2)·(c1·θ2 + c0)/(θ2³ + a·θ2 + b), b ≠ 0: constant residues (c1·β + c0)/q'(β), a RootSum when q is irreducible
+static Expr* cubic_tower2_term(const char* th2) {
+    Expr* t = parse_input(th2), *d = deriv(t);
+    long b = rnd(1, 3) * (rnd(0, 1) ? 1 : -1);
+    Expr* q = create_add(create_add(create_pow(expr_copy(t), create_const(3)), create_mul(create_const(rnd(-2, 2)), expr_copy(t))), create_const(b));
+    Expr* p = create_add(create_mul(create_const(rnd(-2, 2)), t), create_const(rnd(1, 3)));
+    return create_div(create_mul(d, p), q);
+}
+
 static void test_prop_integrate_tower2(void) {
     const char* towers[][3] = {                                    // θ1, θ2, a non-elementary g
         { "exp(x)", "ln(x)", "exp(x)*ln(x)" }, { "ln(x)", "ln(x+1)", "ln(x)*ln(x+1)" },
         { "ln(x)", "ln(ln(x))", "ln(ln(x))" }, { "exp(x)", "ln(exp(x)+1)", "ln(exp(x)+1)" },
     };
-    int roundtrips = 0, rejected = 0;
+    int roundtrips = 0, rejected = 0, rootsums = 0;
     for (int trial = 0; trial < TRIALS / 2; trial++) {
         const char* const* tw = towers[rnd(0, 3)];
         Expr* F = NULL, *extra = NULL;
+        bool den = false;                                         // a θ2 denominator so far (the cap is degree 6)
         for (int k = 0; k <= 2; k++) {
             if (k < 2 && !rnd(0, 2)) continue;
             Expr* t = create_mul(create_poly_expr(poly_si((long[]){ rnd(-2, 2), rnd(0, 2) }, 1)), parse_input(tw[0]));
@@ -2003,6 +2053,7 @@ static void test_prop_integrate_tower2(void) {
             for (int i = 0; i < k; i++) t = create_mul(t, parse_input(tw[1]));
             if (k == 2 && !rnd(0, 5)) {                               // θ2 below (Hermite): c·θ2²/(θ2 + 3)
                 free_expr(t);
+                den = true;
                 t = create_div(create_mul(create_const(rnd(1, 2)), create_pow(parse_input(tw[1]), create_const(2))),
                                create_add(parse_input(tw[1]), create_const(3)));
             }
@@ -2010,9 +2061,14 @@ static void test_prop_integrate_tower2(void) {
                 free_expr(t);
                 Expr* q = quadratic_tower2_term(tw[1]);
                 extra = extra ? create_add(extra, q) : q;
+                den = true;
                 continue;
             }
             F = F ? create_add(F, t) : t;
+        }
+        if (trial % 4 == 0 && !den) {                             // cubic residues: a RootSum over K1
+            Expr* c = cubic_tower2_term(tw[1]);
+            extra = extra ? create_add(extra, c) : c;
         }
         Expr* f = F ? deriv(F) : create_const(0);
         if (extra) f = create_add(f, extra);
@@ -2021,6 +2077,7 @@ static void test_prop_integrate_tower2(void) {
         assert(r.status == RISCH_OK);
         assert(derivative_matches(r.result, f));
         roundtrips++;
+        rootsums += expr_has_rootsum(r.result);
         Expr* bad = create_add(expr_copy(f), parse_input(tw[2]));
         RischResult rb = integrate_exp(bad);
         assert(rb.status == RISCH_NONELEMENTARY);
@@ -2028,7 +2085,7 @@ static void test_prop_integrate_tower2(void) {
         free_expr(rb.result); free_expr(bad);
         free_expr(r.result); free_expr(f); if (F) free_expr(F);
     }
-    printf("  test_prop_integrate_tower2 PASSED (%d round trips, %d non-elementary by construction)\n", roundtrips, rejected);
+    printf("  test_prop_integrate_tower2 PASSED (%d round trips, %d with a RootSum, %d non-elementary by construction)\n", roundtrips, rootsums, rejected);
 }
 
 // denominators in sin/cos: θ = tan(x) (Bioche) or tan(x/2); normal part, polynomial part
@@ -2069,7 +2126,20 @@ static void test_reg_integrate_tan(void) {
         assert(r.status == RISCH_NONELEMENTARY && r.result);
         free_expr(r.result);
     }
-    const char* outside[] = { "1/(sin(x)+cos(x)^2)", "ln(x)/(1+cos(x))", "1/(1+sin(x)*cos(1))" };
+    const char* roots[][2] = {                                     // residues of degree 4 and 6: RootSums in tan(x/2)
+        { "1/(sin(x)+cos(x)^2)", "RootSum(25t^4 - 5t^2 - 1, t -> t * ln(tan(1/2x) + t + 5 * t^2 - 10 * t^3))" },
+        { "1/(2+sin(x)^3)",
+          "RootSum(34992t^6 + 3888t^4 + 108t^2 + 1, t -> t * ln(tan(1/2x) + 2 + 18 * t + 162 * t^2 + 648 * t^3 + 1944 * t^4 + 5832 * t^5))" },
+    };
+    for (size_t i = 0; i < sizeof roots / sizeof roots[0]; i++) {
+        Expr* f = parse_input(roots[i][0]);
+        RischResult r = integrate_exp(f);
+        assert(r.status == RISCH_OK);
+        expect_str(expr_to_string(r.result), roots[i][1]);
+        assert(derivative_matches(r.result, f));
+        free_expr(r.result); free_expr(f);
+    }
+    const char* outside[] = { "1/(sin(x)^7+2)", "ln(x)/(1+cos(x))", "1/(1+sin(x)*cos(1))" };   // residues of degree 14 first
     for (size_t i = 0; i < sizeof outside / sizeof outside[0]; i++) {
         RischResult r = risch_str(outside[i]);
         assert(r.status == RISCH_UNSUPPORTED && !r.result && r.reason);

@@ -4,7 +4,8 @@
 // Tr(s^k), k = 1 .. deg d, lies in Q (Newton's identities, exact). A nonconstant one proves
 // ∫ h/d non-elementary (Thm 5.6.1). Otherwise R(z) ∈ Q[z] is factored: a linear factor gives
 // c·ln(gcd(d, h - c·D(d))); a quadratic one gives the conjugate pair in real form, with the gcd
-// taken over K(√M) (logpair_tmpl.h); degree >= 3 is not supported (it would need a RootSum over θ).
+// taken over K(√M) (logpair_tmpl.h); degree 3 .. 6 gives RootSum(f, t -> t·ln(g_t)) with the gcd
+// over K(α), α a root of f (rootsum_tmpl.h).
 #include "residue.h"
 #include "factor.h"
 #include <stdlib.h>
@@ -246,7 +247,11 @@ static KFrac kfrac_signed_add(const KFrac* a, const KFrac* b, TowerKind kind, in
 #define LT_FR_ZERO(x) ((KFrac){ { 0, 0, NULL }, kp_one() })
 #define LT_FR_IS_ZERO(f) ((f)->n.n == 0)
 #define LT_FR_FREE(f) kfrac_free(f)
+#define LT_C_COPY(x, a) qfn_copy(a)
+#define LT_C_IS_ZERO(a) qfn_is_zero(a)
 #include "logpair_tmpl.h"
+#include "rootsum_tmpl.h"
+#include "logterm_undef.h"
 
 typedef kq_Pair Pair;
 
@@ -332,6 +337,25 @@ static bool quadratic_term(Acc* A, const Polynomial* f, const Ctx* X) {
     return pe != NULL;
 }
 
+// --- residues of degree >= 3: a RootSum over θ (rootsum_tmpl.h) ---
+
+#define ROOT_DEGREE_LIMIT 6 // the arithmetic over K(α) grows with deg f
+
+// RootSum(f, t -> t·ln(g_t)), g_α = gcd(d, h - α·D(d)) = Σ t^i·L_i; false when a check fails
+static bool root_term(Acc* A, const Polynomial* f, const Ctx* X) {
+    kq_RootLog r;
+    bool ok = kq_root_log(&(kq_RootIn){ X->t, f, &(kq_HD){ &X->hd->n, &X->hd->d } }, &r);
+    if (ok) {
+        Expr** c = malloc((size_t)r.n * sizeof(Expr*));
+        for (int i = 0; i < r.n; i++) c[i] = r.L[i].n ? lpoly_expr_order(&r.L[i], X->t, true) : NULL;
+        LogTerm x = { 2, create_rootsum_terms(poly_copy(f), c), r.deriv };
+        r.deriv = (KFrac){ { 0, 0, NULL }, kp_one() };          // moved into the sum
+        acc_add(A, &x);
+    }
+    kq_root_log_free(&r);
+    return ok;
+}
+
 // --- the entry point ---
 
 // the terms for every irreducible factor of R(z) ∈ Q[z]
@@ -350,9 +374,14 @@ static ResidueStatus terms_for(const Polynomial* Rz, const Ctx* X, LogPart* out)
             rat_neg(&b, &b);
             rational_term(&A, &b, X);
             rat_clear(&a); rat_clear(&b);
-        } else if (deg > 2) {
+        } else if (deg > ROOT_DEGREE_LIMIT) {
             st = RESIDUE_UNSUPPORTED;
-            out->reason = "residues that are algebraic numbers of degree 3 or more (a RootSum over exp, ln or tan) are not supported yet";
+            out->reason = "residues that are algebraic numbers of degree above 6 are not supported";
+        } else if (deg > 2) {
+            if (!root_term(&A, f, X)) {
+                st = RESIDUE_UNSUPPORTED;
+                out->reason = "internal check failed: the RootSum over exp/ln does not differentiate back";
+            }
         } else if (!quadratic_term(&A, f, X)) {
             st = RESIDUE_UNSUPPORTED;
             out->reason = "internal check failed: the arctangents over exp/ln do not differentiate back";

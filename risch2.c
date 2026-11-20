@@ -928,7 +928,11 @@ static KFrac kf_signed_add(const KFrac* a, const KFrac* b, TowerKind kind, int s
 #define LT_FR_ZERO(x) k2frac_zero((x)->t->kind)
 #define LT_FR_IS_ZERO(f) ((f)->n.n == 0)
 #define LT_FR_FREE(f) k2frac_free(f)
+#define LT_C_COPY(x, a) kf_copy(a)
+#define LT_C_IS_ZERO(a) kf_is_zero(a)
 #include "logpair_tmpl.h"
+#include "rootsum_tmpl.h"
+#include "logterm_undef.h"
 
 // the sign of a's top coefficient (its numerator's, the denominator being monic)
 static int k2_lead_sign(const K2Poly* a) { return lead_sign(&a->a[a->n - 1].n); }
@@ -1025,9 +1029,24 @@ static bool quadratic_log2(const Frac2* X, const Polynomial* f, LogPart2* out) {
     return pe != NULL;
 }
 
-#define CUBIC_RESIDUES "residues over the outer ln that are algebraic numbers of degree 3 or more (a RootSum) are not supported yet"
+#define ROOT_DEGREE_LIMIT 6 // the arithmetic over K1(α) grows with deg f
+#define HIGH_RESIDUES "residues over the outer ln that are algebraic numbers of degree above 6 are not supported"
 
-// the terms for each irreducible factor of R(z): rational roots, conjugate pairs, else unsupported
+// RootSum(f, t -> t·ln(g_t)) over K1(α) for deg f >= 3; false when a check fails
+static bool root_log2(const Frac2* X, const Polynomial* f, LogPart2* out) {
+    kk_RootLog r;
+    bool ok = kk_root_log(&(kk_RootIn){ X->E, f, &(kk_HD){ &X->R->h, &X->R->d } }, &r);
+    if (ok) {
+        Expr** c = malloc((size_t)r.n * sizeof(Expr*));
+        for (int i = 0; i < r.n; i++) c[i] = r.L[i].n ? poly2_expr(&r.L[i], X->F, true) : NULL;
+        log_add(out, create_rootsum_terms(poly_copy(f), c), r.deriv);
+        r.deriv = k2frac_zero(X->E->t->kind);                    // moved into the sum
+    }
+    kk_root_log_free(&r);
+    return ok;
+}
+
+// the terms for each irreducible factor of R(z): rational roots, conjugate pairs, RootSums (degree 3 .. 6)
 static RischResult log_part2(const Frac2* X, const Polynomial* Rz, LogPart2* out) {
     Factorization* fz = factorize(Rz);
     RischResult r = { RISCH_OK, NULL, NULL };
@@ -1042,7 +1061,10 @@ static RischResult log_part2(const Frac2* X, const Polynomial* Rz, LogPart2* out
             rat_neg(&b, &b);
             if (!rat_is_zero(&b)) rational_log2(X, &b, out);   // a zero residue contributes nothing
             rat_clear(&a); rat_clear(&b);
-        } else if (deg > 2) r = failure(RISCH_UNSUPPORTED, CUBIC_RESIDUES);
+        } else if (deg > ROOT_DEGREE_LIMIT) r = failure(RISCH_UNSUPPORTED, HIGH_RESIDUES);
+        else if (deg > 2) {
+            if (!root_log2(X, q, out)) r = failure(RISCH_UNSUPPORTED, "internal check failed: the RootSum over the outer ln does not differentiate back");
+        }
         else if (!quadratic_log2(X, q, out)) r = failure(RISCH_UNSUPPORTED, "internal check failed: the arctangents over the outer ln do not differentiate back");
     }
     free_factorization(fz);

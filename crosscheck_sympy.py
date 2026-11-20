@@ -130,13 +130,35 @@ def check_solve(p):
         assert abs(sp.N(p.subs(x, r), 50)) < sp.Float("1e-35") * scale, f"claimed root {r} is not a root: {out}"
 
 
-def rootsum_ok(f, out):
-    """High-precision check of an antiderivative that contains RootSum terms."""
-    rootsums = re.findall(ROOTSUM, out)
-    rest = re.sub(r"\s*[+-]?\s*" + ROOTSUM, "", out).strip()
+def split_rootsums(out):
+    """The (q, S) of each RootSum(q, t -> t * ln(S)) term (parentheses matched, S may hold ln(...)),
+    and the rest of the sum."""
+    found, rest, i = [], "", 0
+    while (j := out.find("RootSum(", i)) >= 0:
+        depth, k = 0, j + len("RootSum")
+        while True:                                  # k ends on the closing parenthesis
+            depth += {"(": 1, ")": -1}.get(out[k], 0)
+            if depth == 0:
+                break
+            k += 1
+        inner = out[j + len("RootSum("):k]
+        q, body = inner.split(", t -> t * ln(", 1)
+        found.append((q, body[:-1]))
+        rest += out[i:j]
+        i = k + 1
+    rest = (rest + out[i:]).strip()
+    rest = re.sub(r"(\s*[+-]\s*)+$", "", rest)             # the sign that joined a RootSum
     rest = re.sub(r"^\+\s*", "", rest)
+    rest = re.sub(r"\s+([+-])\s+(?=[+-])", " ", rest)
+    return found, rest
+
+
+def rootsum_ok(f, out, points=(sp.Rational(-33, 10), sp.Rational(-3, 5), sp.Rational(13, 10), sp.Rational(29, 10))):
+    """High-precision check of an antiderivative that contains RootSum terms: d/dx of the rest
+    plus Σ_t t·D(S)/S over the roots t of q, at 60 digits (also for S over exp/ln/tan towers)."""
+    rootsums, rest = split_rootsums(out)
     d_rest = sp.diff(to_sympy(rest), x) if rest else sp.Integer(0)
-    for x0 in (sp.Rational(-33, 10), sp.Rational(-3, 5), sp.Rational(13, 10), sp.Rational(29, 10)):
+    for x0 in points:
         val = sp.N(d_rest.subs(x, x0), 60)
         for q, body in rootsums:
             S = to_sympy(body)
@@ -314,6 +336,9 @@ def compare_risch(f, ref_form=None, numeric=False, limit=120):
         assert ref is None or nonelem_ref, f"we say non-elementary, SymPy integrates {f}: {ref}"
         return "nonelementary" if ref is not None else "unconfirmed"
     assert not nonelem_ref, f"SymPy proves {f} non-elementary, we gave {out}"
+    if "RootSum" in out:                     # residues of degree >= 3; x > 1 keeps every ln real
+        assert rootsum_ok(f, out, (sp.Rational(13, 10), sp.Rational(29, 10), sp.Rational(37, 10))), f"d/dx of our {out} differs from {f}"
+        return "rootsum"
     d = sp.diff(to_sympy(out), x) - f
     if numeric:
         assert numerically_zero(d, f), f"d/dx of our {out} differs from {f}"
@@ -363,9 +388,17 @@ def check_frac(rng):
             e = rng.choice([1, 2, 3])
             F += sp.atan(theta_poly(rng, th, 1) / sp.sqrt(e)) / sp.sqrt(e)
         f = sp.together(sp.diff(F, x))
+        if rng.random() < 0.3:                       # cubic residues: a RootSum over θ
+            f += cubic_term(rng, th)
     else:
         f = theta_poly(rng, th, rng.randint(0, 2)) / theta_poly(rng, th, rng.randint(1, 2))
     return compare_risch(f)
+
+
+def cubic_term(rng, th):
+    """D(θ)·(c1·θ + c0)/(θ³ + a·θ + b): constant residues, of degree 3 when the cubic is irreducible."""
+    q = th**3 + rng.randint(-2, 2) * th + rng.choice([-3, -2, -1, 1, 2, 3])
+    return sp.diff(th, x) * (rng.randint(-2, 2) * th + rng.randint(1, 3)) / q
 
 
 def check_trig(rng):
@@ -421,6 +454,8 @@ def check_tower2(rng):
     if deriv and rng.random() < 0.4:             # an atan or a log of a quadratic in θ2
         F += rng.choice([sp.atan(th2), sp.atan(th1 * th2), sp.atan(th2 / 2), sp.log(th2**2 + 2), sp.atan(th2**2)])
     f = sp.diff(F, x) if deriv else F
+    if deriv and rng.random() < 0.3:             # cubic residues: a RootSum over K1
+        f += cubic_term(rng, th2)
     if f == 0:
         return "elementary"
     return compare_risch(f, None, numeric=True, limit=20)
@@ -548,7 +583,7 @@ def main():
     rootsums = radicals = 0
     definite = {"exact": 0, "numeric": 0, "pole": 0}
     infinite = {"exact": 0, "numeric": 0, "divergent": 0}
-    exps = {"elementary": 0, "nonelementary": 0, "unconfirmed": 0, "unsupported": 0}
+    exps = {"elementary": 0, "rootsum": 0, "nonelementary": 0, "unconfirmed": 0, "unsupported": 0}
     logs = dict(exps)
     fracs = dict(exps)
     trigs = dict(exps)
@@ -587,7 +622,7 @@ def main():
           f"{exps['unconfirmed']} non-elementary where SymPy's Risch failed, {exps['unsupported']} unsupported; "
           f"ln integrals: {logs['elementary']} elementary, {logs['nonelementary']} proved non-elementary (SymPy agrees), "
           f"{logs['unconfirmed']} unconfirmed, {logs['unsupported']} unsupported; "
-          f"denominators in exp/ln: {fracs['elementary']} elementary, {fracs['nonelementary']} proved non-elementary "
+          f"denominators in exp/ln: {fracs['elementary']} elementary ({fracs['rootsum']} more with a RootSum, 60 digits), {fracs['nonelementary']} proved non-elementary "
           f"(SymPy agrees), {fracs['unconfirmed']} unconfirmed, {fracs['unsupported']} unsupported; "
           f"sin/cos: {trigs['elementary']} elementary, {trigs['nonelementary']} proved non-elementary (SymPy agrees), "
           f"{trigs['unconfirmed']} unconfirmed, {trigs['unsupported']} unsupported; "
@@ -596,7 +631,7 @@ def main():
           f"definite exp/sin/cos: {dexps['exact']} exact (28 digits), {dexps['numeric']} numeric-only, "
           f"{dexps['refused']} refused at infinity; definite with sin/cos/exp denominators: "
           f"{dtows['exact']} exact, {dtows['numeric']} numeric-only, {dtows['pole']} poles, "
-          f"{dtows['refused']} refused, {dtows['skipped']} skipped; ln over exp/ln: {tw2s['elementary']} elementary, "
+          f"{dtows['refused']} refused, {dtows['skipped']} skipped; ln over exp/ln: {tw2s['elementary']} elementary ({tw2s['rootsum']} more with a RootSum), "
           f"{tw2s['nonelementary']} proved non-elementary (SymPy agrees), {tw2s['unconfirmed']} unconfirmed, "
           f"{tw2s['unsupported']} unsupported")
 

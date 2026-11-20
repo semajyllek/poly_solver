@@ -20,6 +20,7 @@ A fast C library and CLI for symbolic polynomial algebra and linear systems with
     - `1/(1+exp(x))` gives `x - ln(exp(x) + 1)`;
     - `1/(x*ln(x))` gives `ln(abs(ln(abs(x))))`;
     - `exp(x)/(1+exp(2x))` gives `atan(exp(x))`, and `1/(x*(ln(x)^2+3))` gives `1/3 * sqrt(3) * atan(1/3 * sqrt(3) * ln(abs(x)))`;
+    - residues of degree 3 to 6 give an exact RootSum over the tower: `exp(x)/(exp(3x)+2)` gives `RootSum(108t^3 - 1, t -> t * ln(exp(x) + 6 * t))`, and `1/(sin(x)+cos(x)^2)` a RootSum in `tan(x/2)`;
     - `1/ln(x)` and `x/(1+exp(x))` are proved non-elementary.
   - **sin and cos** of polynomials, mixed with `exp` and rational functions:
     - `x*sin(x)` gives `sin(x) - x * cos(x)`;
@@ -112,16 +113,16 @@ Matrix entries can be integers, fractions or decimals of any size (`1/3`, `-5/7`
 
 ### Limits
 
-- When a logarithm's coefficient is an algebraic number of degree 3 or more, the answer is an exact `RootSum(q(t), t -> t * ln(S(t, x)))`: the sum of `t·ln(S(t, x))` over the roots of `q`. This happens only when the roots aren't known in closed form. Example: `1/(x^5+x+3)`, whose roots can't be written with radicals at all (its Galois group is S5).
+- When a logarithm's coefficient is an algebraic number of degree 3 or more, the answer is an exact `RootSum(q(t), t -> t * ln(S(t, x)))`: the sum of `t·ln(S(t, x))` over the roots of `q`. For rational functions this happens only when the roots aren't known in closed form. Example: `1/(x^5+x+3)`, whose roots can't be written with radicals at all (its Galois group is S5). Over exp, ln or tan (and an outer ln) the RootSum is always kept, with S a polynomial in the tower written as `Σ t^i·(…)`; definite integrals over it give the numeric value.
 - Complex roots of other irreducible factors of degree 3 or more (for example `x^3 + x + 1`, or the Capelli factors `x^4 ± 2x^2 + 2` of `x^8 + 4`) are counted but not located.
 - Exp, sin and cos arguments must be polynomials. A denominator involving exp may use only one exponential tower: every `exp` argument a rational multiple of one polynomial. A denominator involving sin or cos needs every argument to be an integer multiple of one polynomial (`sin(x)` and `cos(2x)`). These are reported as not supported yet:
-  - denominators whose residues are algebraic numbers of degree 3 or more, such as `exp(x)/(exp(3x)+2)` or `1/(sin(x)+cos(x)^2)`. These are elementary, but they would need a RootSum over exp, ln or tan;
+  - denominators whose residues are algebraic numbers of degree 7 or more, such as `exp(x)/(exp(7x)+2)` or `1/(sin(x)^7+2)`. These are elementary;
   - `exp` or `ln` together with a sin/cos denominator, such as `exp(x)/(1+cos(x))`;
   - `simplify` of any sum of sin/cos in a denominator (`tan(x)`), and `differentiate` of those that need `tan(x/2)`, such as `1/(1+cos(x))` (the exact derivative would be unreadable in `tan(x/2)`);
   - denominators with independent exponentials, such as `exp(x)/(exp(x)+exp(x^2))`;
   - `exp(1/x)`, `sin(1/x)`, and constants such as `exp(3)` or `cos(1)`;
   - `ln(2x)·ln(x)` and `exp(x)·ln(exp(x))`, where the outer ln lies in the inner tower (a new constant `ln 2`, or `ln(exp(x)) = x`);
-  - an outer ln in a denominator whose residues are algebraic numbers of degree 3 or more (`1/(x·ln(x)·(ln(ln(x))^3-2))`), three or more levels, `exp` of a non-polynomial (`exp(exp(x))`), and `ln` together with `sin` or `cos`;
+  - an outer ln in a denominator whose residues are algebraic numbers of degree 7 or more, three or more levels, `exp` of a non-polynomial (`exp(exp(x))`), and `ln` together with `sin` or `cos`;
   - definite integrals with `ln`; with a sum of sin/cos or exp in a denominator over an infinite range, or whose denominator has coefficients depending on x (`1/(x+exp(x))`) or a nonlinear argument (`1/(2+cos(x^2))`); and where such a denominator vanishes at a point where the numerator may too (`x/sin(x)` on `[-1, 1]`, which is finite there);
   - definite integrals over a range where a coefficient's denominator vanishes, even when the integrand stays finite (`sin(x)/x` on `[0, 1]`);
   - infinite ranges where some exp/sin/cos term does not decay exponentially: `cos(x)/x` on `[1, inf]` converges but is refused, and so is the divergent `exp(x)` on `[0, inf]`.

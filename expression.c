@@ -104,6 +104,13 @@ Expr* create_rootsum(Polynomial* q, Polynomial** s, int s_deg) {
     e->rootsum.q = q;
     e->rootsum.s = s;
     e->rootsum.s_deg = s_deg;
+    e->rootsum.c = NULL;
+    return e;
+}
+
+Expr* create_rootsum_terms(Polynomial* q, Expr** c) {
+    Expr* e = create_rootsum(q, NULL, -1);
+    e->rootsum.c = c;
     return e;
 }
 Expr* create_sqrt(Expr* arg) { return create_unary_fn(EXPR_SQRT, arg); }
@@ -139,6 +146,12 @@ Expr* expr_copy(const Expr* e) {
         case EXPR_SQRT: return create_sqrt(expr_copy(e->fn_arg));
         case EXPR_TRIG: return create_trig(e->trig.kind, &e->trig.angle);
         case EXPR_ROOTSUM: {
+            if (e->rootsum.c) {
+                int n = polynomial_degree(e->rootsum.q);
+                Expr** c = malloc((size_t)n * sizeof(Expr*));
+                for (int i = 0; i < n; i++) c[i] = e->rootsum.c[i] ? expr_copy(e->rootsum.c[i]) : NULL;
+                return create_rootsum_terms(poly_copy(e->rootsum.q), c);
+            }
             Polynomial** s = malloc((size_t)(e->rootsum.s_deg + 1) * sizeof(Polynomial*));
             for (int k = 0; k <= e->rootsum.s_deg; k++) s[k] = poly_copy(e->rootsum.s[k]);
             return create_rootsum(poly_copy(e->rootsum.q), s, e->rootsum.s_deg);
@@ -202,6 +215,9 @@ void free_expr(Expr* expr) {
             free_expr(expr->fn_arg);
             break;
         case EXPR_ROOTSUM:
+            if (expr->rootsum.c)
+                for (int i = 0; i < polynomial_degree(expr->rootsum.q); i++) free_expr(expr->rootsum.c[i]);
+            free(expr->rootsum.c);
             free_polynomial(expr->rootsum.q);
             for (int k = 0; k <= expr->rootsum.s_deg; k++) free_polynomial(expr->rootsum.s[k]);
             free(expr->rootsum.s);
@@ -447,11 +463,32 @@ static void emit_tx_term(StrBuf* sb, const Polynomial* c, int k) {
     free_polynomial(shown);
 }
 
+// c·t^i: c's sign folded into the sum, parentheses only around a sum, 1·t^i as t^i
+static void emit_t_term(StrBuf* sb, const Expr* c, int i) {
+    char* s = expr_to_string(c);
+    bool sum = strstr(s + 1, " + ") || strstr(s + 1, " - ");
+    bool neg = !sum && s[0] == '-';
+    const char* body = neg ? s + 1 : s;
+    if (sb->buf[sb->len - 1] != '(') sb_append(sb, neg ? " - " : " + ");
+    else if (neg) sb_append(sb, "-");
+    bool one = strcmp(body, "1") == 0 && i > 0;
+    if (!one) sb_appendf(sb, sum && i > 0 ? "(%s)" : "%s", body);
+    if (i > 0) sb_append(sb, one ? "t" : " * t");
+    if (i > 1) sb_appendf(sb, "^%d", i);
+    free(s);
+}
+
 // RootSum(q(t), t -> t * ln(S(t, x)))
 static void emit_rootsum(const Expr* e, StrBuf* sb) {
     sb_append(sb, "RootSum(");
     sb_append_owned(sb, poly_to_string_var(e->rootsum.q, "t"));
     sb_append(sb, ", t -> t * ln(");
+    if (e->rootsum.c) {                                   // Σ t^i·c[i], c[0] (with θ's top power) first
+        for (int i = 0; i < polynomial_degree(e->rootsum.q); i++)
+            if (e->rootsum.c[i]) emit_t_term(sb, e->rootsum.c[i], i);
+        sb_append(sb, "))");
+        return;
+    }
     for (int k = e->rootsum.s_deg; k >= 0; k--)
         if (!poly_is_zero(e->rootsum.s[k])) emit_tx_term(sb, e->rootsum.s[k], k);
     sb_append(sb, "))");
@@ -903,7 +940,13 @@ static double eval_binop(const Expr* e, double x, bool* ok) {
 }
 
 // S(alpha, x) for complex alpha
-static double complex eval_tx(const Expr* e, double complex alpha, double x) {
+static double complex eval_tx(const Expr* e, double complex alpha, double x, bool* ok) {
+    if (e->rootsum.c) {                                   // Σ alpha^i·c[i](x)
+        double complex sum = 0, ap = 1;
+        for (int i = 0; i < polynomial_degree(e->rootsum.q); i++, ap *= alpha)
+            if (e->rootsum.c[i]) sum += ap * expr_eval(e->rootsum.c[i], x, ok);
+        return sum;
+    }
     double complex sum = 0, xp = 1;
     for (int k = 0; k <= e->rootsum.s_deg; k++, xp *= x) {
         double complex c = 0, ap = 1;
@@ -927,7 +970,7 @@ static double eval_rootsum(const Expr* e, double x, bool* ok) {
     approx_complex_roots(e->rootsum.q, roots);
     double complex total = 0;
     for (int i = 0; i < n; i++) {
-        double complex s = eval_tx(e, roots[i], x);
+        double complex s = eval_tx(e, roots[i], x, ok);
         if (s == 0) *ok = false;
         total += roots[i] * clog(s);
     }

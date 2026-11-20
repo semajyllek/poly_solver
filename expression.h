@@ -51,9 +51,10 @@ typedef struct Expr {
         struct Expr* fn_arg;       // EXPR_ATAN: atan(arg), EXPR_SQRT: sqrt(arg), EXPR_EXP: exp(arg), EXPR_SIN/COS: sin/cos(arg)
         struct {                   // EXPR_ROOTSUM: Σ over roots t of q of t·ln(S(t, x))
             Polynomial* q;         //   univariate in t, irreducible over Q
-            Polynomial** s;        //   S = Σ s[k](t)·x^k, each s[k] of degree < deg q
+            Polynomial** s;        //   S = Σ s[k](t)·x^k, each s[k] of degree < deg q (NULL with c)
             int s_deg;
-        } rootsum;
+            struct Expr** c;       //   or S = Σ t^i·c[i], c[i] an expression in x (NULL for 0), i < deg q:
+        } rootsum;                 //   over exp/ln/tan towers, where S is a polynomial in θ
         struct {                   // EXPR_TRIG: cos/sin/cot/csc(angle·π), or angle·π (TRIG_NONE)
             TrigKind kind;
             Rational angle;
@@ -82,6 +83,7 @@ Expr* create_sin(Expr* arg);
 Expr* create_cos(Expr* arg);
 Expr* create_sqrt(Expr* arg);
 Expr* create_rootsum(Polynomial* q, Polynomial** s, int s_deg); // takes ownership
+Expr* create_rootsum_terms(Polynomial* q, Expr** c);             // S = Σ t^i·c[i]; takes ownership
 Expr* create_trig(TrigKind kind, const Rational* angle);        // trig(angle·π)
 Expr* create_pi(void);                                          // π
 Expr* expr_copy(const Expr* e);                                 // deep copy
