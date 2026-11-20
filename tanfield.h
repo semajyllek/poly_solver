@@ -13,6 +13,8 @@ ExpForm tan_form(const Expr* e);
 
 LPoly tan_special(void);                              // 1 + θ², the special polynomial: D(1 + θ²) = 2H'·θ·(1 + θ²)
 
+// e as a reduced fraction over K[θ], θ = tan(H) (H given), if it is rational in tan(H)
+bool tan_frac(const Expr* e, const Polynomial* H, KFrac* f);
 // e as a polynomial in θ = tan(H) (H given), if it is one
 bool tan_poly(const Expr* e, const Polynomial* H, LPoly* p);
 

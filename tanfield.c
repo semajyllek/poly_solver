@@ -312,10 +312,14 @@ ExpForm tan_form(const Expr* e) {
     return F;
 }
 
-bool tan_poly(const Expr* e, const Polynomial* H, LPoly* p) {
+bool tan_frac(const Expr* e, const Polynomial* H, KFrac* f) {
     TConv C = { H, NULL };
+    return convert(e, &C, f);
+}
+
+bool tan_poly(const Expr* e, const Polynomial* H, LPoly* p) {
     KFrac f;
-    if (!convert(e, &C, &f)) return false;
+    if (!tan_frac(e, H, &f)) return false;
     bool ok = kp_is_one(&f.d);
     if (ok) *p = kp_copy(&f.n);
     kfrac_free(&f);

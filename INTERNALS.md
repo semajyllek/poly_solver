@@ -1097,6 +1097,33 @@ Tests:
 - `test_prop_definite_exp` integrates `D(Σ r(x)·exp(−x)·sin/cos(kx))` over random bounds `q·π` (q a multiple of 1/4) and `[q·π, ∞)`. It checks that each value equals `F(b) − F(a)` numerically and that every sin/cos is folded away.
 - The SymPy `check_definite_exp` stream compares with `mpmath.quad` to 28 digits on rational, q·π and infinite bounds, and also checks the refusals at infinity. In 300 cases (seeds 100–399) there were 0 failures: 201 exact values, 42 numeric-only (with `exp(−x²)`), and 57 refusals at a non-decaying infinite end.
 
+**A sum of exp or sin/cos in a denominator** (`definite_tower`, `deftower.c`). When `expsum` rejects a divisor with several terms, f is converted to `N/D` in one tower, θ = exp(v) or θ = tan(H) (§11.6, §11.8). Only finite ranges are taken: F may have infinitely many crossings on an infinite one, and terms such as `x − ln(exp(x) + 1)` cancel there. Then:
+1. **Supported shape.** The coefficients of D must be constants, and the coefficients of N must have x-denominators with no root in `[a, b]`.
+2. **tan(H).** H must be linear, `h1·x + h0`. All special points are of the form `α + β·π`, with `α = −h0/h1`.
+   - **θ = ∞** at `H = π/2 + kπ`. f has a pole there when `deg N > deg D`. Otherwise these are the crossings where F may jump.
+   - **θ = 0**, when `D(0) = 0`, at `H = kπ`. For k ≠ 0 the point is transcendental, so it is a pole (see the argument below). For k = 0 the point α is rational. There N is evaluated exactly: if it is nonzero, the point is a pole; if it is zero, the case is unsupported. `(x+1)/sin(x+1)` on `[−2, 0]` is finite.
+   - These points are compared with the bounds exactly when their π parts agree, and otherwise with π to 50 digits. That leaves no tie at bounds such as π.
+   - **Other real roots r of D** are at `H = atan(r) + kπ`. They are located in double precision from isolating intervals of width 10⁻¹⁵. A point within a relative 10⁻⁹ of a bound is reported as undecided.
+3. **exp(v).** Only positive roots r of D matter, since `exp(v) > 0`.
+   - r = 1 gives the rational point `−v0/v1`, tested exactly as above: `x/(exp(x) − 1)` on `[−1, 1]` is unsupported, not divergent.
+   - Other roots are at `(ln r − v0)/v1`, located in doubles.
+   - A nonlinear v with any positive root is unsupported.
+4. **Why a root of D is a pole.** For algebraic r ∉ {0, 1}, `atan(r) + kπ` and `ln(r)` are transcendental by Lindemann–Weierstrass: `e^{2i·atan r} = (1 + ir)/(1 − ir)` and `e^{ln r} = r` are algebraic. So the point x is transcendental.
+   - `N(·, r)` is a nonzero rational function with algebraic coefficients. If it vanished identically, the minimal polynomial of r over Q(x), which is its minimal polynomial over Q, would divide both N and D, but they are coprime.
+   - So `N(x, r) ≠ 0`, and f has a pole of order at least 1, which is not integrable. The same holds for θ = 0 with k ≠ 0 (x is a nonzero rational multiple of π plus α), and for θ = ∞ with `deg N > deg D` (there `lc(N)` is a nonzero rational function at a transcendental x).
+   - Quadrature cannot catch a wrong divergence verdict, so this argument is what such a verdict rests on.
+5. **Jumps.**
+   - Only `atan(P(tan H))` terms of F jump at a crossing. Where f is finite, the logs' `n·ln|θ|` parts cancel with `ln|cos H|`, so they do not jump.
+   - Each crossing inside the range adds the jump read from the argument's sign on either side, as for the atan poles in step 4.
+   - At a bound that is a crossing, atan terms take `±π/2` from the inside, and proper fractions in tan(H) tend to 0. A log of tan(H) or of cos(H) there leaves only the number.
+   - Example: `∫₀^{2π} 1/(2 + cos x) = 2/3·√3·π`, because `2/√3·atan(tan(x/2)/√3)` drops by `2π/√3` at π. Over `[0, π]` the value is the one-sided limit, `√3/3·π`.
+6. The quadrature check compares as before.
+
+Tests:
+- `test_reg_definite_tower` has 12 values, 8 poles (2 of them at a bound or with an offset argument), and 9 unsupported cases that must not be called divergent: `x/sin(x)`, `(x+1)/sin(x+1)` and `x/(exp(x)−1)` around their finite points, `(x+cos(x)−1)/sin(x)`, an infinite range, an x-dependent D, a nonlinear argument, a coefficient's pole, and a bound 10⁻¹³ below the pole of `1/(1 − tan x)` at π/4, which is undecided.
+- `test_prop_definite_tan` checks `∫` of `1/(a + b·cos x + c·sin x)` over k full periods against `2πk/√(a² − b² − c²)`, and random `[q1·π, q2·π]` against quadrature.
+- The SymPy `check_definite_tower` stream checks that 'diverges' is reported exactly when a numerically found real pole lies in the range, and checks the values against `mpmath.quad` to 28 digits. A double root such as `3 − 3·sin(x)` touches 0 without a sign change, so the checker confirms such minima with `findroot`. In 300 cases (seeds 100–399) there were 0 failures: 189 exact values, 35 numeric-only, and 55 poles, with 21 cases skipped where the denominator is near 0 at a bound.
+
 ### 11.6 Integration with exp and ln: the Risch algorithm (`expfield.c`, `risch.c`)
 
 **Setting.** The field is Q(x)(θ), with θ = exp(v) and v a nonconstant polynomial, so θ' = v'·θ and θ is transcendental over Q(x). The integrands are Laurent polynomials `f = Σ a_k·θ^k` with `a_k ∈ Q(x)`.

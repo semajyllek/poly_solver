@@ -1986,7 +1986,7 @@ static void test_reg_definite_exp(void) {
     }
     const char* refused[][3] = {
         { "cos(x)", "0", "inf" }, { "exp(x)", "0", "inf" }, { "sin(x)/x", "0", "1" },   // oscillating, growing, 0/0
-        { "1/(1+exp(x))", "0", "1" }, { "1/(x-3)", "0", "pi" }, { "exp(-x)+1/x", "1", "inf" },
+        { "ln(x)*exp(x)", "1", "2" }, { "1/(x-3)", "0", "pi" }, { "exp(-x)+1/x", "1", "inf" },
     };
     for (size_t i = 0; i < sizeof refused / sizeof refused[0]; i++) {
         DefiniteResult r = definite_text(refused[i][0], refused[i][1], refused[i][2]);
@@ -1999,6 +1999,80 @@ static void test_reg_definite_exp(void) {
     free_expr(x);
     printf("  test_reg_definite_exp PASSED (%zu exact, %zu numeric, %zu refused)\n",
            sizeof cases / sizeof cases[0], sizeof numeric / sizeof numeric[0], sizeof refused / sizeof refused[0]);
+}
+
+// definite integrals with a sum of exp or sin/cos in a denominator: tan crossings inside the
+// range (atan(tan(x/2)/√3) jumps at π) and at a bound, poles (θ = ∞ with deg N > deg D, roots
+// of D), points where N may vanish too (left unsupported, not called divergent)
+static void test_reg_definite_tower(void) {
+    const char* cases[][4] = {
+        { "1/(2+cos(x))", "0", "pi", "1/3 * sqrt(3) * pi" },             // tan(x/2) infinite at the bound
+        { "1/(2+cos(x))", "0", "2pi", "2/3 * sqrt(3) * pi" },            // one crossing
+        { "1/(2+cos(x))", "0", "4pi", "4/3 * sqrt(3) * pi" },            // two
+        { "1/(2+cos(x))", "2pi", "0", "-2/3 * sqrt(3) * pi" },
+        { "1/(2+sin(x))", "0", "2pi", "2/3 * sqrt(3) * pi" },
+        { "1/(5+3cos(x))", "0", "2pi", "1/2 * pi" },
+        { "1/(1+sin(x)^2)", "0", "pi", "1/2 * sqrt(2) * pi" },          // tan(x) infinite at π/2 inside
+        { "1/(1+cos(x))", "0", "1", "tan(1/2)" },
+        { "tan(x)", "0", "1", "-ln(abs(cos(1)))" },
+        { "1/(1+exp(x))", "0", "1", "-ln(1 + exp(1)) + ln(2) + 1" },
+        { "1/(exp(x)-2)", "1", "2", "-1/2 * ln(abs(2 - exp(1))) + 1/2 * ln(abs(2 - exp(2))) - 1/2" },
+        { "1/(2+exp(x))", "0", "1", "-1/2 * ln(2 + exp(1)) + 1/2 * ln(3) + 1/2" },  // exp(x) never meets -2
+    };
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        DefiniteResult r = definite_text(cases[i][0], cases[i][1], cases[i][2]);
+        assert(!r.error && r.exact);
+        expect_str(expr_to_string(r.exact), cases[i][3]);
+        definite_free(&r);
+    }
+    const char* poles[][3] = {
+        { "1/(1+cos(x))", "0", "pi" }, { "1/sin(x)", "-1", "1" }, { "1/(exp(x)-1)", "-1", "1" },
+        { "1/(exp(x)-2)", "0", "1" }, { "tan(x)", "0", "2" }, { "1/(2+cos(x)) + 1/(1+cos(x))", "3", "4" },
+        { "1/(exp(x)-1)", "0", "1" },                                    // at a bound
+        { "1/(1-2*cos(x+1))", "0", "1/2" },                              // at -1 + π/3: H = (x + 1)/2
+    };
+    for (size_t i = 0; i < sizeof poles / sizeof poles[0]; i++) {
+        DefiniteResult r = definite_text(poles[i][0], poles[i][1], poles[i][2]);
+        assert(r.error && strstr(r.error, "diverges"));
+    }
+    const char* unsupported[][3] = {
+        { "x/sin(x)", "-1", "1" }, { "(x+1)/sin(x+1)", "-2", "0" }, { "x/(exp(x)-1)", "-1", "1" },  // finite there
+        { "1/(1+exp(x))", "0", "inf" }, { "1/(x+exp(x))", "0", "1" }, { "1/(2+cos(x^2))", "0", "1" },
+        { "(x+cos(x)-1)/sin(x)", "-1", "1" },                            // N = x/2 + (x - 2)/2·θ²: only N(0, 0) counts
+        { "1/(x*(2+cos(x)))", "-1", "1" },                               // a coefficient's pole
+        { "1/(1-tan(x))", "0", "0.785398163397" },                       // just below π/4: undecided, not divergent
+    };
+    for (size_t i = 0; i < sizeof unsupported / sizeof unsupported[0]; i++) {
+        DefiniteResult r = definite_text(unsupported[i][0], unsupported[i][1], unsupported[i][2]);
+        assert(r.error && !strstr(r.error, "diverges"));
+    }
+    printf("  test_reg_definite_tower PASSED (%zu exact, %zu poles, %zu unsupported)\n",
+           sizeof cases / sizeof cases[0], sizeof poles / sizeof poles[0], sizeof unsupported / sizeof unsupported[0]);
+}
+
+// ∫ 1/(a + b·cos(x) + c·sin(x)) over k full periods is 2πk/√(a² - b² - c²) (a² > b² + c²): the
+// crossings of tan(x/2) inside the range are all corrected; over random [q1·π, q2·π] the
+// exact value exists and agrees with quadrature
+static void test_prop_definite_tan(void) {
+    const char* qs[] = { "0", "pi/4", "pi/2", "pi", "3pi/2", "2pi", "-pi/3", "-pi", "5pi/2" };
+    int periods = 0, pieces = 0;
+    for (int trial = 0; trial < TRIALS / 2; trial++) {
+        long a = rnd(3, 6), b = rnd(-2, 2), c = rnd(-2, 2), k = rnd(1, 3);
+        char f[96], hi[16];
+        snprintf(f, sizeof f, "1/(%ld + %ld*cos(x) + %ld*sin(x))", a, b, c);
+        snprintf(hi, sizeof hi, "%ldpi", 2 * k);
+        DefiniteResult r = definite_text(f, "0", hi);
+        bool ok = true;
+        assert(!r.error && r.exact);
+        assert(fabs(expr_eval(r.exact, 0, &ok) - 2 * M_PI * k / sqrt((double)(a * a - b * b - c * c))) < 1e-9 && ok);
+        definite_free(&r);
+        periods++;
+        DefiniteResult q = definite_text(f, qs[rnd(0, 8)], qs[rnd(0, 8)]);
+        assert(!q.error && q.exact && fabs(expr_eval(q.exact, 0, &ok) - q.approx) < 1e-8);
+        definite_free(&q);
+        pieces++;
+    }
+    printf("  test_prop_definite_tan PASSED (%d full periods, %d ranges with q·pi bounds)\n", periods, pieces);
 }
 
 // random r(x)·exp(-x)·sin/cos(kx) sums F: ∫_a^b F' over [q1·π, q2·π] (q multiples of 1/4) or
@@ -2160,6 +2234,7 @@ void run_property_tests(void) {
     test_reg_integrate_radicals();
     test_reg_integrate_definite();
     test_reg_definite_exp();
+    test_reg_definite_tower();
     test_reg_expr_lead();
     test_reg_qsurd();
     test_reg_radical_products();
@@ -2188,4 +2263,5 @@ void run_property_tests(void) {
     test_prop_integrate_trig();
     test_prop_integrate_tan();
     test_prop_definite_exp();
+    test_prop_definite_tan();
 }

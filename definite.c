@@ -23,6 +23,8 @@
 #include "definite.h"
 #include "constfold.h"
 #include "expsum.h"
+#include "deftower.h"
+#include "tanfield.h"
 #include "risch.h"
 #include "roots.h"
 #include "parser.h"
@@ -127,15 +129,13 @@ static bool vanishes_on(const Polynomial* P, const Span* s) {
 
 // --- bounds q·π ---
 
-#define PI_50 "3.14159265358979323846264338327950288419716939937511" // |π - PI_50| < 1e-50
-
 // the value of a finite end: x, or x·PI_50
 static void end_value(const Endpoint* p, Rational* v) {
     rat_set(v, p->x);
     if (!p->pi) return;
     Rational pi;
     rat_init(&pi);
-    rat_parse_literal(&pi, PI_50);
+    pi_50(&pi);
     rat_mul(v, v, &pi);
     rat_clear(&pi);
 }
@@ -520,13 +520,64 @@ static Expr* term_limit(const Expr* term, int side) {
 // term at the bound x0; at a pole of its atan argument, the limit ±π/2 from inside the range
 typedef struct {
     const Rational* x0;
-    int inward; // +1 when the range lies to the right of x0
-    int inf;    // ±1: the bound is ±∞ and x0 is unused
-    bool pi;    // the bound is x0·π (never a pole of an atan argument: π is transcendental)
+    int inward;            // +1 when the range lies to the right of x0
+    int inf;               // ±1: the bound is ±∞ and x0 is unused
+    bool pi;               // the bound is x0·π (never a pole of an atan argument: π is transcendental)
+    const Polynomial* H;   // θ = tan(H) in the answer, or NULL
+    bool tan_inf;          // tan(H) is infinite at the bound
 } Bound;
+
+static double bound_double(const Bound* bd) { return rat_to_double(bd->x0) * (bd->pi ? M_PI : 1); }
+
+// a polynomial argument equal to H
+static bool is_arg(const Expr* a, const Polynomial* H) {
+    if (a->type != EXPR_POLY) return false;
+    Polynomial* d = poly_subtract(a->poly, H);
+    bool same = poly_is_zero(d);
+    free_polynomial(d);
+    return same;
+}
+
+// e contains tan(H), the tree sin(H)/cos(H)
+static bool has_tan(const Expr* e, const Polynomial* H) {
+    if (!H) return false;
+    switch (e->type) {
+        case EXPR_BINOP: {
+            const Expr *l = e->binop.left, *r = e->binop.right;
+            if (e->binop.op == OP_DIV && l->type == EXPR_SIN && r->type == EXPR_COS && is_arg(l->fn_arg, H)) return true;
+            return has_tan(l, H) || has_tan(r, H);
+        }
+        case EXPR_NEG: return has_tan(e->operand, H);
+        case EXPR_LN: return has_tan(e->ln_arg, H);
+        case EXPR_ATAN: case EXPR_SQRT: case EXPR_EXP: case EXPR_SIN: case EXPR_COS: return has_tan(e->fn_arg, H);
+        default: return false;
+    }
+}
+
+// the term at a bound where tan(H) is infinite: atan(P(tan H)) → ±π/2 from inside, a proper
+// fraction in tan(H) → 0, a term without tan(H) as it is; NULL (only the number is then
+// given) for a log of tan(H) or of cos(H), whose infinite parts cancel between terms
+static Expr* term_at_tan_infinity(const Expr* term, const Bound* bd) {
+    const Expr* a = find_atan(term);
+    if (a && has_tan(a->fn_arg, bd->H)) {
+        Rational half = rat_from_si(sign_at(a->fn_arg, bound_double(bd) + bd->inward * NUDGE), 2);
+        Expr* e = pi_multiple(term, a, &half);
+        rat_clear(&half);
+        return e;
+    }
+    const Expr* ln = find_fn(term, EXPR_LN);
+    if (ln && (has_tan(ln->ln_arg, bd->H) || (ln->ln_arg->type == EXPR_COS && is_arg(ln->ln_arg->fn_arg, bd->H)))) return NULL;
+    if (!has_tan(term, bd->H)) return bd->pi ? expr_at_pi(term, bd->x0) : expr_at(term, bd->x0);
+    KFrac q;
+    if (!tan_frac(term, bd->H, &q)) return NULL;
+    bool proper = kp_deg(&q.n) < kp_deg(&q.d);
+    kfrac_free(&q);
+    return proper ? create_const(0) : NULL;
+}
 
 static Expr* term_at(const Expr* term, const Bound* bd) {
     if (bd->inf) return term_limit(term, bd->inf);
+    if (bd->tan_inf) return term_at_tan_infinity(term, bd);
     if (bd->pi) return expr_at_pi(term, bd->x0);
     const Expr* atan_node = find_atan(term);
     const Polynomial* W = atan_node ? atan_pole_poly(atan_node->fn_arg) : NULL;
@@ -552,12 +603,34 @@ static int end_cmp(const Endpoint* p, const Endpoint* q) {
     return c;
 }
 
-// F(b) - F(a) plus the atan jump corrections over s, folded; NULL when a limit is not found
-static Expr* exact_value(const Expr* F, const Bounds* ab, const Span* s) {
+// one definite integral in progress: the integrand, its bounds, the range they span, and for
+// an answer in θ = tan(H) the points inside where θ is infinite
+typedef struct {
+    Expr* f;
+    const Bounds* ab;
+    const Span* s;
+    double scale;            // ∫|f| roughly: agreement is also relative to it (F(b) - F(a) may cancel to 0)
+    const Polynomial* H;     // or NULL
+    const TowerPoints* tp;   // with H
+} Problem;
+
+// the jumps of atan(P(tan H)) where tan(H) is infinite inside the range, in units of π
+static int tan_jumps(const Expr* arg, const Problem* pb) {
+    if (!pb->tp || !has_tan(arg, pb->H)) return 0;
+    int k = 0;
+    for (int i = 0; i < pb->tp->n; i++)
+        k += (sign_at(arg, pb->tp->cross[i] + NUDGE) - sign_at(arg, pb->tp->cross[i] - NUDGE)) / 2;
+    return k;
+}
+
+// F(b) - F(a) plus the atan jump corrections over the range, folded; NULL when a limit is not found
+static Expr* exact_value(const Expr* F, const Problem* pb) {
+    const Bounds* ab = pb->ab;
     int dir = end_cmp(&ab->a, &ab->b) < 0 ? 1 : -1;
     Terms T = { NULL, 0 }, parts = { NULL, 0 };
     collect(F, 1, &T);
-    Bound at_b = { ab->b.x, -dir, ab->b.inf, ab->b.pi }, at_a = { ab->a.x, dir, ab->a.inf, ab->a.pi };
+    bool b_inf = pb->tp && (dir > 0 ? pb->tp->at_hi : pb->tp->at_lo), a_inf = pb->tp && (dir > 0 ? pb->tp->at_lo : pb->tp->at_hi);
+    Bound at_b = { ab->b.x, -dir, ab->b.inf, ab->b.pi, pb->H, b_inf }, at_a = { ab->a.x, dir, ab->a.inf, ab->a.pi, pb->H, a_inf };
     bool ok = true;
     for (int i = 0; i < T.n; i++) {
         Expr* hi = ok ? term_at(T.t[i], &at_b) : NULL;
@@ -566,7 +639,7 @@ static Expr* exact_value(const Expr* F, const Bounds* ab, const Span* s) {
         if (hi) push(&parts, hi);
         if (lo) push(&parts, negated(lo));
         const Expr* atan_node = find_atan(T.t[i]);
-        int k = ok && atan_node ? atan_jumps(atan_node->fn_arg, s, &ok) : 0;
+        int k = ok && atan_node ? atan_jumps(atan_node->fn_arg, pb->s, &ok) + tan_jumps(atan_node->fn_arg, pb) : 0;
         Rational kk = rat_from_int(-(long)dir * k);
         if (k) push(&parts, pi_multiple(T.t[i], atan_node, &kk));
         rat_clear(&kk);
@@ -581,22 +654,14 @@ static Expr* exact_value(const Expr* F, const Bounds* ab, const Span* s) {
 
 // --- entry point ---
 
-// one definite integral in progress: the integrand, its bounds, and the range they span
-typedef struct {
-    Expr* f;
-    const Bounds* ab;
-    const Span* s;
-    double scale; // ∫|f| roughly: agreement is also relative to it (F(b) - F(a) may cancel to 0)
-} Problem;
-
 // the exact value from the antiderivative F (taken) when it agrees with the quadrature, else
 // NULL with r->note set
 static void exact_or_note(DefiniteResult* r, const Problem* pb, Expr* F) {
-    Expr* v = expr_has_rootsum(F) ? NULL : exact_value(F, pb->ab, pb->s);
+    Expr* v = expr_has_rootsum(F) ? NULL : exact_value(F, pb);
     bool ok = true;
     double d = v ? expr_eval(v, 0, &ok) : 0;
     if (expr_has_rootsum(F)) r->note = "the antiderivative has RootSum terms, so only the numeric value is given";
-    else if (!v) r->note = "the limit of the antiderivative at infinity was not found exactly";
+    else if (!v) r->note = "a limit of the antiderivative (at infinity, or where tan is infinite) was not found exactly";
     else if (ok && fabs(d - r->approx) <= AGREE * (1 + fabs(r->approx) + pb->scale)) r->exact = v;
     else r->note = "internal check failed: exact value disagrees with quadrature";
     if (v && !r->exact) free_expr(v);
@@ -648,12 +713,66 @@ static const char* exp_obstacle(const ExpSumShape* sh, const Span* s) {
 // the antiderivative of an exponential sum, or NULL with r->note set (no elementary one,
 // or outside the integrator's reach: then only the number is given)
 static Expr* exp_antiderivative(DefiniteResult* r, const Expr* f, const ExpSumShape* sh) {
-    if (sh->pure) return rational_antiderivative(r, f);
+    if (sh->pure) {                                       // c_0 itself: f may still spell 0·cos(x)
+        Expr* c0 = create_rational_fn(poly_copy(sh->c0_num), poly_copy(sh->c0_den));
+        Expr* F = rational_antiderivative(r, c0);
+        free_expr(c0);
+        return F;
+    }
     RischResult I = integrate_exp(f);
     if (I.status == RISCH_OK) return I.result;
     free_expr(I.result);
     r->note = I.status == RISCH_NONELEMENTARY ? "no elementary antiderivative, so only the numeric value is given" : I.reason;
     return NULL;
+}
+
+// the product of the x-denominators of N's coefficients (f = N/D in θ)
+static Polynomial* coefficient_poles(const LPoly* N) {
+    Rational one = rat_one_val();
+    Polynomial* p = poly_constant(&one);
+    rat_clear(&one);
+    for (int i = 0; i < N->n; i++) { Polynomial* q = poly_multiply(p, N->a[i].den); free_polynomial(p); p = q; }
+    return p;
+}
+
+// why the tower form F of f cannot be integrated over s exactly, or NULL (tp filled)
+static const char* tower_obstacle(const ExpForm* F, const Span* s, TowerPoints* tp) {
+    *tp = (TowerPoints){ NULL, 0, false, false };
+    if (F->unsupported) return F->unsupported;
+    if (s->lo_inf || s->hi_inf) return "infinite bounds with exp, sin or cos in a denominator are not supported yet";
+    Polynomial* P = coefficient_poles(&F->f);
+    bool vanishes = vanishes_on(P, s) || !clear_of_bands(P, s);
+    free_polynomial(P);
+    if (vanishes) return "a coefficient's denominator vanishes in [a, b]; this is not supported yet";
+    bool up = end_cmp(&s->ab->a, &s->ab->b) <= 0;
+    TowerEnds E = { up ? &s->ab->a : &s->ab->b, up ? &s->ab->b : &s->ab->a };
+    return tower_points(F, &E, tp);
+}
+
+// f = N/D with a sum of exp or of sin/cos in the denominator, over a finite range
+static DefiniteResult definite_tower(Expr* f, const Bounds* ab) {
+    DefiniteResult r = { NULL, 0, NULL, NULL };
+    ExpForm F = expr_has_trig(f) ? tan_form(f) : exp_form(f);
+    Span s = span_of(ab);
+    TowerPoints tp;
+    r.error = tower_obstacle(&F, &s, &tp);
+    if (!r.error && end_cmp(&ab->a, &ab->b) == 0) r.exact = create_const(0);
+    else if (!r.error) {
+        double scale = 0;
+        r.approx = (end_cmp(&ab->a, &ab->b) < 0 ? 1 : -1) * numeric_value_expr(f, &s, &scale);
+        RischResult I = integrate_exp(f);
+        if (I.status != RISCH_OK) {
+            free_expr(I.result);
+            r.note = I.status == RISCH_NONELEMENTARY ? "no elementary antiderivative, so only the numeric value is given" : I.reason;
+        } else {
+            bool tan = F.t.kind == TOWER_TAN;
+            exact_or_note(&r, &(Problem){ f, ab, &s, scale, tan ? F.t.v : NULL, tan ? &tp : NULL }, I.result);
+        }
+    }
+    tower_points_free(&tp);
+    rat_clear(&s.lo); rat_clear(&s.hi);
+    exp_form_free(&F);
+    return r;
 }
 
 // f with exp, sin or cos, or bounds q·π
@@ -662,7 +781,8 @@ static DefiniteResult definite_exp(Expr* f, const Bounds* ab) {
     ExpSumShape sh;
     const char* why = NULL;
     if (!expsum_shape(f, &sh, &why)) {
-        r.error = "definite integrals need a rational function or exp, sin and cos without ln or a sum in a denominator for now";
+        if (why == EXPSUM_SUM_DIVISOR) return definite_tower(f, ab);
+        r.error = "definite integrals need a rational function, or exp, sin and cos without ln, for now";
         return r;
     }
     Span s = span_of(ab);
@@ -673,7 +793,7 @@ static DefiniteResult definite_exp(Expr* f, const Bounds* ab) {
         double scale = 0;
         r.approx = (dir < 0 ? 1 : -1) * numeric_value_expr(f, &s, &scale);
         Expr* F = exp_antiderivative(&r, f, &sh);
-        if (F) exact_or_note(&r, &(Problem){ f, ab, &s, scale }, F);
+        if (F) exact_or_note(&r, &(Problem){ f, ab, &s, scale, NULL, NULL }, F);
     }
     rat_clear(&s.lo); rat_clear(&s.hi);
     expsum_shape_free(&sh);
@@ -699,7 +819,7 @@ DefiniteResult integrate_definite(Expr* f, const Bounds* ab) {
     else {
         r.approx = (dir < 0 ? 1 : -1) * numeric_value(&fn, &s);
         Expr* F = rational_antiderivative(&r, f);
-        if (F) exact_or_note(&r, &(Problem){ f, ab, &s, 0 }, F);
+        if (F) exact_or_note(&r, &(Problem){ f, ab, &s, 0, NULL, NULL }, F);
     }
     rat_clear(&s.lo); rat_clear(&s.hi);
     free_polynomial(one);

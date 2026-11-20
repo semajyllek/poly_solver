@@ -444,6 +444,61 @@ def check_definite_exp(rng):
     return "exact"
 
 
+def check_definite_tower(rng):
+    """integrate f a b with a sum of sin/cos or exp in the denominator: 1/(a + b·cos(x) + c·sin(x))
+    (poles when b² + c² >= a²), r(x)·cos/sin(x)/(a + cos(x)), 1/(c + exp(x)). 'diverges'
+    exactly when a real pole lies in [a, b] (found numerically, cases near a bound skipped);
+    values match mpmath.quad to 28 digits, numeric-only ones to 1e-8."""
+    kind = rng.random()
+    if kind < 0.5:
+        a, b, c = rng.randint(1, 5), rng.randint(-3, 3), rng.randint(-3, 3)
+        f = 1 / (a + b * sp.cos(x) + c * sp.sin(x))
+    elif kind < 0.75:
+        f = (rng.randint(-2, 2) + rng.randint(0, 1) * x) * rng.choice([sp.sin(x), sp.cos(x), sp.Integer(1)]) / (rng.randint(2, 4) + sp.cos(x))
+    else:
+        f = 1 / (rng.choice([-3, -2, -1, 1, 2]) + sp.exp(x))
+    names = list(PI_BOUNDS) + ["0", str(sp.Rational(rng.randint(-6, 6), rng.randint(1, 3)))]
+    lo_name, hi_name = rng.choice(names), rng.choice(names)
+    code, out, err = run_cli("integrate", to_cli(f), lo_name, hi_name)
+    val = lambda n: PI_BOUNDS[n] if n in PI_BOUNDS else sp.Rational(n)
+    lo, hi = sorted([float(val(lo_name)), float(val(hi_name))])
+    den = sp.lambdify(x, 1 / f, "mpmath") if kind < 0.5 or kind >= 0.75 else sp.lambdify(x, sp.denom(sp.together(f)), "mpmath")
+    grid = [lo + (hi - lo) * i / 4000 for i in range(4001)]
+    vals = [float(den(t)) for t in grid]
+    pole = any(abs(v) < 1e-12 for v in vals) or any(u * v < 0 for u, v in zip(vals, vals[1:]))
+    if not pole:                             # a double root touches 0 without a sign change: 3 - 3·sin(x)
+        dd = sp.lambdify(x, sp.diff(1 / f if kind < 0.5 or kind >= 0.75 else sp.denom(sp.together(f)), x), "mpmath")
+        for i in range(1, 4000):
+            if abs(vals[i]) <= abs(vals[i - 1]) and abs(vals[i]) <= abs(vals[i + 1]) and abs(vals[i]) < 1e-4:
+                with mp.workdps(40):
+                    try:
+                        t = mp.findroot(dd, grid[i])
+                    except (ValueError, ZeroDivisionError):
+                        continue
+                    if lo <= t <= hi and abs(den(t)) < mp.mpf(10)**-25:
+                        pole = True
+    near = any(abs(float(den(t))) < 1e-3 for t in (lo, hi))
+    if near:
+        return "skipped"
+    if code != 0:
+        if "diverges" in err:
+            assert pole, f"f={f} on [{lo_name}, {hi_name}]: claims a pole: {err}"
+            return "pole"
+        assert "not supported" in err or "decided" in err, f"f={f} on [{lo_name}, {hi_name}]: {err}"
+        return "refused"
+    assert not pole, f"f={f} on [{lo_name}, {hi_name}]: missed a pole: {out}"
+    fl = sp.lambdify(x, f, "mpmath")
+    with mp.workdps(45):
+        a_, b_ = mp.mpf(sp.N(val(lo_name), 50)), mp.mpf(sp.N(val(hi_name), 50))
+        ref = mp.quad(fl, mp.linspace(a_, b_, 17))
+    if out.startswith("~"):
+        assert abs(float(out.split()[1]) - float(ref)) < 1e-8 * (1 + abs(float(ref))), f"f={f}: {out} vs {ref}"
+        return "numeric"
+    v = sp.N(to_sympy(out.split(" ~ ")[0].replace("ln(abs(", "log(Abs(")), 40)
+    assert abs(v - sp.Float(str(ref), 40)) < sp.Float("1e-28") * (1 + abs(v)), f"f={f} on [{lo_name}, {hi_name}]: {out} vs {ref}"
+    return "exact"
+
+
 def check_matrix(rng):
     n = rng.randint(1, 4)
     M = sp.Matrix(n, n, lambda i, j: sp.Rational(rng.randint(-9, 9), rng.randint(1, 4)))
@@ -467,6 +522,7 @@ def main():
     rng_trig = random.Random(args.seed + 7)
     rng_tan = random.Random(args.seed + 8)
     rng_dexp = random.Random(args.seed + 9)
+    rng_dtow = random.Random(args.seed + 10)
     rootsums = radicals = 0
     definite = {"exact": 0, "numeric": 0, "pole": 0}
     infinite = {"exact": 0, "numeric": 0, "divergent": 0}
@@ -476,6 +532,7 @@ def main():
     trigs = dict(exps)
     tans = dict(exps)
     dexps = {"exact": 0, "numeric": 0, "refused": 0}
+    dtows = {"exact": 0, "numeric": 0, "pole": 0, "refused": 0, "skipped": 0}
     for t in range(args.trials):
         p = random_poly(rng)
         check_factor(p)
@@ -493,6 +550,7 @@ def main():
         trigs[check_trig(rng_trig)] += 1
         tans[check_tan(rng_tan)] += 1
         dexps[check_definite_exp(rng_dexp)] += 1
+        dtows[check_definite_tower(rng_dtow)] += 1
         check_matrix(rng)
         print(f"  trial {t + 1}/{args.trials} ok", flush=True)
     print(f"crosscheck OK: {args.trials} trials (factor, solve, integrate, det); "
@@ -512,7 +570,9 @@ def main():
           f"sin/cos denominators: {tans['elementary']} elementary, {tans['nonelementary']} proved non-elementary "
           f"(SymPy agrees), {tans['unconfirmed']} unconfirmed, {tans['unsupported']} unsupported; "
           f"definite exp/sin/cos: {dexps['exact']} exact (28 digits), {dexps['numeric']} numeric-only, "
-          f"{dexps['refused']} refused at infinity")
+          f"{dexps['refused']} refused at infinity; definite with sin/cos/exp denominators: "
+          f"{dtows['exact']} exact, {dtows['numeric']} numeric-only, {dtows['pole']} poles, "
+          f"{dtows['refused']} refused, {dtows['skipped']} skipped")
 
 
 if __name__ == "__main__":
