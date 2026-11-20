@@ -22,6 +22,7 @@ Checks, per random input:
 import argparse
 import random
 import re
+import signal
 import subprocess
 import sys
 
@@ -49,7 +50,7 @@ def to_sympy(text):
     text = text.replace("ln(abs(", "log((").replace("^", "**")
     return parse_expr(text, local_dict={"x": x, "t": t, "atan": sp.atan, "sqrt": sp.sqrt,
                                         "log": sp.log, "ln": sp.log, "Abs": sp.Abs, "pi": sp.pi, "cos": sp.cos,
-                                        "sin": sp.sin, "cot": sp.cot, "csc": sp.csc, "exp": sp.exp},
+                                        "sin": sp.sin, "tan": sp.tan, "cot": sp.cot, "csc": sp.csc, "exp": sp.exp},
                       transformations=TRANSFORMS)
 
 
@@ -265,18 +266,48 @@ def is_zero(d):
     return sp.simplify(d) == 0 or sp.simplify(sp.expand(d.rewrite(sp.exp))) == 0
 
 
-def compare_risch(f, ref_form=None):
+def cpu_limited(seconds, fn, *args):
+    """fn(*args), raising TimeoutError after `seconds` of CPU time (SymPy's Risch can run for hours)."""
+    def stop(signum, frame):
+        raise TimeoutError
+    old = signal.signal(signal.SIGPROF, stop)
+    signal.setitimer(signal.ITIMER_PROF, seconds)
+    try:
+        return fn(*args)
+    finally:
+        signal.setitimer(signal.ITIMER_PROF, 0)
+        signal.signal(signal.SIGPROF, old)
+
+
+def numerically_zero(d, f):
+    """d vanishes to 35 digits (relative to f) at sample points off the poles of tan(x/2) and tan(x)."""
+    g, h = sp.lambdify(x, d, "mpmath"), sp.lambdify(x, f, "mpmath")
+    checked = 0
+    with mp.workdps(50):
+        for p in ["0.37", "0.81", "1.23", "-0.58", "-1.41", "2.07", "-2.29", "0.13"]:
+            try:
+                v, w = g(mp.mpf(p)), h(mp.mpf(p))
+            except (ZeroDivisionError, ValueError):
+                continue
+            if abs(v) > mp.mpf(10)**-35 * (1 + abs(w)):
+                return False
+            checked += 1
+    return checked >= 4
+
+
+def compare_risch(f, ref_form=None, numeric=False, limit=120):
     """Our verdict on ∫ f against SymPy's risch_integrate (of ref_form, f rewritten when SymPy
-    needs exponentials): a NonElementaryIntegral from SymPy must meet our proof and vice versa,
-    and every answer must differentiate back to f exactly."""
+    needs exponentials; given up after `limit` CPU seconds): a NonElementaryIntegral from SymPy
+    must meet our proof and vice versa, and every answer must differentiate back to f exactly
+    (or, with numeric, to 35 digits: simplify is too slow for large sin/cos quotients)."""
     from sympy.integrals.risch import risch_integrate, NonElementaryIntegral
     code, out, err = run_cli("integrate", to_cli(f))
     if code != 0:
         assert "not supported" in err, f"failed on {f}: {err}"
         return "unsupported"
     try:
-        ref = risch_integrate(f if ref_form is None else ref_form, x)
-    except Exception:                        # SymPy's Risch can fail internally (SympifyError)
+        ref = cpu_limited(limit, risch_integrate, f if ref_form is None else ref_form, x)
+    except Exception:                        # SymPy's Risch can fail internally (SympifyError) or time out
         ref = None
     nonelem_ref = ref is not None and (isinstance(ref, NonElementaryIntegral) or ref.has(NonElementaryIntegral))
     if out.startswith("no elementary antiderivative"):
@@ -284,7 +315,10 @@ def compare_risch(f, ref_form=None):
         return "nonelementary" if ref is not None else "unconfirmed"
     assert not nonelem_ref, f"SymPy proves {f} non-elementary, we gave {out}"
     d = sp.diff(to_sympy(out), x) - f
-    assert is_zero(d), f"d/dx of our {out} differs from {f} by {sp.simplify(d)}"
+    if numeric:
+        assert numerically_zero(d, f), f"d/dx of our {out} differs from {f}"
+    else:
+        assert is_zero(d), f"d/dx of our {out} differs from {f} by {sp.simplify(d)}"
     return "elementary"
 
 
@@ -345,6 +379,32 @@ def check_trig(rng):
     return compare_risch(f, f.rewrite(sp.exp))
 
 
+def check_tan(rng):
+    """f with a sin/cos sum in a denominator: half derivatives of N/E + c·ln(G) + atan(P)
+    (elementary), half random quotients r(x)·sin/cos(kx)/(c + a·cos(x) + b·sin(x)) and x^j·tan(x)^m.
+    SymPy's Risch gets f in exponential form."""
+    def tpoly(c0, kmax=1):
+        return c0 + sum(rng.choice([-2, -1, 1, 2]) * rng.choice([sp.sin, sp.cos])(rng.randint(1, kmax) * x)
+                        for _ in range(rng.randint(1, 2)))
+    r = rng.random()
+    if r < 0.5:
+        F = (rng.randint(-2, 2) + rng.randint(0, 1) * x) * tpoly(rng.randint(-2, 2), 2) / tpoly(5)
+        if rng.random() < 0.5:
+            F += rng.randint(1, 3) * sp.log(tpoly(7))
+        if rng.random() < 0.5:
+            F += sp.atan(tpoly(rng.randint(-1, 1)))
+        f = sp.diff(F, x)
+    elif r < 0.8:
+        num = random_coeff(rng) * rng.choice([sp.Integer(1), sp.sin(x), sp.cos(x), sp.sin(2 * x)])
+        den = 0
+        while den == 0:                              # sin(x) - sin(x) cancels
+            den = tpoly(rng.randint(-3, 3))
+        f = num / den
+    else:
+        f = x**rng.randint(0, 1) * sp.tan(x)**rng.randint(1, 3)
+    return compare_risch(f, f.rewrite(sp.exp), numeric=True, limit=20)
+
+
 def check_matrix(rng):
     n = rng.randint(1, 4)
     M = sp.Matrix(n, n, lambda i, j: sp.Rational(rng.randint(-9, 9), rng.randint(1, 4)))
@@ -366,6 +426,7 @@ def main():
     rng_log = random.Random(args.seed + 5)
     rng_frac = random.Random(args.seed + 6)
     rng_trig = random.Random(args.seed + 7)
+    rng_tan = random.Random(args.seed + 8)
     rootsums = radicals = 0
     definite = {"exact": 0, "numeric": 0, "pole": 0}
     infinite = {"exact": 0, "numeric": 0, "divergent": 0}
@@ -373,6 +434,7 @@ def main():
     logs = dict(exps)
     fracs = dict(exps)
     trigs = dict(exps)
+    tans = dict(exps)
     for t in range(args.trials):
         p = random_poly(rng)
         check_factor(p)
@@ -388,6 +450,7 @@ def main():
         logs[check_log(rng_log)] += 1
         fracs[check_frac(rng_frac)] += 1
         trigs[check_trig(rng_trig)] += 1
+        tans[check_tan(rng_tan)] += 1
         check_matrix(rng)
         print(f"  trial {t + 1}/{args.trials} ok", flush=True)
     print(f"crosscheck OK: {args.trials} trials (factor, solve, integrate, det); "
@@ -403,7 +466,9 @@ def main():
           f"denominators in exp/ln: {fracs['elementary']} elementary, {fracs['nonelementary']} proved non-elementary "
           f"(SymPy agrees), {fracs['unconfirmed']} unconfirmed, {fracs['unsupported']} unsupported; "
           f"sin/cos: {trigs['elementary']} elementary, {trigs['nonelementary']} proved non-elementary (SymPy agrees), "
-          f"{trigs['unconfirmed']} unconfirmed, {trigs['unsupported']} unsupported")
+          f"{trigs['unconfirmed']} unconfirmed, {trigs['unsupported']} unsupported; "
+          f"sin/cos denominators: {tans['elementary']} elementary, {tans['nonelementary']} proved non-elementary "
+          f"(SymPy agrees), {tans['unconfirmed']} unconfirmed, {tans['unsupported']} unsupported")
 
 
 if __name__ == "__main__":

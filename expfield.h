@@ -20,13 +20,14 @@ typedef struct {
     QFn* a;
 } LPoly;
 
-typedef enum { TOWER_EXP, TOWER_LOG } TowerKind;
+typedef enum { TOWER_EXP, TOWER_LOG, TOWER_TAN } TowerKind;
 
-// θ = exp(v), or θ = ln(u) with L = u'/u
+// θ = exp(v), θ = ln(u) with L = u'/u, or θ = tan(v) (θ' = v'·(1 + θ²), polynomials in θ; tanfield.h)
 typedef struct {
     TowerKind kind;
-    Polynomial* v;   // TOWER_EXP
+    Polynomial* v;   // TOWER_EXP, TOWER_TAN
     Polynomial *un, *ud, *Ln, *Ld; // TOWER_LOG: u = un/ud and L = Ln/Ld in lowest terms
+    bool half;       // TOWER_TAN: v = B/2 for the base B of the arguments (tanfield.h)
 } Tower;
 
 // the tower of e and e as a Laurent polynomial in it, or a reason (static string) why e is
@@ -47,6 +48,7 @@ void qfn_free(QFn* a);
 bool qfn_is_zero(const QFn* a);
 Expr* qfn_expr(const QFn* a);                         // a as EXPR_POLY or EXPR_RATIONAL_FN
 QFn qfn_from(Polynomial* num, Polynomial* den);       // takes both, reduces
+QFn qfn_poly(const Polynomial* p);                    // p/1 (copies)
 QFn qfn_add(const QFn* a, const QFn* b, int sign);    // a ± b
 QFn qfn_mul(const QFn* a, const QFn* b);
 LPoly lpoly_term(QFn a, int k);                       // a·θ^k; takes a

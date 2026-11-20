@@ -20,13 +20,6 @@ static LPoly mul_mod(const LPoly* a, const LPoly* b, const LPoly* d) {
     return q.r;
 }
 
-// a constant QFn's value
-static bool qfn_constant(const QFn* a, Rational* c) {
-    if (polynomial_degree(a->num) > 0 || polynomial_degree(a->den) != 0) return false;
-    poly_coeff(c, a->num, 0);                             // the denominator is monic: 1
-    return true;
-}
-
 // P[j] = Σ θ_i^j over the roots of monic d, j < deg d (Newton's identities)
 static QFn* root_power_sums(const LPoly* d) {
     int n = kp_deg(d);
@@ -169,15 +162,15 @@ static int lead_sign(const LPoly* T) {
     return s;
 }
 
-// c·sqrt(m)·T with a constant T folded into the coefficient
+// c·sqrt(m)·T with the coefficient of a one-term T = k·θ^j (k ∈ Q) folded in
 static Expr* surd_poly(const Rational* c, const mpz_t m, const LPoly* T, const Tower* t) {
-    if (kp_deg(T) > 0 || polynomial_degree(T->a[0].num) > 0 || polynomial_degree(T->a[0].den) > 0)
-        return surd_times(c, m, lpoly_expr_order(T, t, true));
     Rational k;
     rat_init(&k);
-    poly_coeff(&k, T->a[0].num, 0);
+    if (T->n != 1 || !qfn_constant(&T->a[0], &k)) { rat_clear(&k); return surd_times(c, m, lpoly_expr_order(T, t, true)); }
     rat_mul(&k, &k, c);
-    Expr* e = surd_times(&k, m, NULL);
+    QFn one = qfn_const(1, 1);
+    Expr* e = surd_times(&k, m, T->lo ? lpoly_term_expr(&one, t, T->lo) : NULL);
+    qfn_free(&one);
     rat_clear(&k);
     return e;
 }
@@ -451,7 +444,7 @@ static ResidueStatus terms_for(const Polynomial* Rz, const Ctx* X, LogPart* out)
             rat_clear(&a); rat_clear(&b);
         } else if (deg > 2) {
             st = RESIDUE_UNSUPPORTED;
-            out->reason = "residues that are algebraic numbers of degree 3 or more (a RootSum over exp/ln) are not supported yet";
+            out->reason = "residues that are algebraic numbers of degree 3 or more (a RootSum over exp, ln or tan) are not supported yet";
         } else if (!quadratic_term(&A, f, X)) {
             st = RESIDUE_UNSUPPORTED;
             out->reason = "internal check failed: the arctangents over exp/ln do not differentiate back";

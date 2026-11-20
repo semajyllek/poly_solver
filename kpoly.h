@@ -64,6 +64,7 @@ Expr* kfrac_expr(const KFrac* f, const Tower* t);
 KPair kp_common_multiple(const LPoly* a, const LPoly* b);
 QFn kp_coeff(const LPoly* f, int k);                   // coefficient of θ^k (zero outside)
 QFn qfn_rat(const Rational* c);                        // a rational constant in K
-QFn qfn_const(long n, long d);                         // n/d in K     // as (num)/(den) over Q[x], den from the top power
+bool qfn_constant(const QFn* a, Rational* c);         // a ∈ Q: its value in c
+QFn qfn_const(long n, long d);                         // n/d in K
 
 #endif

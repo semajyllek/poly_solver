@@ -3,9 +3,10 @@
 
 #include "expression.h"
 
-// Integration over Q(x)(θ) by the Risch algorithm, θ = exp(v) (v a nonconstant polynomial)
-// or θ = ln(u) (u a nonconstant rational function), for rational functions of θ with
-// coefficients in Q(x) (expfield.h). The answer is exact, or a proof that no elementary
+// Integration over Q(x)(θ) by the Risch algorithm, θ = exp(v) (v a nonconstant polynomial),
+// θ = ln(u) (u a nonconstant rational function) or θ = tan(H) (tanfield.h), for rational
+// functions of θ with coefficients in Q(x) (expfield.h); sin/cos without a sum in a
+// denominator, and several exponentials, as exponential sums over Q(i)(x) (expsum.h). The answer is exact, or a proof that no elementary
 // antiderivative exists, or "unsupported" for input outside the setting.
 typedef enum { RISCH_OK, RISCH_NONELEMENTARY, RISCH_UNSUPPORTED } RischStatus;
 

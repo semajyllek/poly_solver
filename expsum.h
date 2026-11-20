@@ -11,7 +11,9 @@
 // Q(i)(x) for every w ≠ 0. The answer is written back with real exp, sin and cos.
 
 RischResult integrate_expsum(const Expr* f);
+extern const char EXPSUM_SUM_DIVISOR[];               // the reason for a divisor with several terms (integrate_exp then tries tan)
 Expr* differentiate_expsum(const Expr* f, const char** reason);
 Expr* simplify_expsum(const Expr* f, const char** reason);
+bool small_integer(const Expr* e, long* k);           // e is an integer constant with |k| <= 256
 
 #endif

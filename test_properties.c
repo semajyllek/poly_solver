@@ -1795,7 +1795,7 @@ static void test_reg_integrate_trig(void) {
         assert(r.status == RISCH_NONELEMENTARY && r.result);
         free_expr(r.result);
     }
-    const char* outside[] = { "tan(x)", "1/(1+cos(x))", "sin(1/x)", "cos(1)*x", "ln(x)*sin(x)", "sin(sin(x))" };
+    const char* outside[] = { "exp(x)/(1+cos(x))", "1/(1+cos(x)+cos(x^2))", "sin(1/x)", "cos(1)*x", "ln(x)*sin(x)", "sin(sin(x))" };
     for (size_t i = 0; i < sizeof outside / sizeof outside[0]; i++) {
         RischResult r = risch_str(outside[i]);
         assert(r.status == RISCH_UNSUPPORTED && !r.result && r.reason);
@@ -1803,6 +1803,7 @@ static void test_reg_integrate_trig(void) {
     const char* simp[][2] = {                                        // canonical forms
         { "sin(x)^2+cos(x)^2", "1" }, { "2sin(x)cos(x)", "sin(2x)" }, { "cos(x)^2-sin(x)^2", "cos(2x)" },
         { "sin(-x)", "-sin(x)" }, { "cos(-x)", "cos(x)" }, { "exp(x)*exp(-x)", "1" },
+        { "sin(x)^2+2", "5/2 - 1/2 * cos(2x)" },                      // a constant prints without "* 1"
     };
     for (size_t i = 0; i < sizeof simp / sizeof simp[0]; i++) {
         Expr* raw = parse_input(simp[i][0]);
@@ -1814,6 +1815,124 @@ static void test_reg_integrate_trig(void) {
     }
     printf("  test_reg_integrate_trig PASSED (%zu exact, %zu non-elementary, %zu unsupported, %zu identities)\n",
            sizeof ok / sizeof ok[0], sizeof none / sizeof none[0], sizeof outside / sizeof outside[0], sizeof simp / sizeof simp[0]);
+}
+
+// denominators in sin/cos: θ = tan(x) (Bioche) or tan(x/2); normal part, polynomial part
+// (p1·θ = c·D(ln(1 + θ²))) and special part (expsum), each with answers and proofs
+static void test_reg_integrate_tan(void) {
+    const char* ok[][2] = {
+        { "tan(x)", "-ln(abs(cos(x)))" },                                 // p1 = 1: -ln|cos|
+        { "1/cos(x)^2", "tan(x)" },                                       // polynomial reduction
+        { "tan(x)^3", "1/2 * tan(x)^2 + ln(abs(cos(x)))" },
+        { "1/(1+cos(x))", "tan(1/2x)" },                                  // half angle
+        { "1/(1+cos(x))^2", "1/6 * tan(1/2x)^3 + 1/2 * tan(1/2x)" },
+        { "x/(1+cos(x))", "x * tan(1/2x) + 2 * ln(abs(cos(1/2x)))" },     // p1 = -x reduced away
+        { "1/sin(x)", "ln(abs(tan(1/2x)))" },                             // ln|cos| does not cancel: kept in tan
+        { "cos(x)/(1+sin(x))", "ln(abs(1 + sin(x)))" },                   // logs rewritten in sin/cos
+        { "1/(1+tan(x))", "1/2x + 1/2 * ln(abs(sin(x) + cos(x)))" },      // all three parts
+        { "x*cos(x)+tan(x)", "x * sin(x) + cos(x) - ln(abs(cos(x)))" },   // with a special part
+        { "x*sin(x)+1/(1+cos(x))", "sin(x) - x * cos(x) + tan(1/2x)" },
+        { "1/(2+cos(x))", "2/3 * sqrt(3) * atan(1/3 * sqrt(3) * tan(1/2x))" }, // complex residues: Rioboo
+        { "1/(5+3cos(x))", "1/2 * atan(1/2 * tan(1/2x))" },
+        { "1/(1+sin(x)^2)", "1/2 * sqrt(2) * atan(sqrt(2) * tan(x))" },
+        { "1/(cos(x)+2sin(x)+3)", "atan(tan(1/2x) + 1)" },
+        { "1/sin(x)^3", "1/8 * tan(1/2x)^2 - 1/8 / (tan(1/2x)^2) + 1/2 * ln(abs(tan(1/2x)))" },
+        { "(1+cos(x))/(x+sin(x))", "ln(abs(x + sin(x)))" },
+        { "1/(2+sin(-x))", "2/3 * sqrt(3) * atan(1/3 * sqrt(3) * (2 * tan(1/2x) - 1))" }, // sin(-x) = -sin(x)
+        { "sin(-x)/(2+cos(x))", "ln(abs(2 + cos(x)))" },
+    };
+    for (size_t i = 0; i < sizeof ok / sizeof ok[0]; i++) {
+        Expr* f = parse_input(ok[i][0]);
+        RischResult r = integrate_exp(f);
+        assert(r.status == RISCH_OK);
+        expect_str(expr_to_string(r.result), ok[i][1]);
+        assert(derivative_matches(r.result, f));          // the printed form, not just the θ-form
+        free_expr(r.result); free_expr(f);
+    }
+    const char* none[] = { "x*tan(x)", "x*sin(x)/(1+cos(x))", "x^2/(1+cos(x))", "1/(x+sin(x))", "sin(x)/x+tan(x)" };
+    for (size_t i = 0; i < sizeof none / sizeof none[0]; i++) {
+        RischResult r = risch_str(none[i]);
+        assert(r.status == RISCH_NONELEMENTARY && r.result);
+        free_expr(r.result);
+    }
+    const char* outside[] = { "1/(sin(x)+cos(x)^2)", "ln(x)/(1+cos(x))", "1/(1+sin(x)*cos(1))" };
+    for (size_t i = 0; i < sizeof outside / sizeof outside[0]; i++) {
+        RischResult r = risch_str(outside[i]);
+        assert(r.status == RISCH_UNSUPPORTED && !r.result && r.reason);
+    }
+    const char* diff[][2] = { { "tan(x)", "tan(x)^2 + 1" }, { "x*tan(2x)", "2x * tan(2x)^2 + tan(2x) + 2x" } };
+    for (size_t i = 0; i < sizeof diff / sizeof diff[0]; i++) {
+        Expr* f = parse_input(diff[i][0]);
+        const char* why = NULL;
+        Expr* d = differentiate_exp(f, &why);
+        assert(d);
+        expect_str(expr_to_string_free(d), diff[i][1]);
+        free_expr(f);
+    }
+    Expr* half = parse_input("1/(1+cos(x))");                       // tan(x/2) form: integrate only
+    const char* why = NULL;
+    assert(!differentiate_exp(half, &why) && why);
+    free_expr(half);
+    printf("  test_reg_integrate_tan PASSED (%zu exact, %zu non-elementary, %zu unsupported, %zu derivatives)\n",
+           sizeof ok / sizeof ok[0], sizeof none / sizeof none[0], sizeof outside / sizeof outside[0], sizeof diff / sizeof diff[0]);
+}
+
+// c0 + one or two terms c·sin(kx) or c·cos(kx), 1 <= k <= kmax, c = ±1, ±2 (a trig polynomial)
+static Expr* random_trig_poly(long c0, long kmax) {
+    Expr* acc = create_const(c0);
+    for (long n = rnd(1, 2); n > 0; n--) {
+        long c = rnd(1, 2) * (rnd(0, 1) ? 1 : -1);
+        Expr* arg = create_mul(create_const(rnd(1, kmax)), create_var("x"));
+        acc = create_add(acc, create_mul(create_const(c), rnd(0, 1) ? create_sin(arg) : create_cos(arg)));
+    }
+    return acc;
+}
+
+// d/dx of a trig polynomial (exponential sums)
+static Expr* trig_derivative(const Expr* p) {
+    const char* why = NULL;
+    Expr* d = differentiate_exp(p, &why);
+    assert(d);
+    return d;
+}
+
+// f = D(N/E) + c·D(G)/G + d·D(P)/(1 + P²): elementary by construction (quotient rule by hand,
+// so the integrand is in sin/cos of x, not in tan); E = 5 + ..., G = 7 + ... never vanish.
+// Multiples 2x only in N keep the degrees in θ = tan(x/2) small.
+static Expr* random_tan_integrand(void) {
+    Expr *N = create_mul(create_poly_expr(poly_si((long[]){ rnd(-2, 2), rnd(0, 1) }, 1)), random_trig_poly(rnd(-2, 2), 2));
+    Expr *E = random_trig_poly(5, 1), *G = random_trig_poly(7, 1), *P = random_trig_poly(rnd(-1, 1), 1);
+    Expr *dN = trig_derivative(N), *dE = trig_derivative(E), *dG = trig_derivative(G), *dP = trig_derivative(P);
+    Expr* f = create_div(create_sub(create_mul(dN, expr_copy(E)), create_mul(expr_copy(N), dE)), create_pow(expr_copy(E), create_const(2)));
+    if (rnd(0, 1)) f = create_add(f, create_mul(create_const(rnd(1, 3)), create_div(dG, expr_copy(G))));
+    else free_expr(dG);
+    if (rnd(0, 1)) f = create_add(f, create_div(dP, create_add(create_const(1), create_pow(expr_copy(P), create_const(2)))));
+    else free_expr(dP);
+    free_expr(N); free_expr(E); free_expr(G); free_expr(P);
+    return f;
+}
+
+// integrands with sin/cos denominators that are derivatives integrate back (checked numerically
+// on the printed answer); adding x·sin(x)/(1 + cos(x)) (= x·tan(x/2), p1 = -x) never does
+static void test_prop_integrate_tan(void) {
+    int roundtrips = 0, rejected = 0, skipped = 0;
+    for (int trial = 0; trial < TRIALS / 2; trial++) {    // half: each integrand is large
+        Expr* f = random_tan_integrand();
+        RischResult r = integrate_exp(f);
+        if (r.status == RISCH_UNSUPPORTED) { skipped++; free_expr(f); continue; } // residues of degree >= 3
+        assert(r.status == RISCH_OK);
+        assert(derivative_matches(r.result, f));
+        roundtrips++;
+        Expr* x = create_var("x");
+        Expr* bad = create_add(expr_copy(f), create_div(create_mul(x, create_sin(create_var("x"))), create_add(create_const(1), create_cos(create_var("x")))));
+        RischResult rb = integrate_exp(bad);
+        assert(rb.status != RISCH_OK);
+        if (rb.status == RISCH_NONELEMENTARY) rejected++;
+        free_expr(rb.result); free_expr(bad);
+        free_expr(r.result); free_expr(f);
+    }
+    assert(roundtrips >= TRIALS / 4);
+    printf("  test_prop_integrate_tan PASSED (%d round trips, %d non-elementary by construction, %d unsupported)\n", roundtrips, rejected, skipped);
 }
 
 // r(x)·exp(E)·trig(F) with E = 0 or ±x, F = k·x or x², trig = sin or cos
@@ -1942,6 +2061,7 @@ void run_property_tests(void) {
     test_reg_integrate_log();
     test_reg_integrate_tower_fractions();
     test_reg_integrate_trig();
+    test_reg_integrate_tan();
     test_lrt_direct();
     printf("\nProperty Tests (seed %s):\n", env ? env : "default");
     test_prop_factor_roundtrip();
@@ -1960,4 +2080,5 @@ void run_property_tests(void) {
     test_prop_integrate_log();
     test_prop_integrate_tower_fractions();
     test_prop_integrate_trig();
+    test_prop_integrate_tan();
 }

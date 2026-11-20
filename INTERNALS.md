@@ -1206,9 +1206,58 @@ By Liouville's theorem, `∫ f = Σ_{k=1}^{n+1} b_k θ^k + (an integral over Q(x
 - `simplify` prints the canonical form, which proves identities such as `sin(x)^2 + cos(x)^2 = 1`.
 
 **Tests.**
-- `test_reg_integrate_trig` pins 16 answers, 6 proofs, 6 unsupported inputs and 6 identities.
+- `test_reg_integrate_trig` pins 16 answers, 6 proofs, 6 unsupported inputs and 7 identities.
 - `test_prop_integrate_trig` integrates `d/dx` of random `r(x)·exp(±x)·sin/cos(k·x or x²)` sums back to the same canonical form. The answer is unique because there is no `e^0` part. It also checks that adding `sin(x)/(x − 5)` is always rejected.
 - The SymPy `check_trig` stream passes f rewritten in exponentials to `risch_integrate`. In 300 cases (seeds 100–399) there were 0 disagreements: 172 answers differentiate back to f exactly, 47 proofs of non-elementarity agree with SymPy, and in 81 more cases we prove non-elementarity where SymPy's Risch raises internally (these are unconfirmed).
+
+### 11.8 sin and cos in a denominator: θ = tan(H) (`tanfield.c`, `risch.c`)
+
+**Setting.** `expsum.c` divides only by single terms. When a divisor is a sum (`1/(1 + cos(x))`, `tan(x)`), `integrate_exp` switches to the hypertangent tower of Bronstein (*Symbolic Integration I*, §5.10):
+- θ = tan(H) for a nonconstant polynomial H, with `θ' = H'·(1 + θ²)`. The base field stays K = Q(x), so `kpoly.c` and `residue.c` work unchanged.
+- Every sin/cos argument must be an integer multiple k·B of one polynomial B.
+- `cos(jH) + i·sin(jH) = (1 + iθ)^j·cos(H)^j`, and `cos(H)² = 1/(1 + θ²)`. So an odd j leaves one factor cos(H). `tanfield.c` computes with pairs `a + cos(H)·b`, a and b in K(θ). The integrand lies in K(θ) exactly when b = 0.
+- **Choice of H (Bioche's rule).**
+  - A parity pass gives sin(kB) and cos(kB) the parity k mod 2. Sums must agree, and products add parities.
+  - Even parity means the integrand is unchanged by B → B + π, so H = B (`tan(x)` stays `tan(x)`).
+  - Otherwise H = B/2. Then every j is even, so b = 0 always.
+  - `Tower.half` records the choice.
+
+**The special factor.** `1 + θ²` divides its own derivative. So the denominator is split as `D = (1 + θ²)^m·E` with `gcd(E, 1 + θ²) = 1`. Then, by Bezout, `f = P + S/(1 + θ²)^m + A/E`:
+1. **Normal part A/E.** Hermite reduction and the Rothstein–Trager residue test, exactly as in §11.6.
+2. **Remainder.** `r = f − D(g) − D(logs)` must lie in `K[θ, 1/(1 + θ²)]`, which is checked exactly. Its polynomial part is reduced from the top by `D(c·θ^(n−1)) = c'·θ^(n−1) + (n−1)·c·H'·(θ^(n−2) + θ^n)`, down to `p1·θ + p0`.
+3. **Polynomial part.**
+   - `p1·θ = c·D(ln(1 + θ²))` with `c = p1/(2H')`.
+   - If c is not a constant, f is not elementary.
+   - When it is, the answer gets `c·ln(1 + θ²) = −2c·ln|cos H|`.
+4. **Special part.**
+   - `p0 + S/(1 + θ²)^m`, with `θ^a/(1 + θ²)^m = sin(H)^a·cos(H)^(2m−a)`.
+   - This is a trig polynomial, integrated by `expsum.c`: one RDE per exponent, and `∫ p0` by the rational integrator.
+
+**Why the parts are independent.** Put `z = e^{2iH}`, so `θ = −i(z − 1)/(z + 1)`, an exponential tower over Q(i)(x):
+- The special part is a Laurent polynomial in z.
+- The polynomial part has its poles at z = −1. Its residue there is `−p1/H'`, which is the test in step 3.
+- A proper fraction in z (z ∤ den) differentiates to a proper fraction.
+- So only the special part contributes nonzero powers of z, and §11.7's theorem applies to them. Each non-elementary verdict is a theorem about one part.
+
+**Output.**
+- θ prints as `tan(H)`: the tree is `sin(H)/cos(H)`, and the printer shows it as tan.
+- Logs of polynomials G(θ) of degree n can be rewritten: `ln|G(tan H)| = ln|Ĝ| − n·ln|cos H|`, where `Ĝ = cos(H)^n·G(tan H)` is a trig polynomial.
+  - The rewrite is used only when all the ln|cos H| coefficients cancel. Then Ĝ is put in canonical form by `simplify_expsum`.
+  - When H = B/2 and n is odd, Ĝ is squared first, with half the coefficient, so that it is written in B.
+  - Example: `∫ cos(x)/(1 + sin(x)) = 2·ln|cos(x/2)| + 2·ln|tan(x/2) + 1| = ln|1 + sin(x)|`.
+  - When the coefficients do not cancel, the tan form stays: `∫ 1/sin(x) = ln|tan(x/2)|`.
+- This rewrite runs after the exact checks, so it is covered by numeric derivative checks of the printed answer (tests and SymPy).
+
+**differentiate** uses the same tower only when H = B: d/dx tan(x) = `tan(x)^2 + 1`. In tan(x/2) the exact derivative of `1/(1 + cos(x))` is `1/2·tan(x/2)^3 + 1/2·tan(x/2)`, which is correct but unreadable, so that case is reported as unsupported.
+
+**Tests.**
+- `test_reg_integrate_tan` pins 19 answers, each also checked numerically in its printed form. It also has 5 proofs:
+  - `x·tan(x)`, `x·sin(x)/(1 + cos(x))` and `x²/(1 + cos(x))` by p1;
+  - `1/(x + sin(x))` by residues;
+  - `sin(x)/x + tan(x)` by the special part.
+- It also has 3 unsupported inputs and the derivatives.
+- `test_prop_integrate_tan` builds `D(N/E) + c·D(G)/G + D(P)/(1 + P²)` from random trig polynomials, using the quotient rule by hand, so the input is in sin/cos of x. It checks the printed answer's derivative numerically, and that adding `x·sin(x)/(1 + cos(x))` is always rejected.
+- The SymPy `check_tan` stream compares with `risch_integrate` on f in exponential form. SymPy is given 20 CPU seconds per case, and answers are checked numerically to 35 digits. In 300 cases (seeds 100–399) there were 0 disagreements: 204 answers differentiate back to f, and 96 proofs of non-elementarity agree with SymPy (none unconfirmed, none unsupported).
 
 ---
 

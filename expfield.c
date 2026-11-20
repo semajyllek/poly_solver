@@ -37,7 +37,7 @@ QFn qfn_copy(const QFn* a) { return (QFn){ poly_copy(a->num), poly_copy(a->den) 
 void qfn_free(QFn* a) { free_polynomial(a->num); free_polynomial(a->den); a->num = a->den = NULL; }
 bool qfn_is_zero(const QFn* a) { return poly_is_zero(a->num); }
 
-static QFn qfn_poly(const Polynomial* p) { return (QFn){ poly_copy(p), poly_one() }; }
+QFn qfn_poly(const Polynomial* p) { return (QFn){ poly_copy(p), poly_one() }; }
 
 // a ± b
 QFn qfn_add(const QFn* a, const QFn* b, int sign) {
@@ -165,8 +165,33 @@ static LPoly log_derivative(const LPoly* f, const Tower* t) {
     return r;
 }
 
+// r += a·θ^k; takes a
+static void lp_accumulate(LPoly* r, QFn a, int k) {
+    LPoly term = lpoly_term(a, k), s = lpoly_add(r, &term, 1);
+    lpoly_free(r); lpoly_free(&term);
+    *r = s;
+}
+
+// (a·θ^k)' = a'·θ^k + k·v'·a·(θ^(k-1) + θ^(k+1)) for θ = tan(v)
+static LPoly tan_derivative(const LPoly* f, const Tower* t) {
+    LPoly r = lp_empty();
+    QFn vp = { poly_derivative(t->v), poly_one() };
+    for (int i = 0; i < f->n; i++) {
+        int k = f->lo + i;
+        lp_accumulate(&r, qfn_derivative(&f->a[i]), k);
+        if (k == 0) continue;
+        QFn kq = qfn_const(k, 1), kv = qfn_mul(&kq, &vp), c = qfn_mul(&kv, &f->a[i]);
+        lp_accumulate(&r, qfn_copy(&c), k - 1);
+        lp_accumulate(&r, c, k + 1);
+        qfn_free(&kq); qfn_free(&kv);
+    }
+    qfn_free(&vp);
+    return r;
+}
+
 LPoly lpoly_derivative(const LPoly* f, const Tower* t) {
     if (t->kind == TOWER_LOG) return log_derivative(f, t);
+    if (t->kind == TOWER_TAN) return tan_derivative(f, t);
     LPoly r = lp_span(f->lo, f->n);
     QFn vp = { poly_derivative(t->v), poly_one() };
     for (int i = 0; i < f->n; i++) {
@@ -194,8 +219,12 @@ bool lpoly_equal(const LPoly* f, const LPoly* g) {
 
 QFn tower_L(const Tower* t) { return (QFn){ poly_copy(t->Ln), poly_copy(t->Ld) }; }
 
-// exp(k·v), or ln(u)^k
+// exp(k·v), ln(u)^k, or tan(v)^k (as sin(v)/cos(v), which prints as tan(v))
 static Expr* theta_power(const Tower* t, int k) {
+    if (t->kind == TOWER_TAN) {
+        Expr* tn = create_div(create_sin(create_poly_expr(poly_copy(t->v))), create_cos(create_poly_expr(poly_copy(t->v))));
+        return k == 1 ? tn : create_pow(tn, create_const(k));
+    }
     if (t->kind == TOWER_LOG) {
         QFn u = { t->un, t->ud };
         Expr* ln = create_ln(qfn_expr(&u));
@@ -228,7 +257,7 @@ Expr* lpoly_term_expr(const QFn* a, const Tower* t, int k) {
     return minus_one ? create_neg(e) : e;                 // outside, so sums print a - b
 }
 
-Expr* lpoly_expr(const LPoly* f, const Tower* t) { return lpoly_expr_order(f, t, t->kind == TOWER_LOG); }
+Expr* lpoly_expr(const LPoly* f, const Tower* t) { return lpoly_expr_order(f, t, t->kind != TOWER_EXP); }
 
 // the terms from the top power down (ln(x)^3 first, exp(x) + 1), or from the bottom up
 Expr* lpoly_expr_order(const LPoly* f, const Tower* t, bool down) {
@@ -398,7 +427,7 @@ static bool make_log_tower(const Args* A, Tower* t) {
     if (ok) {                                             // orient as ln(x), not ln(1/x)
         QFn u = polynomial_degree(A->w[base].num) < polynomial_degree(A->w[base].den) ? qfn_inv(&A->w[base]) : qfn_copy(&A->w[base]);
         QFn L = log_deriv(&u);
-        *t = (Tower){ TOWER_LOG, NULL, u.num, u.den, L.num, L.den };
+        *t = (Tower){ TOWER_LOG, NULL, u.num, u.den, L.num, L.den, false };
     }
     for (int i = 0; i < A->nw; i++) rat_clear(&r[i]);
     free(r);
@@ -527,7 +556,7 @@ static KFrac conv(const Expr* e, Conv* C) {
 }
 
 ExpForm exp_form(const Expr* e) {
-    ExpForm F = { { TOWER_EXP, NULL, NULL, NULL, NULL, NULL }, lp_empty(), kp_one(), NULL };
+    ExpForm F = { { TOWER_EXP, NULL, NULL, NULL, NULL, NULL, false }, lp_empty(), kp_one(), NULL };
     Args A = { NULL, 0, NULL, 0, NULL };
     collect(e, &A);
     F.unsupported = A.unsupported;
@@ -555,5 +584,5 @@ void exp_form_free(ExpForm* F) {
     lpoly_free(&F->den);
     Polynomial* parts[] = { F->t.v, F->t.un, F->t.ud, F->t.Ln, F->t.Ld };
     for (int i = 0; i < 5; i++) free_polynomial(parts[i]);
-    F->t = (Tower){ TOWER_EXP, NULL, NULL, NULL, NULL, NULL };
+    F->t = (Tower){ TOWER_EXP, NULL, NULL, NULL, NULL, NULL, false };
 }

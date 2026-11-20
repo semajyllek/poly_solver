@@ -121,17 +121,18 @@ static ESum conv_fn(const Expr* e, EConv* C) {
 }
 
 // 1/(c·e^w) = (1/c)·e^{-w}: only single terms can be divisors
+const char EXPSUM_SUM_DIVISOR[] = "division by a sum involving sin, cos or several exponentials (such as 1/(1 + cos(x))) is not supported here yet";
+
 static ESum es_inverse(const ESum* s, EConv* C) {
     if (s->n == 0) { C->unsupported = "division by zero"; return es_empty(); }
     if (s->n > 1) {
-        C->unsupported = "division by a sum involving sin, cos or several exponentials (such as 1/(1 + cos(x)) or tan(x)) is not supported yet";
+        C->unsupported = EXPSUM_SUM_DIVISOR;
         return es_empty();
     }
     return es_term(cp_neg(&s->t[0].w), cfn_inv(&s->t[0].c));
 }
 
-// a small integer exponent, or false
-static bool small_integer(const Expr* e, long* k) {
+bool small_integer(const Expr* e, long* k) {
     Expr* n = canonicalize((Expr*)e);
     bool ok = n && n->type == EXPR_POLY && polynomial_degree(n->poly) <= 0;
     if (ok) {
@@ -279,7 +280,9 @@ static int unit_sign(const Polynomial* p) {
 static Expr* scaled(const Polynomial* num, const Polynomial* den, Expr* core) {
     if (poly_is_zero(num)) { free_expr(core); return NULL; }
     int u = unit_sign(num);
-    Expr* e = u ? core : create_mul(create_poly_expr(poly_copy(num)), core);
+    bool one = core->type == EXPR_CONST && rat_is_one(&core->constant); // c·1 is c
+    if (one && !u) free_expr(core);
+    Expr* e = u ? core : one ? create_poly_expr(poly_copy(num)) : create_mul(create_poly_expr(poly_copy(num)), core);
     if (polynomial_degree(den) > 0) e = create_div(e, create_poly_expr(poly_copy(den)));
     return u < 0 ? create_neg(e) : e;
 }

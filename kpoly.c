@@ -317,6 +317,12 @@ Expr* kfrac_expr(const KFrac* f, const Tower* t) {
     return e;
 }
 
+bool qfn_constant(const QFn* a, Rational* c) {
+    if (polynomial_degree(a->num) > 0 || polynomial_degree(a->den) != 0) return false;
+    poly_coeff(c, a->num, 0);                             // the denominator is monic: 1
+    return true;
+}
+
 QFn qfn_rat(const Rational* c) {
     Rational one = rat_one_val();
     QFn q = { poly_constant(c), poly_constant(&one) };

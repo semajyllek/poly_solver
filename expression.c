@@ -362,10 +362,21 @@ static void emit_mul(const Expr* left, const Expr* right, StrBuf* sb) {
     }
 }
 
+// sin(u)/cos(u), printed as tan(u)
+static bool is_tan(const Expr* e) {
+    if (e->type != EXPR_BINOP || e->binop.op != OP_DIV) return false;
+    const Expr *l = e->binop.left, *r = e->binop.right;
+    if (l->type != EXPR_SIN || r->type != EXPR_COS) return false;
+    char *a = expr_to_string(l->fn_arg), *b = expr_to_string(r->fn_arg);
+    bool same = strcmp(a, b) == 0;
+    free(a); free(b);
+    return same;
+}
+
 // emit a / b with minimal parenthesization
 static void emit_div(const Expr* left, const Expr* right, StrBuf* sb) {
     bool lp = is_sum(left);
-    bool rp = (right->type == EXPR_BINOP) || is_sum(right);
+    bool rp = (right->type == EXPR_BINOP && !is_tan(right)) || is_sum(right);
     if (lp) sb_append(sb, "(");
     expr_to_string_impl(left, sb);
     if (lp) sb_append(sb, ")");
@@ -392,7 +403,7 @@ static void emit_pow(const Expr* base, const Expr* exp, StrBuf* sb) {
         rat_clear(&pos_exp);
         return;
     }
-    bool needs_parens = (base->type == EXPR_BINOP || base->type == EXPR_POLY);
+    bool needs_parens = (base->type == EXPR_BINOP && !is_tan(base)) || base->type == EXPR_POLY;
     if (needs_parens) sb_append(sb, "(");
     expr_to_string_impl(base, sb);
     if (needs_parens) sb_append(sb, ")");
@@ -477,7 +488,13 @@ static void expr_to_string_impl(const Expr* expr, StrBuf* sb) {
                     expr_to_string_impl(expr->binop.right, sb);
                     break;
                 case OP_MUL: emit_mul(expr->binop.left, expr->binop.right, sb); break;
-                case OP_DIV: emit_div(expr->binop.left, expr->binop.right, sb); break;
+                case OP_DIV:
+                    if (is_tan(expr)) {
+                        sb_append(sb, "tan(");
+                        expr_to_string_impl(expr->binop.left->fn_arg, sb);
+                        sb_append(sb, ")");
+                    } else emit_div(expr->binop.left, expr->binop.right, sb);
+                    break;
                 case OP_POW: emit_pow(expr->binop.left, expr->binop.right, sb); break;
             }
             break;
