@@ -264,49 +264,31 @@ This automatic cancellation means the list never contains zero-coefficient terms
 
 ### 5.3 Polynomial addition
 
-Addition creates a new polynomial by inserting all terms from both operands. Because `add_term` handles sorting and like-term combination, the algorithm is simple:
-
-```c
-Polynomial* poly_add(poly1, poly2) {
-    result = new empty polynomial
-    for each term in poly1: add_term(result, term.coeff, term.exp)
-    for each term in poly2: add_term(result, term.coeff, term.exp)
-    return result
-}
-```
-
-**Example:** `(3x^2 + 4x) + (5x^2 + 1)`:
+`add_term` scans from the head, so building a polynomial with it costs O(n²). The core operations avoid it: they build their result with an appender (a tail pointer) in descending order, O(1) per term. `poly_add` and `poly_subtract` merge the two sorted lists, combining equal exponents and dropping zeros:
 
 ```
-Step 1: Insert terms from poly1:
-    add 3x^2 → [3, exp=2]
-    add 4x   → [3, exp=2] → [4, exp=1]
-
-Step 2: Insert terms from poly2:
-    add 5x^2 → found exp=2, combine: 3+5=8 → [8, exp=2] → [4, exp=1]
-    add 1    → insert at end → [8, exp=2] → [4, exp=1] → [1, exp=0]
+(3x^2 + 4x) + (5x^2 + 1):
+    exp 2 in both → 3 + 5 = 8   → [8, exp=2]
+    exp 1 only in the first      → [8, exp=2] → [4, exp=1]
+    exp 0 only in the second     → [8, exp=2] → [4, exp=1] → [1, exp=0]
 
 Result: 8x^2 + 4x + 1
 ```
 
-Subtraction works identically but negates the coefficients from the second polynomial.
+`poly_copy`, `poly_scale`, `poly_derivative` and `poly_integral` append in the same way.
 
 ### 5.4 Polynomial multiplication
 
-Uses the distributive property: multiply every term of poly1 by every term of poly2, then collect via `add_term`:
+Every term of poly1 times every term of poly2, accumulated in a dense window of `mpq_t` over the exponents `lo1 + lo2 .. deg1 + deg2`, then read back from the top:
 
 ```
 (2x + 3) * (x + 1):
-
-    2x * x = 2x^2       → add_term(result, 2, 2)
-    2x * 1 = 2x         → add_term(result, 2, 1)
-    3  * x = 3x          → add_term(result, 3, 1)  ← combines with existing: 2+3=5
-    3  * 1 = 3           → add_term(result, 3, 0)
+    window[2] += 2·1   window[1] += 2·1   window[1] += 3·1   window[0] += 3·1
 
 Result: 2x^2 + 5x + 3
 ```
 
-Time complexity: O(n*m) where n, m are the number of terms.
+Time complexity: O(n*m) coefficient operations, with no list walks. Very sparse factors (a window more than 64·n·m + 1024 wide, like `x^100000·y`) insert term by term instead.
 
 ### 5.5 Polynomial long division (`poly_divmod`)
 
@@ -338,7 +320,7 @@ Step 4: degree(remainder) = 0 < degree(divisor) = 1 → stop
 Result: quotient = x^2 + x + 2, remainder = 2
 ```
 
-The convenience wrappers `poly_divide` and `poly_mod` call `poly_divmod` and discard the unwanted part.
+The implementation works in place: the dividend goes into a dense window of `mpq_t`, and each step computes the quotient coefficient `top · lc(divisor)⁻¹` and subtracts it times the divisor's lower terms from the window, so no intermediate polynomial is built. The convenience wrappers `poly_divide` and `poly_mod` call `poly_divmod` and discard the unwanted part.
 
 ### 5.6 Polynomial GCD (Euclidean algorithm)
 
@@ -356,6 +338,8 @@ Polynomial* poly_gcd(poly1, poly2) {
     return r0
 }
 ```
+
+The implementation also makes each remainder monic as it goes. That leaves the gcd unchanged and keeps the rationals smaller. `poly_gcd_fast` (§9.3) uses the modular algorithm instead once both inputs have degree 6 or more.
 
 **Example:** `gcd(x^2 - 1, x^2 - 2x + 1)`:
 
@@ -1064,7 +1048,7 @@ Anything else stays `RootSum`. For example, `x^5 + x + 3` has Galois group S5, s
    - `c·ln|u|`: tends to `c·ln|L| + c·d·ln|x|`. The `ln|x|` parts sum to `(Σ cᵢdᵢ)·ln|x|`, which must vanish because the integral converges. So each log contributes `c·ln|L|`, and the logs of `1/(x²−1)` on `[2, ∞)` leave `1/2·ln(3)`.
    - A rational term from Hermite reduction is proper, so it tends to 0.
    - The atan jump count uses every root of `W` on the infinite side.
-6. **Check.** The exact value is evaluated in double precision and compared with adaptive Simpson quadrature of `f`. The range is first cut at the real critical points of the denominator, the roots of `den'` isolated exactly. A complex pole close to the real axis makes a narrow peak at such a point. Without the cut, uniform pieces could step over the peak, or the half-line map could squeeze it to nothing: `1/((x−1000)²+1)` on the whole line was the failing case. Each piece is integrated in two halves, and each half has `f` Taylor-shifted exactly, in rationals, to its own end, so `f(o + u)` is evaluated with `u` small. Near the peak of `1/((x−50)² + 10⁻⁴)`, the expanded `x² − 100x + 2500.0001` would cancel catastrophically in double precision. Shifted, it becomes `u² + 1/10000`. A half-line beyond the outermost cut is mapped onto `t ∈ [0, 1]` by `u = ±(1−t)/t`, `du = dt/t²`. This is smooth because `|den|` is monotone there. It is bounded because `f = O(1/x²)`, and its value at `t = 0` is `lim x²f(x)`. With no cut, the whole line is split at 0. Every window starts from 64 pieces. The tolerance is relative 1e-10 of the summed rough estimate over all windows, not of each window, so a window where `f` is tiny is not driven into round-off. One budget of 4,000,000 evaluations is shared by all windows. If the exact and numeric values disagree by more than 1e-8 (relative), only the number is reported, with a note. The test suite asserts that this never happens on generated inputs.
+6. **Check.** The exact value is evaluated in double precision and compared with adaptive Simpson quadrature of `f`. The range is first cut at the real critical points of the denominator, the roots of `den'` isolated exactly. A complex pole close to the real axis makes a narrow peak at such a point. Without the cut, uniform pieces could step over the peak, or the half-line map could squeeze it to nothing: `1/((x−1000)²+1)` on the whole line was the failing case. Each piece is integrated in two halves, and each half has `f` Taylor-shifted exactly, in rationals, to its own end, so `f(o + u)` is evaluated with `u` small. Near the peak of `1/((x−50)² + 10⁻⁴)`, the expanded `x² − 100x + 2500.0001` would cancel catastrophically in double precision. Shifted, it becomes `u² + 1/10000`. A half-line beyond the outermost cut is mapped onto `t ∈ [0, 1]` by `u = ±(1−t)/t`, `du = dt/t²`. This is smooth because `|den|` is monotone there. It is bounded because `f = O(1/x²)`, and its value at `t = 0` is `lim x²f(x)`. With no cut, the whole line is split at 0. Every window starts from 64 pieces. The tolerance is relative 1e-10 of the summed rough estimate over all windows, not of each window, so a window where `f` is tiny is not driven into round-off. One budget of 4,000,000 evaluations is shared by all windows. Each window converts its shifted numerator and denominator to doubles once (`DPoly`, Horner with the same rounding as `poly_evaluate`), not on every evaluation. If the exact and numeric values disagree by more than 1e-8 (relative), only the number is reported, with a note. The test suite asserts that this never happens on generated inputs.
 
    Roots at a finite end of the range are divided out before isolation (`roots_in`). Bisection mids are dyadic, so a root such as `−2/3` sitting exactly on a bound would never be separated from it.
 
@@ -1378,6 +1362,7 @@ Examples:
 - `k2poly.c` instantiates them over KFrac (K1) for θ2. `test_prop_k2poly` checks the identities there: a = q·b + r, gcd·cofactor = input, s·a + t·b = 1, and that Yun's parts multiply back.
 - Euclid over K1 reduces fractions in θ1 at every step, and its coefficients swell, which is why the degree cap exists. The cap is applied while f is converted, too: a sum or product whose denominator in θ2 would exceed it is refused before any gcd (a sum of four fractions of degree 2 used to take minutes there).
 - `k2frac_add` uses Henrici's addition: with `g = gcd(d_a, d_b)`, the numerator `t = n_a·(d_b/g) ± n_b·(d_a/g)` can share factors only with g, so only `gcd(t, g)` is taken, which is trivial when the denominators are coprime.
+- **Speed.** The template's `divmod` works in place on a coefficient window, and `gcd` and `inverse` keep every remainder monic, so the dividing step needs no inverse. QFn uses Henrici's formulas too: `qfn_add` takes `gcd(d_a, d_b)` and then only `gcd(t, g)`, and `qfn_mul` cancels `gcd(n_a, d_b)` and `gcd(n_b, d_a)` before multiplying. Both need no gcd at all when the operands are polynomials (denominator 1). Together with §5's list-free core this took the suite from 15.7 s to 1.9 s of CPU time, with byte-identical CLI output on the golden corpus.
 - The pair gcd over K1(√M) runs against `gcd(d, (h − a·D(d))² − M·b²·D(d)²)`, the product `g_α·g_ᾱ` found over K1 without surds, rather than against all of d.
 
 **Tests.**

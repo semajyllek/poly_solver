@@ -18,19 +18,25 @@ static Polynomial* poly_one(void) {
 
 QFn qfn_zero(void) { return (QFn){ create_polynomial(), poly_one() }; }
 
-QFn qfn_from(Polynomial* num, Polynomial* den) {
-    if (poly_is_zero(num)) { free_polynomial(num); free_polynomial(den); return qfn_zero(); }
-    Polynomial* g = poly_gcd_fast(num, den);
-    Polynomial *n = poly_divide(num, g), *d = poly_divide(den, g);
-    free_polynomial(num); free_polynomial(den); free_polynomial(g);
-    Rational lc;                                          // monic denominator
+// n/d made monic in d; when gcd(n, d) = 1 is known
+static QFn qfn_monic(Polynomial* n, Polynomial* d) {
+    if (rat_is_one(&d->head->coeff)) return (QFn){ n, d };
+    Rational lc;
     rat_init(&lc);
-    poly_coeff(&lc, d, polynomial_degree(d));
-    mpq_inv(lc.val, lc.val);
+    mpq_inv(lc.val, d->head->coeff.val);
     QFn r = { poly_scale(n, &lc), poly_scale(d, &lc) };
     free_polynomial(n); free_polynomial(d);
     rat_clear(&lc);
     return r;
+}
+
+QFn qfn_from(Polynomial* num, Polynomial* den) {
+    if (poly_is_zero(num)) { free_polynomial(num); free_polynomial(den); return qfn_zero(); }
+    if (polynomial_degree(num) == 0 || polynomial_degree(den) == 0) return qfn_monic(num, den); // coprime
+    Polynomial* g = poly_gcd_fast(num, den);
+    Polynomial *n = poly_divide(num, g), *d = poly_divide(den, g);
+    free_polynomial(num); free_polynomial(den); free_polynomial(g);
+    return qfn_monic(n, d);
 }
 
 QFn qfn_copy(const QFn* a) { return (QFn){ poly_copy(a->num), poly_copy(a->den) }; }
@@ -39,16 +45,58 @@ bool qfn_is_zero(const QFn* a) { return poly_is_zero(a->num); }
 
 QFn qfn_poly(const Polynomial* p) { return (QFn){ poly_copy(p), poly_one() }; }
 
-// a ± b
-QFn qfn_add(const QFn* a, const QFn* b, int sign) {
-    Polynomial *l = poly_multiply(a->num, b->den), *r = poly_multiply(b->num, a->den);
-    Polynomial* n = sign > 0 ? poly_add(l, r) : poly_subtract(l, r);
-    free_polynomial(l); free_polynomial(r);
-    return qfn_from(n, poly_multiply(a->den, b->den));
+static QFn qfn_neg(const QFn* a) {
+    Rational m = rat_from_int(-1);
+    QFn r = { poly_scale(a->num, &m), poly_copy(a->den) };
+    rat_clear(&m);
+    return r;
 }
 
+static bool is_poly(const QFn* a) { return polynomial_degree(a->den) == 0; } // den = 1 (monic)
+
+// gcd of a and a monic d, skipped (= 1) when d is constant
+static Polynomial* gcd_or_one(const Polynomial* a, const Polynomial* d) {
+    return polynomial_degree(d) == 0 ? poly_one() : poly_gcd_fast(a, d);
+}
+
+// x·(y/g), skipping the division when g = 1
+static Polynomial* mul_div(const Polynomial* x, const Polynomial* y, const Polynomial* g) {
+    if (polynomial_degree(g) == 0) return poly_multiply(x, y);
+    Polynomial* q = poly_divide(y, g);
+    Polynomial* r = poly_multiply(x, q);
+    free_polynomial(q);
+    return r;
+}
+
+// a ± b by Henrici: g = gcd(da, db), t = na·(db/g) ± nb·(da/g); only gcd(t, g) can cancel
+QFn qfn_add(const QFn* a, const QFn* b, int sign) {
+    if (qfn_is_zero(b)) return qfn_copy(a);                      // a zero needs no gcd (and may carry any den)
+    if (qfn_is_zero(a)) return sign > 0 ? qfn_copy(b) : qfn_neg(b);
+    if (is_poly(a) && is_poly(b)) {                              // polynomials: no gcds at all
+        Polynomial* n = sign > 0 ? poly_add(a->num, b->num) : poly_subtract(a->num, b->num);
+        return poly_is_zero(n) ? (free_polynomial(n), qfn_zero()) : (QFn){ n, poly_one() };
+    }
+    Polynomial* g = gcd_or_one(a->den, b->den);
+    Polynomial *l = mul_div(a->num, b->den, g), *r = mul_div(b->num, a->den, g);
+    Polynomial* t = sign > 0 ? poly_add(l, r) : poly_subtract(l, r);
+    free_polynomial(l); free_polynomial(r);
+    if (poly_is_zero(t)) { free_polynomial(t); free_polynomial(g); return qfn_zero(); }
+    Polynomial* g2 = gcd_or_one(t, g);
+    Polynomial *n = polynomial_degree(g2) ? poly_divide(t, g2) : poly_copy(t), *ga = poly_divide(a->den, g);
+    QFn res = { n, mul_div(ga, b->den, g2) };                    // (da/g)·(db/g2): monic
+    free_polynomial(t); free_polynomial(g); free_polynomial(g2); free_polynomial(ga);
+    return res;
+}
+
+// a·b by Henrici: cancel gcd(na, db) and gcd(nb, da) before multiplying
 QFn qfn_mul(const QFn* a, const QFn* b) {
-    return qfn_from(poly_multiply(a->num, b->num), poly_multiply(a->den, b->den));
+    if (qfn_is_zero(a) || qfn_is_zero(b)) return qfn_zero();
+    Polynomial *g1 = gcd_or_one(a->num, b->den), *g2 = gcd_or_one(b->num, a->den);
+    Polynomial* na = polynomial_degree(g1) ? poly_divide(a->num, g1) : poly_copy(a->num);
+    Polynomial* da = polynomial_degree(g2) ? poly_divide(a->den, g2) : poly_copy(a->den);
+    QFn r = { mul_div(na, b->num, g2), mul_div(da, b->den, g1) };
+    free_polynomial(g1); free_polynomial(g2); free_polynomial(na); free_polynomial(da);
+    return r;
 }
 
 // 1/a for a ≠ 0
@@ -96,6 +144,12 @@ static void lp_trim(LPoly* f) {
     f->lo += s;
     f->n = e - s;
     if (f->n == 0) f->lo = 0;
+}
+
+LPoly lpoly_take(QFn* a, int lo, int n) {
+    LPoly f = { lo, n, a };
+    lp_trim(&f);
+    return f;
 }
 
 // a·θ^k; takes a

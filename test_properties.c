@@ -1,3 +1,4 @@
+#include <time.h>
 // Regression tests for every defect found by probing the CLI, plus seeded
 // property tests that check invariants on generated inputs instead of fixed outputs:
 //   factor:     content · Π f_i^m_i == input, and known irreducibles come back exactly
@@ -2428,56 +2429,66 @@ static void test_prop_print_parse_roundtrip(void) {
     printf("  test_prop_print_parse_roundtrip PASSED (%d trials)\n", TRIALS);
 }
 
+// runs one test (or skips it when POLY_ONLY names another); with POLY_TIME set, prints its CPU time to stderr
+static void run_timed(const char* name, void (*t)(void)) {
+    const char* only = getenv("POLY_ONLY"); // run just this one test (profiling)
+    if (only && strcmp(only, name) != 0) return;
+    clock_t c0 = clock();
+    t();
+    if (getenv("POLY_TIME")) fprintf(stderr, "%8.3f s  %s\n", (double)(clock() - c0) / CLOCKS_PER_SEC, name);
+}
+#define RUN(t) run_timed(#t, t)
+
 void run_property_tests(void) {
     const char* env = getenv("POLY_SEED"); // optional override to sweep other seeds
     if (env) rng_state = strtoull(env, NULL, 10);
     printf("\nRegression Tests (CLI probes):\n");
-    test_reg_big_literals_exact();
-    test_reg_matrix_big_entries();
-    test_reg_output_not_truncated();
-    test_reg_rejects_non_polynomials();
-    test_reg_parser_rejects_partial();
-    test_reg_factor_content_and_big_roots();
-    test_reg_factor_beyond_rational_roots();
-    test_reg_cyclotomic_counts();
-    test_reg_solve_irrational_exact();
-    test_reg_refine_shared_endpoint();
-    test_reg_integrate_complete();
-    test_reg_integrate_lrt();
-    test_reg_integrate_radicals();
-    test_reg_integrate_definite();
-    test_reg_definite_exp();
-    test_reg_definite_tower();
-    test_reg_expr_lead();
-    test_reg_qsurd();
-    test_reg_radical_products();
-    test_reg_integrate_exp();
-    test_reg_integrate_log();
-    test_reg_integrate_tower_fractions();
-    test_reg_integrate_trig();
-    test_reg_integrate_tan();
-    test_reg_integrate_tower2();
-    test_lrt_direct();
+    RUN(test_reg_big_literals_exact);
+    RUN(test_reg_matrix_big_entries);
+    RUN(test_reg_output_not_truncated);
+    RUN(test_reg_rejects_non_polynomials);
+    RUN(test_reg_parser_rejects_partial);
+    RUN(test_reg_factor_content_and_big_roots);
+    RUN(test_reg_factor_beyond_rational_roots);
+    RUN(test_reg_cyclotomic_counts);
+    RUN(test_reg_solve_irrational_exact);
+    RUN(test_reg_refine_shared_endpoint);
+    RUN(test_reg_integrate_complete);
+    RUN(test_reg_integrate_lrt);
+    RUN(test_reg_integrate_radicals);
+    RUN(test_reg_integrate_definite);
+    RUN(test_reg_definite_exp);
+    RUN(test_reg_definite_tower);
+    RUN(test_reg_expr_lead);
+    RUN(test_reg_qsurd);
+    RUN(test_reg_radical_products);
+    RUN(test_reg_integrate_exp);
+    RUN(test_reg_integrate_log);
+    RUN(test_reg_integrate_tower_fractions);
+    RUN(test_reg_integrate_trig);
+    RUN(test_reg_integrate_tan);
+    RUN(test_reg_integrate_tower2);
+    RUN(test_lrt_direct);
     printf("\nProperty Tests (seed %s):\n", env ? env : "default");
-    test_prop_factor_roundtrip();
-    test_prop_root_isolation();
-    test_prop_integrate_derivative();
-    test_prop_linear_systems();
-    test_prop_print_parse_roundtrip();
-    test_prop_subres_chain();
-    test_prop_integrate_radicals();
-    test_prop_exact_roots();
-    test_prop_integrate_definite();
-    test_prop_integrate_infinite();
-    test_prop_definite_symmetric();
-    test_prop_modular_gcd();
-    test_prop_integrate_exp();
-    test_prop_integrate_log();
-    test_prop_integrate_tower_fractions();
-    test_prop_integrate_trig();
-    test_prop_integrate_tan();
-    test_prop_k2poly();
-    test_prop_integrate_tower2();
-    test_prop_definite_exp();
-    test_prop_definite_tan();
+    RUN(test_prop_factor_roundtrip);
+    RUN(test_prop_root_isolation);
+    RUN(test_prop_integrate_derivative);
+    RUN(test_prop_linear_systems);
+    RUN(test_prop_print_parse_roundtrip);
+    RUN(test_prop_subres_chain);
+    RUN(test_prop_integrate_radicals);
+    RUN(test_prop_exact_roots);
+    RUN(test_prop_integrate_definite);
+    RUN(test_prop_integrate_infinite);
+    RUN(test_prop_definite_symmetric);
+    RUN(test_prop_modular_gcd);
+    RUN(test_prop_integrate_exp);
+    RUN(test_prop_integrate_log);
+    RUN(test_prop_integrate_tower_fractions);
+    RUN(test_prop_integrate_trig);
+    RUN(test_prop_integrate_tan);
+    RUN(test_prop_k2poly);
+    RUN(test_prop_integrate_tower2);
+    RUN(test_prop_definite_exp);
+    RUN(test_prop_definite_tan);
 }

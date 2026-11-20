@@ -55,6 +55,11 @@ static QFn qfn_scale_int(const QFn* a, int k) {
 #define C_INV(x, a) qfn_inv(a)
 #define C_FREE(a) qfn_free(a)
 #define C_SCALE_INT(x, a, k) qfn_scale_int((a), (k))
+#define P_TAKE(x, arr, lo, n) lpoly_take((arr), (lo), (n))
+#define C_ADD(x, a, b, sign) qfn_add((a), (b), (sign))
+#define C_ZERO(x) qfn_zero()
+#define C_IS_ZERO(a) qfn_is_zero(a)
+#define C_COPY(a) qfn_copy(a)
 #include "kpoly_tmpl.h"
 
 LPoly kp_copy(const LPoly* a) { return kq_copy(0, a); }

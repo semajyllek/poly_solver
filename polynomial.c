@@ -19,6 +19,61 @@ Polynomial* create_polynomial(void) {
     return poly;
 }
 
+// builds a polynomial term by term in descending exponent order, in O(1) per term
+typedef struct {
+    Polynomial* p;
+    Term** tail;
+} Appender;
+
+static Appender app_new(void) {
+    Polynomial* p = create_polynomial();
+    return (Appender){ p, &p->head };
+}
+
+// appends c·x^e (e below every exponent so far); zeros are skipped
+static void app_push(Appender* a, const mpq_t c, int e) {
+    if (mpq_sgn(c) == 0) return;
+    Term* t = malloc(sizeof(Term));
+    mpq_init(t->coeff.val);
+    mpq_set(t->coeff.val, c);
+    t->exponent = e;
+    t->var_id = 0;
+    t->next = NULL;
+    *a->tail = t;
+    a->tail = &t->next;
+}
+
+// lowest exponent of a nonzero polynomial (its last term)
+static int low_exponent(const Polynomial* p) {
+    const Term* t = p->head;
+    while (t->next) t = t->next;
+    return t->exponent;
+}
+
+// dense coefficient window c[0..n), c[i] the coefficient of x^(lo + i)
+typedef struct {
+    mpq_t* c;
+    int lo, n;
+} Dense;
+
+static Dense dense_zero(int lo, int hi) {
+    Dense d = { malloc(sizeof(mpq_t) * (size_t)(hi - lo + 1)), lo, hi - lo + 1 };
+    for (int i = 0; i < d.n; i++) mpq_init(d.c[i]);
+    return d;
+}
+
+static void dense_add_poly(Dense* d, const Polynomial* p) {
+    for (const Term* t = p->head; t; t = t->next) mpq_add(d->c[t->exponent - d->lo], d->c[t->exponent - d->lo], t->coeff.val);
+}
+
+// the nonzero entries as a polynomial; frees the window
+static Polynomial* dense_take(Dense* d) {
+    Appender a = app_new();
+    for (int i = d->n - 1; i >= 0; i--) { app_push(&a, d->c[i], d->lo + i); mpq_clear(d->c[i]); }
+    free(d->c);
+    return a.p;
+}
+
 void add_term(Polynomial* poly, const Rational* coeff, int exponent) {
     if (rat_is_zero(coeff)) return;
 
@@ -58,13 +113,9 @@ void add_term(Polynomial* poly, const Rational* coeff, int exponent) {
 }
 
 Polynomial* poly_copy(const Polynomial* poly) {
-    Polynomial* copy = create_polynomial();
-    Term* current = poly->head;
-    while (current != NULL) {
-        add_term(copy, &current->coeff, current->exponent);
-        current = current->next;
-    }
-    return copy;
+    Appender a = app_new();
+    for (const Term* t = poly->head; t; t = t->next) app_push(&a, t->coeff.val, t->exponent);
+    return a.p;
 }
 
 bool poly_is_zero(const Polynomial* poly) {
@@ -76,92 +127,98 @@ int polynomial_degree(const Polynomial* poly) {
     return poly->head->exponent;
 }
 
-Polynomial* poly_add(const Polynomial* poly1, const Polynomial* poly2) {
-    Polynomial* result = create_polynomial();
-    Term* current = poly1->head;
-    while (current != NULL) {
-        add_term(result, &current->coeff, current->exponent);
-        current = current->next;
-    }
-    current = poly2->head;
-    while (current != NULL) {
-        add_term(result, &current->coeff, current->exponent);
-        current = current->next;
-    }
-    return result;
-}
-
-Polynomial* poly_subtract(const Polynomial* poly1, const Polynomial* poly2) {
-    Polynomial* result = create_polynomial();
-    Term* current = poly1->head;
-    while (current != NULL) {
-        add_term(result, &current->coeff, current->exponent);
-        current = current->next;
-    }
-    current = poly2->head;
-    while (current != NULL) {
-        Rational neg;
-        rat_init(&neg);
-        rat_neg(&neg, &current->coeff);
-        add_term(result, &neg, current->exponent);
-        rat_clear(&neg);
-        current = current->next;
-    }
-    return result;
-}
-
-Polynomial* poly_multiply(const Polynomial* poly1, const Polynomial* poly2) {
-    Polynomial* result = create_polynomial();
-    Term* t1 = poly1->head;
-    while (t1 != NULL) {
-        Term* t2 = poly2->head;
-        while (t2 != NULL) {
-            Rational prod;
-            rat_init(&prod);
-            rat_mul(&prod, &t1->coeff, &t2->coeff);
-            add_term(result, &prod, t1->exponent + t2->exponent);
-            rat_clear(&prod);
-            t2 = t2->next;
+// p ± q by merging the two sorted term lists
+static Polynomial* merge(const Polynomial* p, const Polynomial* q, int sign) {
+    Appender a = app_new();
+    const Term *s = p->head, *t = q->head;
+    mpq_t c;
+    mpq_init(c);
+    while (s || t) {
+        if (t && (!s || t->exponent > s->exponent)) {            // only q has this exponent
+            if (sign > 0) mpq_set(c, t->coeff.val); else mpq_neg(c, t->coeff.val);
+            app_push(&a, c, t->exponent);
+            t = t->next;
+        } else if (!t || s->exponent > t->exponent) {            // only p has it
+            app_push(&a, s->coeff.val, s->exponent);
+            s = s->next;
+        } else {                                                 // both: combine
+            if (sign > 0) mpq_add(c, s->coeff.val, t->coeff.val); else mpq_sub(c, s->coeff.val, t->coeff.val);
+            app_push(&a, c, s->exponent);
+            s = s->next; t = t->next;
         }
-        t1 = t1->next;
     }
+    mpq_clear(c);
+    return a.p;
+}
+
+Polynomial* poly_add(const Polynomial* poly1, const Polynomial* poly2) { return merge(poly1, poly2, 1); }
+
+Polynomial* poly_subtract(const Polynomial* poly1, const Polynomial* poly2) { return merge(poly1, poly2, -1); }
+
+static int term_count(const Polynomial* p) {
+    int n = 0;
+    for (const Term* t = p->head; t; t = t->next) n++;
+    return n;
+}
+
+// very sparse factors (x^1000·y): insert each product term instead of a huge window
+static Polynomial* sparse_multiply(const Polynomial* poly1, const Polynomial* poly2) {
+    Polynomial* result = create_polynomial();
+    Rational prod;
+    rat_init(&prod);
+    for (const Term* s = poly1->head; s; s = s->next)
+        for (const Term* t = poly2->head; t; t = t->next) {
+            rat_mul(&prod, &s->coeff, &t->coeff);
+            add_term(result, &prod, s->exponent + t->exponent);
+        }
+    rat_clear(&prod);
     return result;
 }
 
-PolyDivResult poly_divmod(const Polynomial* dividend, const Polynomial* divisor) {
-    PolyDivResult result = {create_polynomial(), NULL};
+// schoolbook product accumulated in a dense window over [lo1 + lo2, deg1 + deg2]
+Polynomial* poly_multiply(const Polynomial* poly1, const Polynomial* poly2) {
+    if (!poly1->head || !poly2->head) return create_polynomial();
+    long span = (long)poly1->head->exponent + poly2->head->exponent - low_exponent(poly1) - low_exponent(poly2);
+    if (span > 64L * term_count(poly1) * term_count(poly2) + 1024) return sparse_multiply(poly1, poly2);
+    Dense d = dense_zero(low_exponent(poly1) + low_exponent(poly2), poly1->head->exponent + poly2->head->exponent);
+    mpq_t prod;
+    mpq_init(prod);
+    for (const Term* s = poly1->head; s; s = s->next)
+        for (const Term* t = poly2->head; t; t = t->next) {
+            mpq_mul(prod, s->coeff.val, t->coeff.val);
+            mpq_add(d.c[s->exponent + t->exponent - d.lo], d.c[s->exponent + t->exponent - d.lo], prod);
+        }
+    mpq_clear(prod);
+    return dense_take(&d);
+}
 
+// division in place on a dense copy of the dividend: each step clears the top coefficient
+PolyDivResult poly_divmod(const Polynomial* dividend, const Polynomial* divisor) {
     if (divisor == NULL || divisor->head == NULL) {
         fprintf(stderr, "Error: division by zero polynomial.\n");
-        result.remainder = create_polynomial();
-        return result;
+        return (PolyDivResult){ create_polynomial(), create_polynomial() };
     }
-
-    Polynomial* remainder = poly_copy(dividend);
-
-    while (!poly_is_zero(remainder) &&
-           remainder->head->exponent >= divisor->head->exponent) {
-        Rational coeff;
-        rat_init(&coeff);
-        rat_div(&coeff, &remainder->head->coeff, &divisor->head->coeff);
-        int exp = remainder->head->exponent - divisor->head->exponent;
-
-        add_term(result.quotient, &coeff, exp);
-
-        Polynomial* term_poly = create_polynomial();
-        add_term(term_poly, &coeff, exp);
-        Polynomial* product = poly_multiply(term_poly, divisor);
-        Polynomial* new_remainder = poly_subtract(remainder, product);
-
-        free_polynomial(remainder);
-        free_polynomial(product);
-        free_polynomial(term_poly);
-        rat_clear(&coeff);
-        remainder = new_remainder;
+    int db = divisor->head->exponent, da = polynomial_degree(dividend);
+    if (da < db) return (PolyDivResult){ create_polynomial(), poly_copy(dividend) };
+    int lo = low_exponent(dividend), lb = low_exponent(divisor);
+    Dense r = dense_zero(lo < lb ? lo : lb, da), q = dense_zero(0, da - db);
+    dense_add_poly(&r, dividend);
+    mpq_t inv, prod;
+    mpq_inits(inv, prod, NULL);
+    mpq_inv(inv, divisor->head->coeff.val);
+    for (int e = da; e >= db; e--) {
+        mpq_t* top = &r.c[e - r.lo];
+        if (mpq_sgn(*top) == 0) continue;
+        mpq_t* qc = &q.c[e - db - q.lo];
+        mpq_mul(*qc, *top, inv);                                 // next quotient term
+        for (const Term* t = divisor->head->next; t; t = t->next) {
+            mpq_mul(prod, *qc, t->coeff.val);
+            mpq_sub(r.c[e - db + t->exponent - r.lo], r.c[e - db + t->exponent - r.lo], prod);
+        }
+        mpq_set_ui(*top, 0, 1);
     }
-
-    result.remainder = remainder;
-    return result;
+    mpq_clears(inv, prod, NULL);
+    return (PolyDivResult){ dense_take(&q), dense_take(&r) };
 }
 
 Polynomial* poly_divide(const Polynomial* dividend, const Polynomial* divisor) {
@@ -179,26 +236,21 @@ Polynomial* poly_mod(const Polynomial* dividend, const Polynomial* divisor) {
 void poly_make_monic(Polynomial* poly) {
     if (poly->head == NULL) return;
     if (rat_is_one(&poly->head->coeff)) return;
-    Rational lc;
-    rat_init_set(&lc, &poly->head->coeff);
-    Term* current = poly->head;
-    while (current != NULL) {
-        Rational tmp;
-        rat_init(&tmp);
-        rat_div(&tmp, &current->coeff, &lc);
-        rat_set(&current->coeff, &tmp);
-        rat_clear(&tmp);
-        current = current->next;
-    }
-    rat_clear(&lc);
+    mpq_t inv;
+    mpq_init(inv);
+    mpq_inv(inv, poly->head->coeff.val);
+    for (Term* t = poly->head; t; t = t->next) mpq_mul(t->coeff.val, t->coeff.val, inv);
+    mpq_clear(inv);
 }
 
 Polynomial* poly_gcd(const Polynomial* poly1, const Polynomial* poly2) {
     Polynomial* r0 = poly_copy(poly1);
     Polynomial* r1 = poly_copy(poly2);
 
+    poly_make_monic(r1);
     while (!poly_is_zero(r1)) {
         Polynomial* r2 = poly_mod(r0, r1);
+        poly_make_monic(r2);                                     // monic remainders: smaller coefficients
         free_polynomial(r0);
         r0 = r1;
         r1 = r2;
@@ -247,15 +299,15 @@ Polynomial* poly_pow(const Polynomial* base, unsigned exp) {
 }
 
 Polynomial* poly_scale(const Polynomial* p, const Rational* c) {
-    Polynomial* r = create_polynomial();
-    Rational t;
-    rat_init(&t);
-    for (Term* term = p->head; term; term = term->next) {
-        rat_mul(&t, &term->coeff, c);
-        add_term(r, &t, term->exponent);
+    Appender a = app_new();
+    mpq_t t;
+    mpq_init(t);
+    for (const Term* term = p->head; term; term = term->next) {
+        mpq_mul(t, term->coeff.val, c->val);
+        app_push(&a, t, term->exponent);
     }
-    rat_clear(&t);
-    return r;
+    mpq_clear(t);
+    return a.p;
 }
 
 // next = old - q * cur (one row of the extended Euclidean recurrence)
@@ -317,6 +369,24 @@ void poly_eval_rat(Rational* out, const Polynomial* poly, const Rational* x) {
     for (int i = 0; i < prev; i++) rat_mul(out, out, x);
 }
 
+DPoly dpoly_from(const Polynomial* p) {
+    DPoly d = { NULL, polynomial_degree(p) };
+    if (d.deg < 0) return d;
+    d.c = calloc((size_t)d.deg + 1, sizeof(double));
+    for (const Term* t = p->head; t; t = t->next) d.c[t->exponent] = mpq_get_d(t->coeff.val);
+    return d;
+}
+
+// Horner; a zero coefficient adds 0 exactly, so this matches poly_evaluate bit for bit
+double dpoly_eval(const DPoly* p, double x) {
+    if (p->deg < 0) return 0.0;
+    double r = p->c[p->deg];
+    for (int i = p->deg - 1; i >= 0; i--) r = r * x + p->c[i];
+    return r;
+}
+
+void dpoly_free(DPoly* p) { free(p->c); p->c = NULL; }
+
 double poly_evaluate(const Polynomial* poly, double x) {
     if (poly->head == NULL) return 0.0;
 
@@ -341,37 +411,29 @@ double poly_evaluate(const Polynomial* poly, double x) {
 }
 
 Polynomial* poly_derivative(const Polynomial* poly) {
-    Polynomial* derivative = create_polynomial();
-    Term* current = poly->head;
-    while (current != NULL) {
-        if (current->exponent > 0) {
-            Rational exp_rat = rat_from_int(current->exponent);
-            Rational new_coeff;
-            rat_init(&new_coeff);
-            rat_mul(&new_coeff, &current->coeff, &exp_rat);
-            add_term(derivative, &new_coeff, current->exponent - 1);
-            rat_clear(&new_coeff);
-            rat_clear(&exp_rat);
-        }
-        current = current->next;
+    Appender a = app_new();
+    mpq_t c;
+    mpq_init(c);
+    for (const Term* t = poly->head; t && t->exponent > 0; t = t->next) {
+        mpq_set_si(c, t->exponent, 1);
+        mpq_mul(c, c, t->coeff.val);
+        app_push(&a, c, t->exponent - 1);
     }
-    return derivative;
+    mpq_clear(c);
+    return a.p;
 }
 
 Polynomial* poly_integral(const Polynomial* poly) {
-    Polynomial* integral = create_polynomial();
-    Term* current = poly->head;
-    while (current != NULL) {
-        Rational divisor = rat_from_int(current->exponent + 1);
-        Rational new_coeff;
-        rat_init(&new_coeff);
-        rat_div(&new_coeff, &current->coeff, &divisor);
-        add_term(integral, &new_coeff, current->exponent + 1);
-        rat_clear(&new_coeff);
-        rat_clear(&divisor);
-        current = current->next;
+    Appender a = app_new();
+    mpq_t c;
+    mpq_init(c);
+    for (const Term* t = poly->head; t; t = t->next) {
+        mpq_set_si(c, t->exponent + 1, 1);
+        mpq_div(c, t->coeff.val, c);
+        app_push(&a, c, t->exponent + 1);
     }
-    return integral;
+    mpq_clear(c);
+    return a.p;
 }
 
 double poly_definite_integral(const Polynomial* poly, double lower, double upper) {

@@ -53,6 +53,7 @@ QFn qfn_from(Polynomial* num, Polynomial* den);       // takes both, reduces
 QFn qfn_poly(const Polynomial* p);                    // p/1 (copies)
 QFn qfn_add(const QFn* a, const QFn* b, int sign);    // a ± b
 QFn qfn_mul(const QFn* a, const QFn* b);
+LPoly lpoly_take(QFn* a, int lo, int n);              // Σ a[i]·θ^(lo + i); takes the array
 LPoly lpoly_term(QFn a, int k);                       // a·θ^k; takes a
 LPoly lpoly_add(const LPoly* f, const LPoly* g, int sign);
 LPoly lpoly_mul(const LPoly* f, const LPoly* g);

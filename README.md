@@ -146,6 +146,8 @@ make && ./test_symbolic_solver
 
   Set `POLY_SEED=<n>` to try other seeds.
 
+`make check` is the quick lane after a change, a few seconds in all. It runs the suite, which prints its CPU time, and then replays `golden.jsonl`: about 1,900 CLI calls taken from the SymPy cross-check's generators, each of which must give exactly the recorded output. `POLY_TIME=1` prints the CPU time of each regression and property test.
+
 A differential check against SymPy is also available. It is optional and needs `pip install sympy`:
 
 ```bash

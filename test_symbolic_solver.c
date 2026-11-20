@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <time.h>
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
@@ -1841,7 +1842,8 @@ void run_tests() {
 void run_property_tests(void); // test_properties.c
 
 int main() {
-    run_tests();
+    if (!getenv("POLY_ONLY")) run_tests(); // POLY_ONLY: one property test alone
     run_property_tests();
+    printf("\nSuite CPU: %.2f s\n", (double)clock() / CLOCKS_PER_SEC); // watched per commit
     return 0;
 }

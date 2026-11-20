@@ -13,6 +13,13 @@ void k2_free(K2Poly* p) {
     p->a = NULL; p->n = 0;
 }
 
+// Σ a[i]·θ2^i, taking the array
+static K2Poly k2_take(KFrac* a, int n, TowerKind kind) {
+    K2Poly p = { a, n, kind };
+    k2_trim(&p);
+    return p;
+}
+
 K2Poly k2_zeros(int n, TowerKind kind) {
     K2Poly p = { malloc((size_t)(n > 0 ? n : 1) * sizeof(KFrac)), n, kind };
     for (int i = 0; i < n; i++) p.a[i] = kf_zero();
@@ -113,6 +120,11 @@ static K2Poly k2_term(const KFrac* c, int k, TowerKind kind) {
 #define C_INV(x, a) kfrac_inv((a), (x))
 #define C_FREE(a) kfrac_free(a)
 #define C_SCALE_INT(x, a, k) kf_times_int((a), (k), (x))
+#define P_TAKE(x, arr, lo, n) k2_take((arr), (n), (x)) // lo is always 0 here
+#define C_ADD(x, a, b, sign) ((sign) > 0 ? kfrac_add((a), (b), (x)) : kfrac_sub((a), (b), (x)))
+#define C_ZERO(x) kf_zero()
+#define C_IS_ZERO(a) kf_is_zero(a)
+#define C_COPY(a) kf_copy(a)
 #include "kpoly_tmpl.h"
 
 K2Poly k2_copy(const K2Poly* a) { return kt_copy(a->kind, a); }

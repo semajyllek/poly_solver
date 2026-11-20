@@ -9,7 +9,12 @@ make              # Build test binary (test_symbolic_solver)
 make cli          # Build CLI binary (poly_solver)
 make clean        # Remove object files and binaries
 make sanitize     # Rebuild the tests with AddressSanitizer + UBSan
+make check        # fast lane after a change (seconds): the suite with its CPU time + golden CLI corpus
 POLY_SEED=7 ./test_symbolic_solver          # property tests with another seed
+POLY_TIME=1 ./test_symbolic_solver          # CPU time of each regression/property test, on stderr
+POLY_ONLY=test_prop_k2poly ./test_symbolic_solver  # one property/regression test alone (its random inputs differ)
+python3 golden.py                           # replay golden.jsonl: exact CLI outputs (no sympy; make cli first)
+python3 golden.py --record                  # re-record it, only for an intended output change (needs sympy)
 python3 crosscheck_sympy.py --trials 40     # optional differential test vs SymPy (needs sympy, make cli)
 ./test_symbolic_solver  # Run all tests (assert-based, exits on first failure)
                         # unit tests: test_symbolic_solver.c; regression + property tests: test_properties.c
@@ -44,7 +49,7 @@ Symbolic algebra engine, layered bottom-up (INTERNALS.md has the details):
 
 1. **Strings and rationals** (`strbuf.c/h`, `rational_num.c/h`): `StrBuf` is the only way output is built; no fixed-size char buffers. `Rational` wraps GMP `mpq_t` (init/clear lifecycle). `rat_parse_literal` parses number text exactly; nothing goes through `double`.
 
-2. **Polynomial algebra** (`polynomial.c/h`): sparse sorted linked list of `Term` nodes (descending exponent, `Rational` coefficients, `var_id` reserved for multivariate). Add, subtract, multiply, divmod, GCD (monic), XGCD, LCM, pow, derivative, integral, exact and double evaluation.
+2. **Polynomial algebra** (`polynomial.c/h`): sparse sorted linked list of `Term` nodes (descending exponent, `Rational` coefficients, `var_id` reserved for multivariate). Add, subtract, multiply, divmod, GCD (monic), XGCD, LCM, pow, derivative, integral, exact and double evaluation. Results are built with a tail appender (never `add_term`'s O(n) scan); multiply and divmod work on dense `mpq_t` windows; `DPoly` caches double coefficients for repeated evaluation.
 
 3. **Modular/integer kernels** (`poly_zp.c/h`, `poly_zx.c/h`, `zx_factor.c`): dense F_p[x] (p < 2^31) with distinct-degree and Cantor–Zassenhaus factoring; dense Z[x] with GMP coefficients; Berlekamp–Zassenhaus (prime choice, Hensel lifting, exact-division recombination).
 

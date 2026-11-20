@@ -13,7 +13,9 @@
 //   P_FREE(p)
 //   P_COEF(p, k)           const C*: the coefficient of θ^k, k within [lo, lo + n)
 //   P_LO(p), P_N(p)
+//   P_TAKE(x, arr, lo, n)  the polynomial Σ arr[i]·θ^(lo + i), taking the array (trimmed)
 //   C_MUL(x, a, b), C_INV(x, a), C_FREE(a), C_SCALE_INT(x, a, k) (k·a)
+//   C_ADD(x, a, b, sign) (a ± b), C_ZERO(x), C_IS_ZERO(a), C_COPY(a)
 // and KDIV {P q, r}, KBEZ {P s, t}, KSF {P* f; int m} as the result types. The generated
 // functions mirror kpoly.h: copy, scale, monic, dtheta, divmod, exact_div, gcd (monic),
 // inverse, bezout and square_free.
@@ -58,20 +60,41 @@ static inline P PFX(dtheta)(CTX x, const P* a) {
     return r;
 }
 
-// a = q·b + r with deg r < deg b, from the top one term at a time
+// zero coefficients for n powers
+static inline C* PFX(zeros)(CTX x, int n) {
+    (void)x;
+    C* c = malloc((size_t)(n > 0 ? n : 1) * sizeof(C));
+    for (int i = 0; i < n; i++) c[i] = C_ZERO(x);
+    return c;
+}
+
+// r[i] -= c·b_j, in place
+static inline void PFX(sub_mul)(CTX x, C* r, const C* c, const C* bj) {
+    (void)x;
+    C t = C_MUL(x, c, bj), s = C_ADD(x, r, &t, -1);
+    C_FREE(&t); C_FREE(r);
+    *r = s;
+}
+
+// a = q·b + r with deg r < deg b: schoolbook division on a coefficient window of a over
+// powers lo .. deg a, each step clearing the top coefficient in place
 static inline KDIV PFX(divmod)(CTX x, const P* a, const P* b) {
-    KDIV d = { P_ZERO(x), PFX(copy)(x, a) };
+    int da = P_DEG(a), db = P_DEG(b);
+    if (da < db) return (KDIV){ P_ZERO(x), PFX(copy)(x, a) };
+    int lo = P_LO(a) < P_LO(b) ? P_LO(a) : P_LO(b), n = da - lo + 1;
+    C *r = PFX(zeros)(x, n), *q = PFX(zeros)(x, da - db + 1);
+    for (int k = P_LO(a); k <= da; k++) { C_FREE(&r[k - lo]); r[k - lo] = C_COPY(P_COEF(a, k)); }
     C ib = C_INV(x, P_LC(b));
-    while (P_DEG(&d.r) >= P_DEG(b)) {
-        C c = C_MUL(x, P_LC(&d.r), &ib);
-        P t = P_TERM(x, &c, P_DEG(&d.r) - P_DEG(b));          // the next quotient term
-        C_FREE(&c);
-        P tb = P_MUL(x, &t, b), r = P_ADD(x, &d.r, &tb, -1), q = P_ADD(x, &d.q, &t, 1);
-        P_FREE(&d.r); P_FREE(&d.q); P_FREE(&t); P_FREE(&tb);
-        d.r = r; d.q = q;
+    for (int e = da; e >= db; e--) {
+        if (C_IS_ZERO(&r[e - lo])) continue;
+        C c = C_MUL(x, &r[e - lo], &ib);                          // the quotient term at θ^(e - db)
+        for (int j = P_LO(b); j < db; j++)
+            if (!C_IS_ZERO(P_COEF(b, j))) PFX(sub_mul)(x, &r[e - db + j - lo], &c, P_COEF(b, j));
+        C_FREE(&r[e - lo]); r[e - lo] = C_ZERO(x);
+        C_FREE(&q[e - db]); q[e - db] = c;
     }
     C_FREE(&ib);
-    return d;
+    return (KDIV){ P_TAKE(x, q, 0, da - db + 1), P_TAKE(x, r, lo, n) };
 }
 
 static inline P PFX(exact_div)(CTX x, const P* a, const P* b) {
@@ -82,11 +105,12 @@ static inline P PFX(exact_div)(CTX x, const P* a, const P* b) {
 
 // monic gcd (0 only when both are 0)
 static inline P PFX(gcd)(CTX x, const P* a, const P* b) {
-    P r0 = PFX(copy)(x, a), r1 = PFX(copy)(x, b);
-    while (P_N(&r1)) {                                         // (r0, r1) <- (r1, r0 mod r1)
+    P r0 = PFX(copy)(x, a), r1 = P_N(b) ? PFX(monic)(x, b) : PFX(copy)(x, b);
+    while (P_N(&r1)) {                                         // (r0, r1) <- (r1, monic(r0 mod r1))
         KDIV d = PFX(divmod)(x, &r0, &r1);
         P_FREE(&d.q); P_FREE(&r0);
-        r0 = r1; r1 = d.r;
+        r0 = r1;
+        if (P_N(&d.r)) { r1 = PFX(monic)(x, &d.r); P_FREE(&d.r); } else r1 = d.r; // monic divisors: lc⁻¹ = 1
     }
     P g = P_N(&r0) ? PFX(monic)(x, &r0) : r0;
     if (P_N(&r0)) P_FREE(&r0);
@@ -103,6 +127,13 @@ static inline P PFX(inverse)(CTX x, const P* a, const P* b) {
         P_FREE(&qs); P_FREE(&d.q); P_FREE(&r0); P_FREE(&s0);
         r0 = r1; r1 = d.r;
         s0 = s1; s1 = s2;
+        if (P_N(&r1)) {                                        // keep r1 monic, s1 scaled along
+            C c = C_INV(x, P_LC(&r1));
+            P r = PFX(scale)(x, &r1, &c), s = PFX(scale)(x, &s1, &c);
+            C_FREE(&c);
+            P_FREE(&r1); P_FREE(&s1);
+            r1 = r; s1 = s;
+        }
     }
     C inv = C_INV(x, P_LC(&r0));                               // r0 is the constant gcd
     P s = PFX(scale)(x, &s0, &inv);

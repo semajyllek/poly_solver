@@ -67,6 +67,14 @@ Polynomial* poly_integral(const Polynomial* poly);
 double poly_definite_integral(const Polynomial* poly, double lower, double upper);
 
 // evaluation and output
+// double coefficients, dense, for evaluating one polynomial many times (quadrature)
+typedef struct {
+    double* c; // c[i] the coefficient of x^i
+    int deg;
+} DPoly;
+DPoly dpoly_from(const Polynomial* p); // exponents >= 0
+double dpoly_eval(const DPoly* p, double x); // the same rounding as poly_evaluate
+void dpoly_free(DPoly* p);
 double poly_evaluate(const Polynomial* poly, double x);
 void poly_eval_rat(Rational* out, const Polynomial* poly, const Rational* x); // exact Horner
 char* poly_to_string(const Polynomial* poly); // caller frees

@@ -29,6 +29,11 @@ $(CLI_TARGET): $(CLI_OBJS)
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
+# the fast lane after a change: the suite (with its CPU time) and the golden CLI corpus
+check: $(TEST_TARGET) $(CLI_TARGET)
+	./$(TEST_TARGET) | tail -1
+	python3 golden.py
+
 # AddressSanitizer + UndefinedBehaviorSanitizer build of the test binary
 sanitize: clean
 	$(MAKE) CFLAGS="$(CFLAGS) -fsanitize=address,undefined -fno-omit-frame-pointer" \
@@ -39,4 +44,4 @@ clean:
 
 -include $(TEST_SRCS:.c=.d) main.d
 
-.PHONY: all cli clean sanitize
+.PHONY: all cli clean sanitize check

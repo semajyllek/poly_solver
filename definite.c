@@ -197,17 +197,18 @@ typedef struct {
 // or on a half-line mapped onto t ∈ [0, 1] by u = side·(1 − t)/t, du = dt/t²
 typedef struct {
     RatFn f;       // shifted to the origin
+    DPoly dn, dd;  // f's numerator and denominator in doubles, converted once
     int side;      // 0, or ±1 for u ∈ [0, +∞) / (-∞, 0]
     double tail;   // the mapped integrand at t = 0: lim x²·f(x) as x → ±∞
     const Expr* e; // instead of f: an expression, evaluated at x = o + u
     double o;
 } Integrand;
 
-static double f_at(const RatFn* f, double x) { return poly_evaluate(f->num, x) / poly_evaluate(f->den, x); }
+static double f_at(const Integrand* g, double x) { return dpoly_eval(&g->dn, x) / dpoly_eval(&g->dd, x); }
 
 // the integrand at u (from its origin)
 static double u_at(const Integrand* g, double u) {
-    if (!g->e) return f_at(&g->f, u);
+    if (!g->e) return f_at(g, u);
     bool ok = true;
     double v = expr_eval(g->e, g->o + u, &ok);
     return ok ? v : NAN;
@@ -311,7 +312,7 @@ static void add_window(Windows* W, const Rational* o, Range r) {
     Window* w = &W->w[W->n++];
     w->num = shift(W->f->num, o);
     w->den = shift(W->f->den, o);
-    w->g = (Integrand){ { w->num, w->den }, r.side, tail_of(W->f), NULL, 0 };
+    w->g = (Integrand){ { w->num, w->den }, dpoly_from(w->num), dpoly_from(w->den), r.side, tail_of(W->f), NULL, 0 };
     w->a = r.side ? 0 : r.u0;                             // a half-line is mapped onto t ∈ [0, 1]
     w->b = r.side ? 1 : r.u1;
 }
@@ -353,6 +354,7 @@ static double numeric_value(const RatFn* f, const Span* s) {
     for (int i = 0; i < W.n; i++) {
         v += adaptive(&W.w[i].g, W.w[i].a, W.w[i].b, (Tol){ 1e-10 * (rough + 1e-300) / W.n, 40, &budget });
         free_polynomial(W.w[i].num); free_polynomial(W.w[i].den);
+        dpoly_free(&W.w[i].g.dn); dpoly_free(&W.w[i].g.dd);
     }
     free(W.w);
     root_interval_list_free(&cuts);
