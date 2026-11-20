@@ -21,6 +21,7 @@
 #include "risch2.h"
 #include "k2poly.h"
 #include "factor.h"
+#include "residue.h"
 #include "rischk1.h"
 #include "integrate.h"
 #include "matrix.h"
@@ -72,6 +73,20 @@ static K2Frac k2frac_poly(K2Poly p) { return (K2Frac){ p, k2_one(p.kind) }; }
 
 static K2Frac k2frac_zero(TowerKind kind) { return k2frac_poly(k2_zeros(0, kind)); }
 
+#define FRAC2_LIMIT 6 // deg of a denominator in θ2 beyond which Euclid over K1 is not attempted
+#define FRAC2_HIGH "a denominator in the outer ln of high degree is not supported yet"
+
+// the degree of the denominator of a·b (sum: false) or a ± b (sum: true) before reduction exceeds
+// FRAC2_LIMIT: then the gcd over K1 is not attempted (it can take minutes)
+static bool too_high(const K2Frac* a, const K2Frac* b, bool sum) {
+    int deg = k2_deg(&a->d) + k2_deg(&b->d);
+    if (deg <= FRAC2_LIMIT || !sum) return deg > FRAC2_LIMIT;
+    K2Poly g = k2_gcd(&a->d, &b->d);                      // the lcm's degree
+    deg -= k2_deg(&g);
+    k2_free(&g);
+    return deg > FRAC2_LIMIT;
+}
+
 // b^k for an integer k (k < 0: the inverse first)
 static K2Frac conv2_pow(const Expr* e, Conv2* C) {
     TowerKind kind = C->t->kind;
@@ -82,7 +97,12 @@ static K2Frac conv2_pow(const Expr* e, Conv2* C) {
         if (b.n.n == 0) C->why = "division by zero";
         else { K2Frac inv = k2frac_inv(&b); k2frac_free(&b); b = inv; k = -k; }
     }
-    for (long i = 0; i < k && !C->why; i++) { K2Frac m = k2frac_mul(&r, &b); k2frac_free(&r); r = m; }
+    for (long i = 0; i < k && !C->why; i++) {
+        if (too_high(&r, &b, false)) { C->why = FRAC2_HIGH; break; }
+        K2Frac m = k2frac_mul(&r, &b);
+        k2frac_free(&r);
+        r = m;
+    }
     k2frac_free(&b);
     return r;
 }
@@ -90,6 +110,8 @@ static K2Frac conv2_pow(const Expr* e, Conv2* C) {
 static K2Frac conv2_binop(const Expr* e, Conv2* C) {
     if (e->binop.op == OP_POW) return conv2_pow(e, C);
     K2Frac l = conv2(e->binop.left, C), r = conv2(e->binop.right, C), out;
+    bool sum = e->binop.op == OP_ADD || e->binop.op == OP_SUB;
+    if (!C->why && (e->binop.op == OP_MUL || sum) && too_high(&l, &r, sum)) C->why = FRAC2_HIGH;
     if (C->why) out = k2frac_zero(C->t->kind);
     else if (e->binop.op == OP_MUL) out = k2frac_mul(&l, &r);
     else if (e->binop.op == OP_DIV) {
@@ -815,92 +837,219 @@ static ResStatus residue_power_sums(const Reduced2* R, const Eta* E, Rational* p
     return st;
 }
 
-// R(z) = Π (z - c_i) from the power sums p_1..p_n (Newton: k·e_k = Σ_{i=1}^{k} (-1)^(i-1)·e_{k-i}·p_i)
-static Polynomial* residue_poly(const Rational* p, int n) {
-    Rational* e = malloc((size_t)(n + 1) * sizeof(Rational));
-    for (int k = 0; k <= n; k++) rat_init(&e[k]);
-    rat_set_si(&e[0], 1, 1);
-    Rational t, kk;
-    rat_init(&t); rat_init(&kk);
-    for (int k = 1; k <= n; k++) {
-        for (int i = 1; i <= k; i++) {
-            rat_mul(&t, &e[k - i], &p[i - 1]);
-            if (i % 2) rat_add(&e[k], &e[k], &t); else rat_sub(&e[k], &e[k], &t);
-        }
-        rat_set_si(&kk, k, 1);
-        rat_div(&e[k], &e[k], &kk);
-    }
-    Polynomial* R = create_polynomial();
-    for (int k = 0; k <= n; k++) {
-        if (k % 2) rat_neg(&t, &e[k]); else rat_set(&t, &e[k]);
-        if (!rat_is_zero(&t)) add_term(R, &t, n - k);
-    }
-    for (int k = 0; k <= n; k++) rat_clear(&e[k]);
-    free(e);
-    rat_clear(&t); rat_clear(&kk);
-    return R;
-}
+// --- the log part: Σ over the residues α of α·ln(gcd(d, h - α·D(d))), R(z) factored over Q ---
 
-// the distinct roots of R, all rational, or false (a factor of degree >= 2)
-typedef struct {
-    Rational* c;
-    int n;
-} Roots;
-
-static bool rational_roots(const Polynomial* R, Roots* out) {
-    Factorization* fz = factorize(R);
-    out->c = malloc((size_t)(fz->count + 1) * sizeof(Rational));
-    out->n = 0;
-    bool ok = true;
-    for (int i = 0; i < fz->count && ok; i++) {
-        Polynomial* q = fz->factors[i];
-        ok = polynomial_degree(q) == 1;
-        if (!ok) break;
-        Rational a, b;
-        rat_init(&a); rat_init(&b);
-        poly_coeff(&a, q, 1);
-        poly_coeff(&b, q, 0);
-        rat_div(&b, &b, &a);
-        rat_init(&out->c[out->n]);
-        rat_neg(&out->c[out->n++], &b);
-        rat_clear(&a); rat_clear(&b);
-    }
-    free_factorization(fz);
-    return ok;
-}
-
-static void roots_free(Roots* r) { for (int i = 0; i < r->n; i++) rat_clear(&r->c[i]); free(r->c); }
-
-// Σ c·ln(G_c), G_c = gcd(d, h - c·D(d)): the expression and its exact derivative
+// Σ c·ln(G_c) and the pairs: the expression and its exact derivative
 typedef struct {
     Expr* e;
     K2Frac deriv;
 } LogPart2;
 
-static void log_part2(const Frac2* X, const Roots* Z, LogPart2* out) {
+// adds the term e (taken) with derivative d (taken)
+static void log_add(LogPart2* out, Expr* e, K2Frac d) {
+    out->e = plus(out->e, e);
+    K2Frac s = k2frac_add(&out->deriv, &d, 1);
+    k2frac_free(&out->deriv); k2frac_free(&d);
+    out->deriv = s;
+}
+
+// c·D(G)/G
+static K2Frac log_deriv2(const Rational* c, const K2Poly* G, const Eta* E) {
+    K2Poly DG = k2_derivative(G, E);
+    K2Frac r = k2frac_make(k2_scaled(&DG, c), k2_copy(G));
+    k2_free(&DG);
+    return r;
+}
+
+// c·ln(G_c), G_c = gcd(d, h - c·D(d)) monic
+static void rational_log2(const Frac2* X, const Rational* c, LogPart2* out) {
     const Reduced2* R = X->R;
-    const Form2* F = X->F;
-    const Eta* E = X->E;
-    K2Poly Dd = k2_derivative(&R->d, E);
-    if (out->e) free_expr(out->e);
-    out->e = create_const(0);
-    k2frac_free(&out->deriv);
-    out->deriv = k2frac_zero(R->d.kind);
-    for (int i = 0; i < Z->n; i++) {
-        K2Poly cD = k2_scaled(&Dd, &Z->c[i]), hc = k2_add(&R->h, &cD, -1), G = k2_gcd(&R->d, &hc);
-        K2Poly DG = k2_derivative(&G, E), cDG = k2_scaled(&DG, &Z->c[i]);
-        K2Frac t = k2frac_make(cDG, k2_copy(&G)), s2 = k2frac_add(&out->deriv, &t, 1);
-        k2frac_free(&out->deriv); k2frac_free(&t);
-        out->deriv = s2;
-        Expr* term = create_mul(create_const_rat(&Z->c[i]), create_ln(poly2_expr(&G, F, true)));
-        out->e = plus(out->e, term);
-        k2_free(&cD); k2_free(&hc); k2_free(&G); k2_free(&DG);
+    K2Poly Dd = k2_derivative(&R->d, X->E), cD = k2_scaled(&Dd, c), hc = k2_add(&R->h, &cD, -1), G = k2_gcd(&R->d, &hc);
+    log_add(out, create_mul(create_const_rat(c), create_ln(poly2_expr(&G, X->F, true))), log_deriv2(c, &G, X->E));
+    k2_free(&Dd); k2_free(&cD); k2_free(&hc); k2_free(&G);
+}
+
+// c·θ2^k (c copied)
+static K2Poly k2_term(const KFrac* c, int k, TowerKind kind) {
+    K2Poly r = k2_zeros(0, kind);
+    k2_accumulate(&r, k, kf_copy(c));
+    k2_trim(&r);
+    return r;
+}
+
+// c·a for c ∈ K1
+static K2Poly k2_times(const K2Poly* a, const KFrac* c) {
+    K2Poly cp = k2_term(c, 0, a->kind), r = k2_mul(a, &cp);
+    k2_free(&cp);
+    return r;
+}
+
+// r ∈ Q as an element of K1
+static KFrac kf_rat(const Rational* r) {
+    return rat_is_zero(r) ? kf_zero() : (KFrac){ lpoly_term(qfn_rat(r), 0), kp_one() };
+}
+
+static KFrac kf_signed_add(const KFrac* a, const KFrac* b, TowerKind kind, int sign) {
+    return sign > 0 ? kfrac_add(a, b, kind) : kfrac_sub(a, b, kind);
+}
+
+#define LT_P K2Poly
+#define LT_C KFrac
+#define LT_FR K2Frac
+#define LT_CTX const Eta*
+#define LT_PFX(name) kk_##name
+#define LT_KDIV K2Div
+#define LT_KBEZ K2Bezout
+#define LT_KDIV_FREE(d) k2div_free(d)
+#define LT_KBEZ_FREE(z) k2bezout_free(z)
+#define LT_C_ZERO(x) kf_zero()
+#define LT_C_RAT(x, r) kf_rat(r)
+#define LT_C_ADD(x, a, b, sign) kf_signed_add((a), (b), (x)->t->kind, (sign))
+#define LT_C_MUL(x, a, b) kfrac_mul((a), (b), (x)->t->kind)
+#define LT_C_INV(x, a) kfrac_inv((a), (x)->t->kind)
+#define LT_C_FREE(a) kfrac_free(a)
+#define LT_P_ZERO(x) k2_zeros(0, (x)->t->kind)
+#define LT_P_ONE(x) k2_one((x)->t->kind)
+#define LT_P_COPY(x, a) k2_copy(a)
+#define LT_P_FREE(a) k2_free(a)
+#define LT_P_DEG(a) k2_deg(a)
+#define LT_P_COEFF(x, a, k) k2_coeff((a), (k))
+#define LT_P_TERM(x, c, k) k2_term((c), (k), (x)->t->kind)
+#define LT_P_ADD(x, a, b, sign) k2_add((a), (b), (sign))
+#define LT_P_MUL(x, a, b) k2_mul((a), (b))
+#define LT_P_SCALE(x, a, c) k2_times((a), (c))
+#define LT_P_DERIV(x, a) k2_derivative((a), (x))
+#define LT_P_DIVMOD(x, a, b) k2_divmod((a), (b))
+#define LT_P_GCD(x, a, b) k2_gcd((a), (b))
+#define LT_P_EXACT_DIV(x, a, b) k2_exact_div((a), (b))
+#define LT_P_BEZOUT(x, a, b, c) k2_bezout((a), (b), (c))
+#define LT_FR_MAKE(x, n, d) k2frac_make((n), (d))
+#define LT_FR_ADD(x, a, b, sign) k2frac_add((a), (b), (sign))
+#define LT_FR_ZERO(x) k2frac_zero((x)->t->kind)
+#define LT_FR_IS_ZERO(f) ((f)->n.n == 0)
+#define LT_FR_FREE(f) k2frac_free(f)
+#include "logpair_tmpl.h"
+
+// the sign of a's top coefficient (its numerator's, the denominator being monic)
+static int k2_lead_sign(const K2Poly* a) { return lead_sign(&a->a[a->n - 1].n); }
+
+// c·sqrt(m)·T, a rational T folded into the constant
+static Expr* surd_poly2(const Rational* c, const mpz_t m, const K2Poly* T, const Form2* F) {
+    Rational k;
+    rat_init(&k);
+    bool folded = k2_deg(T) == 0 && kf_constant(&T->a[0], &k);
+    if (folded) rat_mul(&k, &k, c);
+    Expr* e = folded ? surd_times(&k, m, NULL) : surd_times(c, m, poly2_expr(T, F, true));
+    rat_clear(&k);
+    return e;
+}
+
+// -a
+static K2Poly k2_neg(const K2Poly* a) {
+    K2Poly z = k2_zeros(0, a->kind), r = k2_add(&z, a, -1);
+    k2_free(&z);
+    return r;
+}
+
+// a with a positive top coefficient, and the sign it was multiplied by
+static K2Poly k2_positive(const K2Poly* a, int* sign) {
+    *sign = k2_lead_sign(a);
+    return *sign > 0 ? k2_copy(a) : k2_neg(a);
+}
+
+// ln|P + s·sqrt(m)·Q|
+static Expr* ln_p_pm(const kk_Pair* q, const K2Poly* Q, const Rational* s, const Form2* F) {
+    return create_ln(plus(poly2_expr(&q->P, F, true), surd_poly2(s, q->z.m, Q, F)));
+}
+
+// real α: b·√m·ln|P + √m·Q| - b·√m·ln|P - √m·Q|, written with lc(Q) > 0 (the term is odd in Q)
+static Expr* real_pair2(const kk_Pair* q, const Form2* F) {
+    int sg;
+    K2Poly Q = k2_positive(&q->Q, &sg);
+    Rational b, one = rat_from_int(1), m1 = rat_from_int(-1);
+    rat_init_set(&b, &q->z.r);
+    if (sg < 0) rat_neg(&b, &b);
+    Expr* e = surd_times(&b, q->z.m, ln_p_pm(q, &Q, &one, F));
+    rat_neg(&b, &b);
+    e = plus(e, surd_times(&b, q->z.m, ln_p_pm(q, &Q, &m1, F)));
+    rat_clear(&b); rat_clear(&one); rat_clear(&m1);
+    k2_free(&Q);
+    return e;
+}
+
+// complex α: -2b·√m·Σ atan(ρ_i·√m·T_i) (constant T_i dropped), NULL when the check fails
+static Expr* complex_pair2(const kk_Pair* q, const Form2* F) {
+    kk_Atans s;
+    Expr* e = NULL;
+    if (kk_log_to_atan(q, &s)) {
+        e = create_const(0);
+        for (int i = 0; i < s.n; i++) {
+            if (k2_deg(&s.T[i]) <= 0) continue;           // a constant: its derivative is 0
+            int sg;                                       // atan is odd: lc(T) > 0 and ρ > 0 inside
+            K2Poly T = k2_positive(&s.T[i], &sg);
+            Rational c, rho;
+            rat_init(&c); rat_init(&rho);
+            rat_add(&c, &q->z.r, &q->z.r);
+            rat_neg(&c, &c);
+            rat_abs(&rho, &s.rho[i]);
+            if (sg * (rat_is_negative(&s.rho[i]) ? -1 : 1) < 0) rat_neg(&c, &c);
+            e = plus(e, surd_times(&c, q->z.m, create_atan(surd_poly2(&rho, q->z.m, &T, F))));
+            rat_clear(&c); rat_clear(&rho);
+            k2_free(&T);
+        }
     }
-    k2_free(&Dd);
+    kk_atans_free(&s);
+    return e;
+}
+
+// a·ln|P² - M·Q²| plus the real or complex pair terms for the roots of the quadratic f
+static bool quadratic_log2(const Frac2* X, const Polynomial* f, LogPart2* out) {
+    kk_Pair q;
+    q.x = X->E;
+    kk_pair_make(&q, f, &(kk_HD){ &X->R->h, &X->R->d });
+    Expr* pe = q.z.is_complex ? complex_pair2(&q, X->F) : real_pair2(&q, X->F);
+    if (pe) {
+        if (!rat_is_zero(&q.z.p)) {                       // a·ln|N|, N monic
+            K2Poly N = kk_pair_norm(&q);
+            log_add(out, create_mul(create_const_rat(&q.z.p), create_ln(poly2_expr(&N, X->F, true))), log_deriv2(&q.z.p, &N, X->E));
+            k2_free(&N);
+        }
+        Rational k;                                       // the pair's derivative: 2b·M·(P·DQ - Q·DP)/N
+        rat_init(&k);
+        rat_add(&k, &q.z.r, &q.z.r);
+        rat_mul(&k, &k, &q.M);
+        log_add(out, pe, kk_pair_deriv(&q, &k));
+        rat_clear(&k);
+    }
+    kk_pair_free(&q);
+    return pe != NULL;
+}
+
+#define CUBIC_RESIDUES "residues over the outer ln that are algebraic numbers of degree 3 or more (a RootSum) are not supported yet"
+
+// the terms for each irreducible factor of R(z): rational roots, conjugate pairs, else unsupported
+static RischResult log_part2(const Frac2* X, const Polynomial* Rz, LogPart2* out) {
+    Factorization* fz = factorize(Rz);
+    RischResult r = { RISCH_OK, NULL, NULL };
+    for (int i = 0; r.status == RISCH_OK && i < fz->count; i++) {
+        const Polynomial* q = fz->factors[i];
+        int deg = polynomial_degree(q);
+        if (deg == 1) {
+            Rational a, b;                                // a·z + b: c = -b/a
+            rat_init(&a); rat_init(&b);
+            poly_coeff(&a, q, 1); poly_coeff(&b, q, 0);
+            rat_div(&b, &b, &a);
+            rat_neg(&b, &b);
+            if (!rat_is_zero(&b)) rational_log2(X, &b, out);   // a zero residue contributes nothing
+            rat_clear(&a); rat_clear(&b);
+        } else if (deg > 2) r = failure(RISCH_UNSUPPORTED, CUBIC_RESIDUES);
+        else if (!quadratic_log2(X, q, out)) r = failure(RISCH_UNSUPPORTED, "internal check failed: the arctangents over the outer ln do not differentiate back");
+    }
+    free_factorization(fz);
+    return r;
 }
 
 #define RESIDUES2_NOT_CONSTANT "has no elementary antiderivative (Risch: residues over the outer ln are not constants)"
-#define FRAC2_LIMIT 6 // deg of a denominator in θ2 beyond which Euclid over K1 is not attempted
 
 // g as an expression: num/den in ln(u)
 static Expr* frac2_expr(const K2Frac* g, const Form2* F) {
@@ -909,7 +1058,7 @@ static Expr* frac2_expr(const K2Frac* g, const Form2* F) {
     return create_div(n, poly2_expr(&g->d, F, true));
 }
 
-// the log part of h/d with rational residues, or why not (out unchanged then)
+// the log part of h/d with constant residues, or why not
 static RischResult residues2(const Frac2* X, LogPart2* out) {
     const Reduced2* R = X->R;
     int n = k2_deg(&R->d);
@@ -919,11 +1068,10 @@ static RischResult residues2(const Frac2* X, LogPart2* out) {
     RischResult r = { RISCH_OK, NULL, NULL };
     if (st == RES_NONCONSTANT) r = (RischResult){ RISCH_NONELEMENTARY, NULL, RESIDUES2_NOT_CONSTANT };
     else {
-        Polynomial* Rz = residue_poly(p, n);
-        Roots Z;
-        if (!rational_roots(Rz, &Z)) r = failure(RISCH_UNSUPPORTED, "residues over the outer ln that are irrational are not supported yet");
-        else log_part2(X, &Z, out);
-        roots_free(&Z);
+        Polynomial* Rz = from_power_sums(p, n);
+        if (out->e) free_expr(out->e);
+        out->e = create_const(0);
+        r = log_part2(X, Rz, out);
         free_polynomial(Rz);
     }
     for (int k = 0; k < n; k++) rat_clear(&p[k]);
@@ -950,7 +1098,7 @@ static bool remainder2(const Frac2* X, const K2Frac* logs, K2Poly* out) {
 
 // ∫ f for a fraction f = N/D in θ2 (D nonconstant)
 static RischResult integrate_frac2(const Form2* F, const Eta* E, const Expr* f) {
-    if (k2_deg(&F->f.d) > FRAC2_LIMIT) return failure(RISCH_UNSUPPORTED, "a denominator in the outer ln of high degree is not supported yet");
+    if (k2_deg(&F->f.d) > FRAC2_LIMIT) return failure(RISCH_UNSUPPORTED, FRAC2_HIGH);
     K2Div qd = k2_divmod(&F->f.n, &F->f.d);              // f = Q + R/D
     Reduced2 R = hermite2(&qd.r, &F->f.d, E);
     LogPart2 L = { NULL, k2frac_zero(R.d.kind) };

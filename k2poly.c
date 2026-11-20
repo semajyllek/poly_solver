@@ -150,9 +150,19 @@ static bool k2_is_one(const K2Poly* d) { return d->n == 1 && kp_is_one(&d->a[0].
 
 K2Frac k2frac_add(const K2Frac* a, const K2Frac* b, int sign) {
     if (k2_is_one(&a->d) && k2_is_one(&b->d)) return (K2Frac){ k2_add(&a->n, &b->n, sign), k2_copy(&a->d) }; // no gcd needed
-    K2Poly l = k2_mul(&a->n, &b->d), r = k2_mul(&b->n, &a->d), n = k2_add(&l, &r, sign);
-    k2_free(&l); k2_free(&r);
-    return k2frac_make(n, k2_mul(&a->d, &b->d));
+    // Henrici: with g = gcd(a.d, b.d), t = a.n·(b.d/g) ± b.n·(a.d/g) can share factors only with g, so
+    // the full gcd over K1 (whose coefficients swell) is replaced by gcd(t, g), which is 1 when g = 1
+    K2Poly g = k2_gcd(&a->d, &b->d), ad = k2_exact_div(&a->d, &g), bd = k2_exact_div(&b->d, &g);
+    K2Poly l = k2_mul(&a->n, &bd), r = k2_mul(&b->n, &ad), t = k2_add(&l, &r, sign);
+    K2Frac f;
+    if (t.n == 0) f = (K2Frac){ t, k2_const(kfrac_make(kp_one(), kp_one(), t.kind), t.kind) };
+    else {
+        K2Poly g2 = k2_gcd(&t, &g), bq = k2_exact_div(&b->d, &g2);
+        f = (K2Frac){ k2_exact_div(&t, &g2), k2_mul(&ad, &bq) };   // monic: a product of monic quotients
+        k2_free(&g2); k2_free(&bq); k2_free(&t);
+    }
+    k2_free(&g); k2_free(&ad); k2_free(&bd); k2_free(&l); k2_free(&r);
+    return f;
 }
 
 K2Frac k2frac_mul(const K2Frac* a, const K2Frac* b) {

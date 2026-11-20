@@ -1184,7 +1184,7 @@ By Liouville's theorem, `∫ f = Σ_{k=1}^{n+1} b_k θ^k + (an integral over Q(x
   - **Otherwise** Newton's identities give `R(z) ∈ Q[z]`, which is factored over Q (`residue.c`).
   - **Rational roots.** For each rational root c, `g_c = gcd(d, h − c·D(d))`, scaled to a primitive polynomial `G_c` in `Z[x][θ]`, contributes `c·ln(G_c)`.
   - **Quadratic factors.** The roots are `α = a ± b·√m` (real) or `a ± b·√m·i` (complex). Write `M = m` or `M = −m`.
-    - `g_α = gcd(d, h − α·D(d))` is taken over K(√M), where a polynomial is a pair `P + √M·Q` (`ksurd.c`). The x-denominators of P and Q are cleared together.
+    - `g_α = gcd(d, h − α·D(d))` is taken over K(√M), where a polynomial is a pair `P + √M·Q` (`logpair_tmpl.h`). The x-denominators of P and Q are cleared together.
     - The pair `α·ln g_α + ᾱ·ln g_ᾱ` becomes `a·ln|P² − M·Q²|` plus:
       - for real α, `b·√m·(ln|P + √m·Q| − ln|P − √m·Q|)`;
       - for complex α, `−b·√m·LogToAtan(√m·Q, P)`.
@@ -1358,26 +1358,32 @@ Examples:
 - Bezout splits off the polynomial part.
 - Bronstein's quadratic Hermite reduction runs with the derivation `D(Σ b_k θ2^k) = Σ (D(b_k)·θ2^k + k·b_k·η·θ2^(k−1))`.
 - The residues of the square-free part h/d must be constants. Their power sums `Tr(s^k)`, with `s = h·D(d)⁻¹ mod d`, are computed from Newton's power sums of d's roots over K1, and each must lie in Q.
-- `R(z)` then follows over Q by Newton's identities. It is factored with `factor.c`, and each rational root c gives `c·ln(gcd(d, h − c·D(d)))`.
+- `R(z)` then follows over Q by Newton's identities (`from_power_sums`, shared with `residue.c`). It is factored with `factor.c`, and each rational root c gives `c·ln(gcd(d, h − c·D(d)))`.
+- A quadratic factor gives the conjugate pair exactly as over Q(x): `g_α = P + √M·Q` over K1(√M)[θ2], then `a·ln|P² − M·Q²|` plus real logs `b·√m·ln|(P + √m·Q)/(P − √m·Q)|` or Rioboo's arctangents of polynomials in θ2, whose derivative is checked exactly. g_α stays monic in θ2, so P and Q may have coefficients that are fractions in θ1 (`atan(ln|x+1|/ln|x|)`); clearing them would put `2a·D(c)/c` into the remainder for no gain. Arctangents of a constant are dropped (derivative 0). Residues of degree 3 or more are unsupported, as over Q(x).
 - `f − D(g) − D(logs)` must be a polynomial in θ2. This is checked exactly, and the polynomial goes to the levels above.
 - Verdicts:
   - Non-elementary is claimed when a power sum is not in Q (Bronstein Thm 5.6.1 for a primitive monomial), or when the polynomial remainder's levels fail.
-  - Irrational residues, such as `1/(x·ln(x)·(ln(ln(x))² + 1))`, which needs `atan(ln(ln x))`, are reported as unsupported, as are denominators of degree above 6 and internal failures.
+  - Residues of degree 3 or more, such as those of `1/(x·ln(x)·(ln(ln(x))³ − 2))`, are reported as unsupported, as are denominators of degree above 6 and internal failures.
 - Examples:
   - `∫ 1/(x·ln x·ln ln x) = ln|ln|ln x||`, with residue 1;
   - `∫ 1/(x·ln x·(ln ln x + 1)²) = −1/(ln|ln|x|| + 1)`, by Hermite;
   - `∫ (1/x + eˣ)/(ln x + eˣ) = ln|ln|x| + eˣ|`;
+  - `∫ 1/(x·ln x·((ln ln x)² + 1)) = atan(ln|ln|x||)`, with residues ±i/2, and `∫ ln ln x/(x·ln x·((ln ln x)⁴ + 1)) = 1/2·atan(ln|ln|x||²)`, where LogToAtan takes more than one step;
   - `1/(ln x·ln(x + 1))` is non-elementary with either ln on top.
+
+**The pair layer.** `logpair_tmpl.h` holds the algebra of a conjugate pair once: the gcd over K(√M), `P² − M·Q²`, the pair's derivative, Rioboo's LogToAtan steps and the exact check of the arctangents. `residue.c` instantiates it over Q(x) (its output is byte-identical to the earlier `ksurd.c` version on the whole suite) and `risch2.c` over K1; only the printing differs.
 
 **The polynomial layer.** `kpoly_tmpl.h` holds divmod, gcd, Bezout, Yun's square-free decomposition, monic and d/dθ. They are written once over macros for the coefficient operations.
 - `kpoly.c` instantiates them over QFn (K = Q(x)), and the output is unchanged, which the whole suite checks.
 - `k2poly.c` instantiates them over KFrac (K1) for θ2. `test_prop_k2poly` checks the identities there: a = q·b + r, gcd·cofactor = input, s·a + t·b = 1, and that Yun's parts multiply back.
-- Euclid over K1 reduces fractions in θ1 at every step, which is why the degree cap exists.
+- Euclid over K1 reduces fractions in θ1 at every step, and its coefficients swell, which is why the degree cap exists. The cap is applied while f is converted, too: a sum or product whose denominator in θ2 would exceed it is refused before any gcd (a sum of four fractions of degree 2 used to take minutes there).
+- `k2frac_add` uses Henrici's addition: with `g = gcd(d_a, d_b)`, the numerator `t = n_a·(d_b/g) ± n_b·(d_a/g)` can share factors only with g, so only `gcd(t, g)` is taken, which is trivial when the denominators are coprime.
+- The pair gcd over K1(√M) runs against `gcd(d, (h − a·D(d))² − M·b²·D(d)²)`, the product `g_α·g_ᾱ` found over K1 without surds, rather than against all of d.
 
 **Tests.**
-- `test_reg_integrate_tower2` pins 16 answers, each also checked numerically (three with a Hermite part or a negative power in θ1, six with θ2 in a denominator, one of them with two residues and one with a non-monic denominator), 13 proofs (both orientations of `1/(ln(x)·ln(x+1))`) and 5 unsupported inputs.
-- `test_prop_integrate_tower2` integrates the derivative of random `Σ c_k(x)·{θ1, θ1², θ1/(θ1 + 2)}·θ2^k`, sometimes with `c·θ2²/(θ2 + 3)`, in four tower pairs. It adds a non-elementary integrand of the same towers, and checks that the sum is always rejected.
-- The SymPy `check_tower2` stream gives these towers to `risch_integrate` unchanged. Coefficients include `1/(θ1 + 2)`, and 40% of the integrands have a term `c/(θ2 + c')`, so both Hermite branches are exercised. In 300 cases (seeds 100–399) there were 0 disagreements: 186 answers check numerically, 112 proofs of non-elementarity agree with SymPy, and 2 proofs remain unconfirmed because SymPy's Risch raised or timed out.
+- `test_reg_integrate_tower2` pins 25 answers, each also checked numerically (three with a Hermite part or a negative power in θ1, fifteen with θ2 in a denominator: two residues, a non-monic denominator, a zero residue after Hermite, and eight with quadratic residues: real and complex pairs, a ≠ 0, Q with a coefficient in K1, a two-step LogToAtan, and pairs beside rational residues), 15 proofs (both orientations of `1/(ln(x)·ln(x+1))`, nonconstant residues over quadratics) and 5 unsupported inputs (one with cubic residues).
+- `test_prop_integrate_tower2` integrates the derivative of random `Σ c_k(x)·{θ1, θ1², θ1/(θ1 + 2)}·θ2^k`, sometimes with `c·θ2²/(θ2 + 3)`, and sometimes plus `D(atan(r·θ2))` or `D(ln(θ2² + r))` (quadratic residues), in four tower pairs. It adds a non-elementary integrand of the same towers, and checks that the sum is always rejected.
+- The SymPy `check_tower2` stream gives these towers to `risch_integrate` unchanged. Coefficients include `1/(θ1 + 2)`; 40% of the integrands have a term `c/(θ2 + c')`, 30% a term `c/(θ2² + c')`, and a fifth of the derivatives an atan or ln of a quadratic in θ2. In 300 cases (seeds 0–299) there were 0 disagreements: 155 answers check numerically, 134 proofs of non-elementarity agree with SymPy, 3 proofs remain unconfirmed because SymPy's Risch raised or timed out, and 8 are refused by the degree cap.
 
 ---
 

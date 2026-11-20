@@ -4,9 +4,8 @@
 // Tr(s^k), k = 1 .. deg d, lies in Q (Newton's identities, exact). A nonconstant one proves
 // ∫ h/d non-elementary (Thm 5.6.1). Otherwise R(z) ∈ Q[z] is factored: a linear factor gives
 // c·ln(gcd(d, h - c·D(d))); a quadratic one gives the conjugate pair in real form, with the gcd
-// taken over K(√M) (ksurd.c); degree >= 3 is not supported (it would need a RootSum over θ).
+// taken over K(√M) (logpair_tmpl.h); degree >= 3 is not supported (it would need a RootSum over θ).
 #include "residue.h"
-#include "ksurd.h"
 #include "factor.h"
 #include <stdlib.h>
 
@@ -75,7 +74,7 @@ static bool residue_power_sums(const KFrac* R, const Tower* t, Rational* p) {
 }
 
 // the monic polynomial in z with power sums p[0..n-1]: k·e_k = Σ_{i=1}^{k} (-1)^(i-1)·e_{k-i}·p_i
-static Polynomial* from_power_sums(const Rational* p, int n) {
+Polynomial* from_power_sums(const Rational* p, int n) {
     Rational* e = malloc((size_t)(n + 1) * sizeof(Rational));
     e[0] = rat_one_val();
     Polynomial* R = create_polynomial();
@@ -132,7 +131,7 @@ static KFrac log_deriv(const Rational* c, const LPoly* G, const Tower* t) {
 }
 
 // |c|·sqrt(m)·x with the sign outside (1 and sqrt(1) omitted; x may be NULL for a constant)
-static Expr* surd_times(const Rational* c, const mpz_t m, Expr* x) {
+Expr* surd_times(const Rational* c, const mpz_t m, Expr* x) {
     Rational a;
     rat_init(&a);
     rat_abs(&a, c);
@@ -152,7 +151,7 @@ static Expr* surd_times(const Rational* c, const mpz_t m, Expr* x) {
 }
 
 // the sign of T's leading coefficient (of the top θ power, then of the top x power)
-static int lead_sign(const LPoly* T) {
+int lead_sign(const LPoly* T) {
     const Polynomial* top = T->a[T->n - 1].num;
     Rational c;
     rat_init(&c);
@@ -205,52 +204,65 @@ static void rational_term(Acc* A, const Rational* c, const Ctx* X) {
     qfn_free(&cq); lpoly_free(&Dd); lpoly_free(&cDd); lpoly_free(&w); lpoly_free(&g); lpoly_free(&G);
 }
 
-// --- a conjugate pair α = a ± b·√M (M = m, or -m for complex α) ---
+// --- a conjugate pair α = a ± b·√M (M = m, or -m for complex α): logpair_tmpl.h over Q(x) ---
 
-typedef struct {
-    QuadRoots z;   // a = z.p, b = z.r, m = z.m
-    Rational M;
-    LPoly P, Q;    // g_α = P + √M·Q, scaled to coefficients in Q[x]
-    const Tower* t;
-} Pair;
+static QFn qfn_signed_add(const QFn* a, const QFn* b, int sign) { return qfn_add(a, b, sign); }
+static KFrac kfrac_signed_add(const KFrac* a, const KFrac* b, TowerKind kind, int sign) {
+    return sign > 0 ? kfrac_add(a, b, kind) : kfrac_sub(a, b, kind);
+}
 
-// g_α = gcd(d, h - α·D(d)) over K(√M), with the x-denominators cleared
-static void pair_gcd(Pair* q, const Ctx* X) {
-    QFn a = qfn_rat(&q->z.p), b = qfn_rat(&q->z.r);
-    LPoly Dd = lpoly_derivative(&X->hd->d, X->t), aDd = kp_scale(&Dd, &a), bDd = kp_scale(&Dd, &b), z = { 0, 0, NULL };
-    LPoly wp = lpoly_add(&X->hd->n, &aDd, -1), wq = lpoly_add(&z, &bDd, -1);
-    SPoly w = { wp, wq }, d = sp_from(&X->hd->d, &z);
-    SPoly g = sp_gcd(&d, &w, &q->M);
-    KPair c = kp_common_multiple(&g.p, &g.q);
+#define LT_P LPoly
+#define LT_C QFn
+#define LT_FR KFrac
+#define LT_CTX const Tower*
+#define LT_PFX(name) kq_##name
+#define LT_KDIV KDiv
+#define LT_KBEZ KBezout
+#define LT_KDIV_FREE(d) kdiv_free(d)
+#define LT_KBEZ_FREE(z) kbezout_free(z)
+#define LT_C_ZERO(x) qfn_zero()
+#define LT_C_RAT(x, r) qfn_rat(r)
+#define LT_C_ADD(x, a, b, sign) qfn_signed_add((a), (b), (sign))
+#define LT_C_MUL(x, a, b) qfn_mul((a), (b))
+#define LT_C_INV(x, a) qfn_inv(a)
+#define LT_C_FREE(a) qfn_free(a)
+#define LT_P_ZERO(x) ((LPoly){ 0, 0, NULL })
+#define LT_P_ONE(x) kp_one()
+#define LT_P_COPY(x, a) kp_copy(a)
+#define LT_P_FREE(a) lpoly_free(a)
+#define LT_P_DEG(a) kp_deg(a)
+#define LT_P_COEFF(x, a, k) kp_coeff((a), (k))
+#define LT_P_TERM(x, c, k) lpoly_term(qfn_copy(c), (k))
+#define LT_P_ADD(x, a, b, sign) lpoly_add((a), (b), (sign))
+#define LT_P_MUL(x, a, b) lpoly_mul((a), (b))
+#define LT_P_SCALE(x, a, c) kp_scale((a), (c))
+#define LT_P_DERIV(x, a) lpoly_derivative((a), (x))
+#define LT_P_DIVMOD(x, a, b) kp_divmod((a), (b))
+#define LT_P_GCD(x, a, b) kp_gcd((a), (b))
+#define LT_P_EXACT_DIV(x, a, b) kp_exact_div((a), (b))
+#define LT_P_BEZOUT(x, a, b, c) kp_bezout((a), (b), (c))
+#define LT_FR_MAKE(x, n, d) kfrac_make((n), (d), (x)->kind)
+#define LT_FR_ADD(x, a, b, sign) kfrac_signed_add((a), (b), (x)->kind, (sign))
+#define LT_FR_ZERO(x) ((KFrac){ { 0, 0, NULL }, kp_one() })
+#define LT_FR_IS_ZERO(f) ((f)->n.n == 0)
+#define LT_FR_FREE(f) kfrac_free(f)
+#include "logpair_tmpl.h"
+
+typedef kq_Pair Pair;
+
+// g_α with the x-denominators cleared (P + √M·Q times an element of Q(x))
+static void pair_gcd(Pair* q, const Polynomial* f, const Ctx* X) {
+    q->x = X->t;
+    kq_pair_make(q, f, &(kq_HD){ &X->hd->n, &X->hd->d });
+    KPair c = kp_common_multiple(&q->P, &q->Q);
+    lpoly_free(&q->P); lpoly_free(&q->Q);
     q->P = c.a; q->Q = c.b;
-    sp_free(&w); sp_free(&d); sp_free(&g);
-    qfn_free(&a); qfn_free(&b);
-    lpoly_free(&Dd); lpoly_free(&aDd); lpoly_free(&bDd);
-}
-
-// P² - M·Q² (in K[θ])
-static LPoly pair_norm(const Pair* q) {
-    LPoly P2 = lpoly_mul(&q->P, &q->P), Q2 = lpoly_mul(&q->Q, &q->Q);
-    QFn M = qfn_rat(&q->M);
-    LPoly MQ2 = kp_scale(&Q2, &M), N = lpoly_add(&P2, &MQ2, -1);
-    lpoly_free(&P2); lpoly_free(&Q2); lpoly_free(&MQ2); qfn_free(&M);
-    return N;
-}
-
-// k·(P·D(Q) - Q·D(P))/(P² - M·Q²): the derivative of (k/2)/√M·ln|(P + √M·Q)/(P - √M·Q)|
-static KFrac pair_deriv(const Pair* q, const Rational* k) {
-    LPoly DP = lpoly_derivative(&q->P, q->t), DQ = lpoly_derivative(&q->Q, q->t);
-    LPoly l = lpoly_mul(&q->P, &DQ), r = lpoly_mul(&q->Q, &DP), W = lpoly_add(&l, &r, -1);
-    QFn kq = qfn_rat(k);
-    KFrac f = kfrac_make(kp_scale(&W, &kq), pair_norm(q), q->t->kind);
-    lpoly_free(&DP); lpoly_free(&DQ); lpoly_free(&l); lpoly_free(&r); lpoly_free(&W); qfn_free(&kq);
-    return f;
 }
 
 // P + sign·sqrt(m)·Q as an expression
 static Expr* p_pm_sqrt_q(const Pair* q, const LPoly* Q, int sign) {
     Rational s = rat_from_int(sign);
-    Expr* e = create_add(lpoly_expr_order(&q->P, q->t, true), surd_poly(&s, q->z.m, Q, q->t));
+    Expr* e = create_add(lpoly_expr_order(&q->P, q->x, true), surd_poly(&s, q->z.m, Q, q->x));
     rat_clear(&s);
     return e;
 }
@@ -271,109 +283,11 @@ static Expr* real_pair_expr(const Pair* q) {
     return e;
 }
 
-// --- Rioboo's LogToAtan with a scalar: 2·atan(κ·A/B), κ = ρ·√m, as Σ 2·atan(ρ_i·√m·T_i), T_i ∈ K[θ]
-// (arguments polynomial in θ, so the sum has no jumps where B vanishes). With B·D - A·C' = G:
-//   B | A:           2·atan(κ·A/B)
-//   deg A < deg B:   2·atan(κ·A/B) = const - 2·atan(κ'·(-B)/A), κ' = 1/κ = √m/(ρ·m)
-//   otherwise:       2·atan(κ·(A·D + B·C'/κ²)/G) + 2·atan(κ·D/C')     (Bronstein's LogToAtan with C = C'/κ)
-
-typedef struct {
-    Rational* rho;
-    LPoly* T;
-    int n;
-} Atans;
-
-static void atans_push(Atans* s, const Rational* rho, LPoly T) {
-    s->rho = realloc(s->rho, (size_t)(s->n + 1) * sizeof(Rational));
-    s->T = realloc(s->T, (size_t)(s->n + 1) * sizeof(LPoly));
-    rat_init_set(&s->rho[s->n], rho);
-    s->T[s->n++] = T;
-}
-
-static void atans_free(Atans* s) {
-    for (int i = 0; i < s->n; i++) { rat_clear(&s->rho[i]); lpoly_free(&s->T[i]); }
-    free(s->rho); free(s->T);
-}
-
-// the state 2·atan(ρ·√m·A/B)
-typedef struct {
-    LPoly A, B;
-    Rational rho;
-    const Rational* m;
-} AtanState;
-
-// one LogToAtan step; false once finished
-static bool atan_step(AtanState* S, Atans* out) {
-    KDiv qr = kp_divmod(&S->A, &S->B);
-    bool done = qr.r.n == 0;
-    if (done) { atans_push(out, &S->rho, qr.q); lpoly_free(&qr.r); return false; }
-    kdiv_free(&qr);
-    if (kp_deg(&S->A) < kp_deg(&S->B)) {                  // swap: (A, B, ρ) <- (-B, A, 1/(ρ·m))
-        LPoly z = { 0, 0, NULL }, nb = lpoly_add(&z, &S->B, -1);
-        lpoly_free(&S->B);
-        S->B = S->A; S->A = nb;
-        rat_mul(&S->rho, &S->rho, S->m);
-        mpq_inv(S->rho.val, S->rho.val);
-        return true;
-    }
-    LPoly G = kp_gcd(&S->A, &S->B), A1 = kp_exact_div(&S->A, &G), B1 = kp_exact_div(&S->B, &G), one = kp_one();
-    KBezout z = kp_bezout(&B1, &A1, &one);                // D·B1 + t·A1 = 1: D = s, C' = -t
-    LPoly zero = { 0, 0, NULL }, C = lpoly_add(&zero, &z.t, -1);
-    Rational k2;                                          // 1/κ² = 1/(ρ²·m)
-    rat_init(&k2);
-    rat_mul(&k2, &S->rho, &S->rho);
-    rat_mul(&k2, &k2, S->m);
-    mpq_inv(k2.val, k2.val);
-    QFn kq = qfn_rat(&k2);
-    LPoly AD = lpoly_mul(&S->A, &z.s), BC = lpoly_mul(&S->B, &C), BCk = kp_scale(&BC, &kq), sum = lpoly_add(&AD, &BCk, 1);
-    atans_push(out, &S->rho, kp_exact_div(&sum, &G));
-    lpoly_free(&S->A); lpoly_free(&S->B);
-    S->A = kp_copy(&z.s); S->B = C;
-    lpoly_free(&G); lpoly_free(&A1); lpoly_free(&B1); lpoly_free(&one); kbezout_free(&z);
-    lpoly_free(&AD); lpoly_free(&BC); lpoly_free(&BCk); lpoly_free(&sum);
-    qfn_free(&kq); rat_clear(&k2);
-    return true;
-}
-
-// Σ 2·ρ_i·D(T_i)/(1 + ρ_i²·m·T_i²) = 2·(P·D(Q) - Q·D(P))/(P² + m·Q²): the arctangents
-// differentiate (divided by √m) to the pair's derivative, checked exactly
-static bool atans_check(const Atans* s, const Pair* q) {
-    TowerKind kind = q->t->kind;
-    KFrac acc = { { 0, 0, NULL }, kp_one() };
-    for (int i = 0; i < s->n; i++) {
-        Rational k;
-        rat_init(&k);
-        rat_mul(&k, &s->rho[i], &s->rho[i]);
-        rat_mul(&k, &k, &q->M);
-        rat_neg(&k, &k);                                  // ρ²·m = -ρ²·M
-        QFn kq = qfn_rat(&k), two = qfn_rat(&s->rho[i]);
-        QFn tw = qfn_add(&two, &two, 1);
-        LPoly T2 = lpoly_mul(&s->T[i], &s->T[i]), kT2 = kp_scale(&T2, &kq), one = kp_one(), den = lpoly_add(&one, &kT2, 1);
-        LPoly DT = lpoly_derivative(&s->T[i], q->t);
-        KFrac term = kfrac_make(kp_scale(&DT, &tw), den, kind), next = kfrac_add(&acc, &term, kind);
-        kfrac_free(&acc); kfrac_free(&term);
-        acc = next;
-        lpoly_free(&T2); lpoly_free(&kT2); lpoly_free(&one); lpoly_free(&DT);
-        qfn_free(&kq); qfn_free(&two); qfn_free(&tw); rat_clear(&k);
-    }
-    Rational two = rat_from_int(2);
-    KFrac want = pair_deriv(q, &two), diff = kfrac_sub(&acc, &want, kind);
-    bool same = diff.n.n == 0;
-    kfrac_free(&acc); kfrac_free(&want); kfrac_free(&diff);
-    rat_clear(&two);
-    return same;
-}
-
 // complex α: -b·√m·Σ 2·atan(ρ_i·√m·T_i) from LogToAtan(√m·Q, P); NULL if the check fails
 static Expr* complex_pair_expr(const Pair* q) {
-    Rational m;
-    rat_init(&m);
-    mpq_set_z(m.val, q->z.m);
-    AtanState S = { kp_copy(&q->Q), kp_copy(&q->P), rat_one_val(), &m };
-    Atans s = { NULL, NULL, 0 };
-    while (atan_step(&S, &s)) {}
+    kq_Atans s;
     Expr* e = NULL;
-    if (atans_check(&s, q)) {
+    if (kq_log_to_atan(q, &s)) {
         Rational c;                                       // every term: -2b·√m·atan(ρ·√m·T)
         rat_init(&c);
         rat_add(&c, &q->z.r, &q->z.r);
@@ -384,35 +298,29 @@ static Expr* complex_pair_expr(const Pair* q) {
             Rational ci;
             rat_init_set(&ci, &c);
             if (sg < 0) rat_neg(&ci, &ci);
-            Expr* arg = surd_poly(&s.rho[i], q->z.m, &T, q->t);
+            Expr* arg = surd_poly(&s.rho[i], q->z.m, &T, q->x);
             e = expr_append_sum(e, surd_times(&ci, q->z.m, create_atan(arg)));
             rat_clear(&ci); lpoly_free(&T);
         }
         rat_clear(&c);
     }
-    lpoly_free(&S.A); lpoly_free(&S.B); rat_clear(&S.rho); rat_clear(&m);
-    atans_free(&s);
+    kq_atans_free(&s);
     return e;
 }
 
 // a·ln|P² - M·Q²| plus the real or complex pair terms, for the roots of the quadratic factor f
 static bool quadratic_term(Acc* A, const Polynomial* f, const Ctx* X) {
     Pair q;
-    q.z = poly_quad_roots(f);
-    q.t = X->t;
-    rat_init(&q.M);
-    mpq_set_z(q.M.val, q.z.m);
-    if (q.z.is_complex) rat_neg(&q.M, &q.M);
-    pair_gcd(&q, X);
+    pair_gcd(&q, f, X);
     Expr* pe = q.z.is_complex ? complex_pair_expr(&q) : real_pair_expr(&q);
     if (pe) {
         Rational k;                                       // D(α ln g_α + ᾱ ln g_ᾱ) - a·D(N)/N = 2b·M·(P·DQ - Q·DP)/N
         rat_init(&k);
         rat_add(&k, &q.z.r, &q.z.r);
         rat_mul(&k, &k, &q.M);
-        LogTerm x = { 2, pe, pair_deriv(&q, &k) };
+        LogTerm x = { 2, pe, kq_pair_deriv(&q, &k) };
         if (!rat_is_zero(&q.z.p)) {                       // a·ln|N|, first
-            LPoly N = pair_norm(&q), Np = kp_primitive(&N);
+            LPoly N = kq_pair_norm(&q), Np = kp_primitive(&N);
             LogTerm l = { 2, ln_expr(&q.z.p, &Np, X->t), log_deriv(&q.z.p, &Np, X->t) };
             acc_add(A, &l);
             lpoly_free(&N); lpoly_free(&Np);
@@ -420,7 +328,7 @@ static bool quadratic_term(Acc* A, const Polynomial* f, const Ctx* X) {
         acc_add(A, &x);
         rat_clear(&k);
     }
-    lpoly_free(&q.P); lpoly_free(&q.Q); rat_clear(&q.M); quad_roots_clear(&q.z);
+    kq_pair_free(&q);
     return pe != NULL;
 }
 

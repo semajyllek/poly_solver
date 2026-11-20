@@ -20,4 +20,9 @@ typedef struct {
 ResidueStatus residue_log_part(const KFrac* hd, const Tower* t, LogPart* out);
 void log_part_free(LogPart* L);
 
+// shared with risch2.c's residues over the outer ln
+Polynomial* from_power_sums(const Rational* p, int n);         // the monic polynomial with power sums p[0..n-1]
+Expr* surd_times(const Rational* c, const mpz_t m, Expr* x);   // c·sqrt(m)·x, sign outside (x may be NULL)
+int lead_sign(const LPoly* T);                                 // the sign of T's top coefficient's top x term
+
 #endif

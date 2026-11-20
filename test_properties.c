@@ -1838,6 +1838,20 @@ static void test_reg_integrate_tower2(void) {
         { "1/((x+1)*ln(x+1)) + 1/(x*ln(x))", "ln(abs(ln(abs(x + 1)))) + ln(abs(ln(abs(x))))" },
         { "1/(x*ln(x)*ln(ln(x))*(ln(ln(x))+1))", "-ln(abs(ln(abs(ln(abs(x)))) + 1)) + ln(abs(ln(abs(ln(abs(x))))))" }, // residues ±1
         { "(ln(ln(x)) + 1/ln(x))/(x*ln(ln(x)) + 1)", "ln(abs(x)) + ln(abs(ln(abs(ln(abs(x)))) + 1 / x))" },   // lc(den) = x
+        { "1/(x*ln(x)*ln(ln(x))) - 1/(x*ln(x)*(ln(ln(x))+1)^2)",                            // residue 0 after Hermite: no 0·ln
+          "1 / (ln(abs(ln(abs(x)))) + 1) + ln(abs(ln(abs(ln(abs(x))))))" },
+        { "1/(x*ln(x)*(ln(ln(x))^2+1))", "atan(ln(abs(ln(abs(x)))))" },                    // residues ±i/2
+        { "1/(x*ln(x)*(ln(ln(x))^2-2))",                                                     // ±√2/4: a real pair
+          "-1/4 * sqrt(2) * ln(abs(ln(abs(ln(abs(x)))) + sqrt(2))) + 1/4 * sqrt(2) * ln(abs(ln(abs(ln(abs(x)))) - sqrt(2)))" },
+        { "(ln(ln(x))+1)/(x*ln(x)*(ln(ln(x))^2+2))",                                       // a ≠ 0: a·ln|N| too
+          "1/2 * ln(abs(ln(abs(ln(abs(x))))^2 + 2)) + 1/2 * sqrt(2) * atan(1/2 * sqrt(2) * ln(abs(ln(abs(x)))))" },
+        { "(ln(x)/(x+1)-ln(x+1)/x)/(ln(x)^2+ln(x+1)^2)", "atan(ln(abs(x + 1)) / ln(abs(x)))" },   // Q with a K1 coefficient
+        { "(exp(x)*ln(x)+exp(x)/x)/(1+exp(2x)*ln(x)^2)", "atan(exp(x) * ln(abs(x)))" },
+        { "ln(ln(x))/(x*ln(x)*(ln(ln(x))^4+1))", "1/2 * atan(ln(abs(ln(abs(x))))^2)" },     // deg g_α = 2: LogToAtan steps
+        { "1/(x*ln(x)*(ln(ln(x))^2+1)*(ln(ln(x))^2-3))",                                   // a complex and a real pair
+          "-1/4 * atan(ln(abs(ln(abs(x))))) - 1/24 * sqrt(3) * ln(abs(ln(abs(ln(abs(x)))) + sqrt(3))) + 1/24 * sqrt(3) * ln(abs(ln(abs(ln(abs(x)))) - sqrt(3)))" },
+        { "1/(x*ln(x)*ln(ln(x))*(ln(ln(x))^2+1))",                                          // rational and quadratic
+          "-1/2 * ln(abs(ln(abs(ln(abs(x))))^2 + 1)) + ln(abs(ln(abs(ln(abs(x))))))" },
     };
     for (size_t i = 0; i < sizeof ok / sizeof ok[0]; i++) {
         Expr* f = parse_input(ok[i][0]);
@@ -1850,14 +1864,16 @@ static void test_reg_integrate_tower2(void) {
     const char* none[] = { "exp(x)*ln(x)", "x*exp(x)*ln(x)", "ln(ln(x))", "ln(x)*ln(x+1)", "ln(exp(x)+1)", "x*ln(x)*ln(x+1)",
                            "ln(x)/ln(x+1)",                         // a polynomial in ln(x) over Q(x)(ln(x+1)): level 1 is ∫ 1/ln(x+1)
                            "ln(x+1)/exp(x)", "1/(ln(x)*ln(x+1))", "1/(ln(x+1)*ln(x))",   // both orientations
-                           "ln(x+1)/(x*ln(x)^2)", "1/(ln(x)+ln(x+1))", "ln(ln(x))^(-1)" };  // residues not constant
+                           "ln(x+1)/(x*ln(x)^2)", "1/(ln(x)+ln(x+1))", "ln(ln(x))^(-1)",   // residues not constant
+                           "1/(ln(x)*(ln(x+1)^2+1))", "exp(x)/(x*(ln(x)^2+exp(2x)))" };     // ... over a quadratic
     for (size_t i = 0; i < sizeof none / sizeof none[0]; i++) {
         RischResult r = risch_str(none[i]);
         assert(r.status == RISCH_NONELEMENTARY && r.result);
         free_expr(r.result);
     }
-    const char* outside[] = { "ln(x)*ln(2x)", "exp(x)*ln(exp(x))", "1/(x*ln(x)*(ln(ln(x))^2+1))",   // quadratic residues
-                              "ln(ln(ln(x)))", "exp(x)*ln(x)*ln(x+1)" };                 // three levels   // θ2 in K1; θ2 below a fraction
+    const char* outside[] = { "ln(x)*ln(2x)", "exp(x)*ln(exp(x))",                       // θ2 in K1
+                              "1/(x*ln(x)*(ln(ln(x))^3-2))",                             // cubic residues
+                              "ln(ln(ln(x)))", "exp(x)*ln(x)*ln(x+1)" };                 // three levels
     for (size_t i = 0; i < sizeof outside / sizeof outside[0]; i++) {
         RischResult r = risch_str(outside[i]);
         assert(r.status == RISCH_UNSUPPORTED && !r.result && r.reason);
@@ -1957,6 +1973,17 @@ static Expr* deriv(const Expr* e) {
 // random F = Σ_{k=0}^{2} c_k(x)·θ1^j_k·θ2^k in one of four two-level towers; integrate(F') must give
 // an answer whose derivative is F' (checked numerically), and F' + g, g a non-elementary
 // integrand of the same towers, must be proved non-elementary
+// D(atan(r·θ2)) = r·D(θ2)/(1 + r²·θ2²) or D(ln(θ2² + r)) = 2·θ2·D(θ2)/(θ2² + r): quadratic residues
+static Expr* quadratic_tower2_term(const char* th2) {
+    long r = rnd(1, 2);
+    Expr* t = parse_input(th2), *d = deriv(t), *t2 = create_pow(expr_copy(t), create_const(2));
+    if (rnd(0, 1)) {
+        free_expr(t);
+        return create_div(create_mul(create_const(r), d), create_add(create_const(1), create_mul(create_const(r * r), t2)));
+    }
+    return create_div(create_mul(create_const(2), create_mul(t, d)), create_add(t2, create_const(r)));
+}
+
 static void test_prop_integrate_tower2(void) {
     const char* towers[][3] = {                                    // θ1, θ2, a non-elementary g
         { "exp(x)", "ln(x)", "exp(x)*ln(x)" }, { "ln(x)", "ln(x+1)", "ln(x)*ln(x+1)" },
@@ -1965,7 +1992,7 @@ static void test_prop_integrate_tower2(void) {
     int roundtrips = 0, rejected = 0;
     for (int trial = 0; trial < TRIALS / 2; trial++) {
         const char* const* tw = towers[rnd(0, 3)];
-        Expr* F = NULL;
+        Expr* F = NULL, *extra = NULL;
         for (int k = 0; k <= 2; k++) {
             if (k < 2 && !rnd(0, 2)) continue;
             Expr* t = create_mul(create_poly_expr(poly_si((long[]){ rnd(-2, 2), rnd(0, 2) }, 1)), parse_input(tw[0]));
@@ -1978,9 +2005,16 @@ static void test_prop_integrate_tower2(void) {
                 t = create_div(create_mul(create_const(rnd(1, 2)), create_pow(parse_input(tw[1]), create_const(2))),
                                create_add(parse_input(tw[1]), create_const(3)));
             }
+            if (k == 1 && !rnd(0, 5)) {                               // quadratic residues, added to f directly
+                free_expr(t);
+                Expr* q = quadratic_tower2_term(tw[1]);
+                extra = extra ? create_add(extra, q) : q;
+                continue;
+            }
             F = F ? create_add(F, t) : t;
         }
-        Expr* f = deriv(F);
+        Expr* f = F ? deriv(F) : create_const(0);
+        if (extra) f = create_add(f, extra);
         RischResult r = integrate_exp(f);
         if (r.status != RISCH_OK) { char* s = expr_to_string(f); fprintf(stderr, "tower2 f = %s: %s\n", s, r.reason ? r.reason : "-"); free(s); }
         assert(r.status == RISCH_OK);
@@ -1991,7 +2025,7 @@ static void test_prop_integrate_tower2(void) {
         assert(rb.status == RISCH_NONELEMENTARY);
         rejected++;
         free_expr(rb.result); free_expr(bad);
-        free_expr(r.result); free_expr(f); free_expr(F);
+        free_expr(r.result); free_expr(f); if (F) free_expr(F);
     }
     printf("  test_prop_integrate_tower2 PASSED (%d round trips, %d non-elementary by construction)\n", roundtrips, rejected);
 }
