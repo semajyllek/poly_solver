@@ -23,10 +23,41 @@ bool kp_is_one(const LPoly* a) {
     return z;
 }
 
-LPoly kp_copy(const LPoly* a) {
-    LPoly z = { 0, 0, NULL };
-    return lpoly_add(a, &z, 1);
+// --- the algorithms (kpoly_tmpl.h) over QFn ---
+
+// k·a
+static QFn qfn_scale_int(const QFn* a, int k) {
+    Rational kk = rat_from_int(k);
+    QFn c = { poly_scale(a->num, &kk), poly_copy(a->den) };
+    rat_clear(&kk);
+    return c;
 }
+
+#define P LPoly
+#define C QFn
+#define CTX int
+#define PFX(name) kq_##name
+#define KDIV KDiv
+#define KBEZ KBezout
+#define KSF KSquareFree
+#define P_DEG(p) kp_deg(p)
+#define P_LC(p) (&(p)->a[(p)->n - 1])
+#define P_TERM(x, c, k) lpoly_term(qfn_copy(c), (k))
+#define P_ADD(x, a, b, sign) lpoly_add((a), (b), (sign))
+#define P_MUL(x, a, b) lpoly_mul((a), (b))
+#define P_ONE(x) kp_one()
+#define P_ZERO(x) ((LPoly){ 0, 0, NULL })
+#define P_FREE(p) lpoly_free(p)
+#define P_COEF(p, k) (&(p)->a[(k) - (p)->lo])
+#define P_LO(p) ((p)->lo)
+#define P_N(p) ((p)->n)
+#define C_MUL(x, a, b) qfn_mul((a), (b))
+#define C_INV(x, a) qfn_inv(a)
+#define C_FREE(a) qfn_free(a)
+#define C_SCALE_INT(x, a, k) qfn_scale_int((a), (k))
+#include "kpoly_tmpl.h"
+
+LPoly kp_copy(const LPoly* a) { return kq_copy(0, a); }
 
 LPoly kp_shift(const LPoly* a, int k) {
     LPoly r = kp_copy(a);
@@ -34,112 +65,14 @@ LPoly kp_shift(const LPoly* a, int k) {
     return r;
 }
 
-LPoly kp_scale(const LPoly* a, const QFn* c) {
-    LPoly t = lpoly_term(qfn_copy(c), 0), r = lpoly_mul(a, &t);
-    lpoly_free(&t);
-    return r;
-}
-
-static const QFn* kp_lc(const LPoly* a) { return &a->a[a->n - 1]; }
-
-LPoly kp_monic(const LPoly* a) {
-    QFn inv = qfn_inv(kp_lc(a));
-    LPoly r = kp_scale(a, &inv);
-    qfn_free(&inv);
-    return r;
-}
-
-LPoly kp_dtheta(const LPoly* a) {
-    LPoly r = { 0, 0, NULL };
-    for (int i = 0; i < a->n; i++) {
-        int k = a->lo + i;
-        if (k == 0) continue;
-        Rational kk = rat_from_int(k);
-        QFn c = { poly_scale(a->a[i].num, &kk), poly_copy(a->a[i].den) };
-        LPoly t = lpoly_term(c, k - 1), s = lpoly_add(&r, &t, 1);
-        lpoly_free(&r); lpoly_free(&t);
-        r = s;
-        rat_clear(&kk);
-    }
-    return r;
-}
-
-// a = q·b + r with deg r < deg b, from the top one term at a time
-KDiv kp_divmod(const LPoly* a, const LPoly* b) {
-    KDiv d = { { 0, 0, NULL }, kp_copy(a) };
-    QFn ib = qfn_inv(kp_lc(b));
-    while (kp_deg(&d.r) >= kp_deg(b)) {
-        LPoly t = lpoly_term(qfn_mul(kp_lc(&d.r), &ib), kp_deg(&d.r) - kp_deg(b)); // next quotient term
-        LPoly tb = lpoly_mul(&t, b), r = lpoly_add(&d.r, &tb, -1), q = lpoly_add(&d.q, &t, 1);
-        lpoly_free(&d.r); lpoly_free(&d.q); lpoly_free(&t); lpoly_free(&tb);
-        d.r = r; d.q = q;
-    }
-    qfn_free(&ib);
-    return d;
-}
-
-LPoly kp_exact_div(const LPoly* a, const LPoly* b) {
-    KDiv d = kp_divmod(a, b);
-    lpoly_free(&d.r);
-    return d.q;
-}
-
-LPoly kp_gcd(const LPoly* a, const LPoly* b) {
-    LPoly r0 = kp_copy(a), r1 = kp_copy(b);
-    while (r1.n) {                                        // (r0, r1) <- (r1, r0 mod r1)
-        KDiv d = kp_divmod(&r0, &r1);
-        lpoly_free(&d.q); lpoly_free(&r0);
-        r0 = r1; r1 = d.r;
-    }
-    LPoly g = r0.n ? kp_monic(&r0) : r0;
-    if (r0.n) lpoly_free(&r0);
-    lpoly_free(&r1);                                      // the zero remainder still owns its array
-    return g;
-}
-
-// s with s·a ≡ 1 (mod b), by the extended Euclidean algorithm (only the s column is needed)
-static LPoly kp_inverse(const LPoly* a, const LPoly* b) {
-    LPoly r0 = kp_copy(a), r1 = kp_copy(b), s0 = kp_one(), s1 = { 0, 0, NULL };
-    while (r1.n) {
-        KDiv d = kp_divmod(&r0, &r1);
-        LPoly qs = lpoly_mul(&d.q, &s1), s2 = lpoly_add(&s0, &qs, -1);
-        lpoly_free(&qs); lpoly_free(&d.q); lpoly_free(&r0); lpoly_free(&s0);
-        r0 = r1; r1 = d.r;
-        s0 = s1; s1 = s2;
-    }
-    QFn inv = qfn_inv(&r0.a[0]);                          // r0 is the constant gcd
-    LPoly s = kp_scale(&s0, &inv);
-    qfn_free(&inv);
-    lpoly_free(&r0); lpoly_free(&r1); lpoly_free(&s0); lpoly_free(&s1);
-    return s;
-}
-
-KBezout kp_bezout(const LPoly* a, const LPoly* b, const LPoly* c) {
-    LPoly inv = kp_inverse(a, b), cs = lpoly_mul(c, &inv);
-    KDiv sd = kp_divmod(&cs, b);                          // s = c·a⁻¹ mod b
-    LPoly sa = lpoly_mul(&sd.r, a), rest = lpoly_add(c, &sa, -1);
-    KBezout z = { sd.r, kp_exact_div(&rest, b) };         // t = (c - s·a)/b
-    lpoly_free(&inv); lpoly_free(&cs); lpoly_free(&sd.q); lpoly_free(&sa); lpoly_free(&rest);
-    return z;
-}
-
-// Yun: with c = gcd(d, d_θ), w = d/c, y = d_θ/c, each step peels off the part of multiplicity i
-KSquareFree kp_square_free(const LPoly* d) {
-    KSquareFree s = { malloc((size_t)(kp_deg(d) + 1) * sizeof(LPoly)), 0 };
-    LPoly dp = kp_dtheta(d), c = kp_gcd(d, &dp);
-    LPoly w = kp_exact_div(d, &c), y = kp_exact_div(&dp, &c);
-    lpoly_free(&dp); lpoly_free(&c);
-    while (kp_deg(&w) > 0) {
-        LPoly wp = kp_dtheta(&w), z = lpoly_add(&y, &wp, -1);
-        LPoly g = kp_gcd(&w, &z);
-        LPoly nw = kp_exact_div(&w, &g), ny = kp_exact_div(&z, &g);
-        s.f[s.m++] = g;                                    // the part of multiplicity m
-        lpoly_free(&wp); lpoly_free(&z); lpoly_free(&w); lpoly_free(&y);
-        w = nw; y = ny;
-    }
-    lpoly_free(&w); lpoly_free(&y);
-    return s;
-}
+LPoly kp_scale(const LPoly* a, const QFn* c) { return kq_scale(0, a, c); }
+LPoly kp_monic(const LPoly* a) { return kq_monic(0, a); }
+LPoly kp_dtheta(const LPoly* a) { return kq_dtheta(0, a); }
+KDiv kp_divmod(const LPoly* a, const LPoly* b) { return kq_divmod(0, a, b); }
+LPoly kp_exact_div(const LPoly* a, const LPoly* b) { return kq_exact_div(0, a, b); }
+LPoly kp_gcd(const LPoly* a, const LPoly* b) { return kq_gcd(0, a, b); }
+KBezout kp_bezout(const LPoly* a, const LPoly* b, const LPoly* c) { return kq_bezout(0, a, b, c); }
+KSquareFree kp_square_free(const LPoly* d) { return kq_square_free(0, d); }
 
 void kdiv_free(KDiv* d) { lpoly_free(&d->q); lpoly_free(&d->r); }
 void kbezout_free(KBezout* z) { lpoly_free(&z->s); lpoly_free(&z->t); }

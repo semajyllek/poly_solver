@@ -19,6 +19,8 @@
 // Every answer is checked exactly: g = D(r) + c·η, and D(Σ b_k θ2^k) + g_0 = f. θ2 must be
 // transcendental over K1: η ∉ D(K1), i.e. not (h_η = 0 and s(p_η) ∈ Q·L1).
 #include "risch2.h"
+#include "k2poly.h"
+#include "factor.h"
 #include "rischk1.h"
 #include "integrate.h"
 #include "matrix.h"
@@ -27,81 +29,6 @@
 #include <string.h>
 
 const char TOWER2_NOT_APPLICABLE[] = "ln over another exp or ln tower is supported only for polynomials in the outer ln for now";
-
-// --- polynomials in θ2 over K1 ---
-
-typedef struct {
-    KFrac* a;         // a[k]: the coefficient of θ2^k
-    int n;
-    TowerKind kind;   // of K1, for the arithmetic of the coefficients
-} KP2;
-
-static KFrac kf_zero(void) { return (KFrac){ { 0, 0, NULL }, kp_one() }; }
-static bool kf_is_zero(const KFrac* k) { return k->n.n == 0; }
-static KFrac kf_copy(const KFrac* k) { return (KFrac){ kp_copy(&k->n), kp_copy(&k->d) }; }
-
-static void kp2_free(KP2* p) {
-    for (int i = 0; i < p->n; i++) kfrac_free(&p->a[i]);
-    free(p->a);
-    p->a = NULL; p->n = 0;
-}
-
-static KP2 kp2_zeros(int n, TowerKind kind) {
-    KP2 p = { malloc((size_t)(n > 0 ? n : 1) * sizeof(KFrac)), n, kind };
-    for (int i = 0; i < n; i++) p.a[i] = kf_zero();
-    return p;
-}
-
-static void kp2_trim(KP2* p) {
-    while (p->n > 0 && kf_is_zero(&p->a[p->n - 1])) kfrac_free(&p->a[--p->n]);
-}
-
-static KP2 kp2_const(KFrac c, TowerKind kind) {         // takes c
-    KP2 p = kp2_zeros(1, kind);
-    kfrac_free(&p.a[0]);
-    p.a[0] = c;
-    kp2_trim(&p);
-    return p;
-}
-
-// a[k] += c (taken)
-static void kp2_accumulate(KP2* p, int k, KFrac c) {
-    if (k >= p->n) {
-        p->a = realloc(p->a, (size_t)(k + 1) * sizeof(KFrac));
-        for (int i = p->n; i <= k; i++) p->a[i] = kf_zero();
-        p->n = k + 1;
-    }
-    KFrac s = kfrac_add(&p->a[k], &c, p->kind);
-    kfrac_free(&p->a[k]); kfrac_free(&c);
-    p->a[k] = s;
-}
-
-// c·k
-static KFrac kf_scaled(const KFrac* k, const Rational* c, TowerKind kind) {
-    QFn cq = qfn_rat(c);
-    KFrac r = kfrac_make(kp_scale(&k->n, &cq), kp_copy(&k->d), kind);
-    qfn_free(&cq);
-    return r;
-}
-
-static KP2 kp2_add(const KP2* x, const KP2* y, int sign) {
-    KP2 r = kp2_zeros(0, x->kind);
-    Rational s = rat_from_int(sign);
-    for (int i = 0; i < x->n; i++) kp2_accumulate(&r, i, kf_copy(&x->a[i]));
-    for (int i = 0; i < y->n; i++) kp2_accumulate(&r, i, kf_scaled(&y->a[i], &s, x->kind));
-    rat_clear(&s);
-    kp2_trim(&r);
-    return r;
-}
-
-static KP2 kp2_mul(const KP2* x, const KP2* y) {
-    KP2 r = kp2_zeros(0, x->kind);
-    for (int i = 0; i < x->n; i++)
-        for (int j = 0; j < y->n; j++)
-            if (!kf_is_zero(&x->a[i]) && !kf_is_zero(&y->a[j])) kp2_accumulate(&r, i + j, kfrac_mul(&x->a[i], &y->a[j], x->kind));
-    kp2_trim(&r);
-    return r;
-}
 
 // --- expression -> K1[θ2] ---
 
@@ -130,7 +57,7 @@ static bool has_top(const Expr* e, const char* top) {
     }
 }
 
-static KP2 conv2(const Expr* e, Conv2* C);
+static K2Frac conv2(const Expr* e, Conv2* C);
 
 // e ∈ K1 (no outer ln)
 static bool conv_k1(const Expr* e, Conv2* C, KFrac* out) {
@@ -138,52 +65,66 @@ static bool conv_k1(const Expr* e, Conv2* C, KFrac* out) {
     return !C->why;
 }
 
-static KP2 conv2_binop(const Expr* e, Conv2* C) {
+static K2Poly k2_one(TowerKind kind) { return k2_const(kfrac_make(kp_one(), kp_one(), kind), kind); }
+
+// p/1 (takes p)
+static K2Frac k2frac_poly(K2Poly p) { return (K2Frac){ p, k2_one(p.kind) }; }
+
+static K2Frac k2frac_zero(TowerKind kind) { return k2frac_poly(k2_zeros(0, kind)); }
+
+// b^k for an integer k (k < 0: the inverse first)
+static K2Frac conv2_pow(const Expr* e, Conv2* C) {
     TowerKind kind = C->t->kind;
-    if (e->binop.op == OP_POW) {
-        long k = 0;
-        if (!small_integer(e->binop.right, &k) || k < 0) { C->why = "a negative power of the outer ln is not supported yet"; return kp2_zeros(0, C->t->kind); }
-        KP2 b = conv2(e->binop.left, C), r = kp2_const(kfrac_make(kp_one(), kp_one(), kind), kind);
-        for (long i = 0; i < k && !C->why; i++) { KP2 m = kp2_mul(&r, &b); kp2_free(&r); r = m; }
-        kp2_free(&b);
-        return r;
+    long k = 0;
+    if (!small_integer(e->binop.right, &k)) { C->why = "exponents must be small integers"; return k2frac_zero(kind); }
+    K2Frac b = conv2(e->binop.left, C), r = k2frac_poly(k2_one(kind));
+    if (!C->why && k < 0) {
+        if (b.n.n == 0) C->why = "division by zero";
+        else { K2Frac inv = k2frac_inv(&b); k2frac_free(&b); b = inv; k = -k; }
     }
-    if (e->binop.op == OP_DIV) {
-        if (has_top(e->binop.right, C->top)) { C->why = "the outer ln in a denominator is not supported yet"; return kp2_zeros(0, C->t->kind); }
-        KFrac d;
-        if (!conv_k1(e->binop.right, C, &d)) return kp2_zeros(0, C->t->kind);
-        if (kf_is_zero(&d)) { C->why = "division by zero"; kfrac_free(&d); return kp2_zeros(0, C->t->kind); }
-        KP2 l = conv2(e->binop.left, C), inv = kp2_const(kfrac_inv(&d, kind), kind), r = kp2_mul(&l, &inv);
-        kp2_free(&l); kp2_free(&inv); kfrac_free(&d);
-        return r;
-    }
-    KP2 l = conv2(e->binop.left, C), r = conv2(e->binop.right, C), out;
-    if (e->binop.op == OP_MUL) out = kp2_mul(&l, &r);
-    else out = kp2_add(&l, &r, e->binop.op == OP_ADD ? 1 : -1);
-    kp2_free(&l); kp2_free(&r);
+    for (long i = 0; i < k && !C->why; i++) { K2Frac m = k2frac_mul(&r, &b); k2frac_free(&r); r = m; }
+    k2frac_free(&b);
+    return r;
+}
+
+static K2Frac conv2_binop(const Expr* e, Conv2* C) {
+    if (e->binop.op == OP_POW) return conv2_pow(e, C);
+    K2Frac l = conv2(e->binop.left, C), r = conv2(e->binop.right, C), out;
+    if (C->why) out = k2frac_zero(C->t->kind);
+    else if (e->binop.op == OP_MUL) out = k2frac_mul(&l, &r);
+    else if (e->binop.op == OP_DIV) {
+        if (r.n.n == 0) { C->why = "division by zero"; out = k2frac_zero(C->t->kind); }
+        else if (k2_deg(&r.n) == 0 && k2_deg(&r.d) == 0) {  // by an element of K1: scale the numerator
+            KFrac ic = kfrac_inv(&r.n.a[0], C->t->kind), dc = kfrac_mul(&ic, &r.d.a[0], C->t->kind);
+            K2Poly s = k2_const(dc, C->t->kind);
+            out = (K2Frac){ k2_mul(&l.n, &s), k2_copy(&l.d) };
+            k2_free(&s); kfrac_free(&ic);
+        } else { K2Frac ir = k2frac_inv(&r); out = k2frac_mul(&l, &ir); k2frac_free(&ir); }
+    } else out = k2frac_add(&l, &r, e->binop.op == OP_ADD ? 1 : -1);
+    k2frac_free(&l); k2frac_free(&r);
     return out;
 }
 
-static KP2 conv2(const Expr* e, Conv2* C) {
-    if (C->why) return kp2_zeros(0, C->t->kind);
+static K2Frac conv2(const Expr* e, Conv2* C) {
+    TowerKind kind = C->t->kind;
+    if (C->why) return k2frac_zero(kind);
     if (is_top(e, C->top)) {                              // θ2
-        KP2 p = kp2_zeros(2, C->t->kind);
-        kfrac_free(&p.a[1]);
-        p.a[1] = kfrac_make(kp_one(), kp_one(), C->t->kind);
-        return p;
+        K2Poly p = k2_zeros(0, kind);
+        k2_accumulate(&p, 1, kfrac_make(kp_one(), kp_one(), kind));
+        return k2frac_poly(p);
     }
     if (!has_top(e, C->top)) {
         KFrac k;
-        return conv_k1(e, C, &k) ? kp2_const(k, C->t->kind) : kp2_zeros(0, C->t->kind);
+        return conv_k1(e, C, &k) ? k2frac_poly(k2_const(k, kind)) : k2frac_zero(kind);
     }
     switch (e->type) {
         case EXPR_BINOP: return conv2_binop(e, C);
         case EXPR_NEG: {
-            KP2 z = kp2_zeros(0, C->t->kind), f = conv2(e->operand, C), r = kp2_add(&z, &f, -1);
-            kp2_free(&z); kp2_free(&f);
+            K2Frac z = k2frac_zero(kind), f = conv2(e->operand, C), r = k2frac_add(&z, &f, -1);
+            k2frac_free(&z); k2frac_free(&f);
             return r;
         }
-        default: C->why = "the outer ln inside another function is not supported yet"; return kp2_zeros(0, C->t->kind);
+        default: C->why = "the outer ln inside another function is not supported yet"; return k2frac_zero(kind);
     }
 }
 
@@ -237,7 +178,7 @@ typedef struct {
     Tower t1;
     KFrac u;
     const Expr* u_expr;   // points into f
-    KP2 f;
+    K2Frac f;
     const char* why;      // when there is no such form: the reason from a tower that fit
 } Form2;
 
@@ -266,7 +207,7 @@ static bool form_with_top(const Expr* f, const Expr* A, Form2* out) {
         if (ok && kf_is_constant(&out->u)) { kfrac_free(&out->u); ok = false; }   // ln of a constant
         if (ok) {
             out->f = conv2(f, &C);
-            if (C.why) { kp2_free(&out->f); kfrac_free(&out->u); ok = false; out->why = C.why; }
+            if (C.why) { k2frac_free(&out->f); kfrac_free(&out->u); ok = false; out->why = C.why; }
         }
         if (!ok) tower_free(&out->t1);
     }
@@ -289,7 +230,7 @@ static bool form2_of(const Expr* f, Form2* out) {
 }
 
 static void form2_free(Form2* F) {
-    kp2_free(&F->f);
+    k2frac_free(&F->f);
     kfrac_free(&F->u);
     tower_free(&F->t1);
 }
@@ -575,24 +516,24 @@ static LimStatus lim_integrate(const KFrac* g, const Eta* E, LimResult* out) {
 #define LEVEL_FAILS "has no elementary antiderivative (Risch: a level of the outer ln needs a logarithm other than it)"
 
 // D(Σ b_k θ2^k) = Σ (D(b_k)·θ2^k + k·b_k·η·θ2^(k-1))
-static KP2 kp2_derivative(const KP2* B, const Eta* E) {
-    KP2 r = kp2_zeros(0, B->kind);
+static K2Poly k2_derivative(const K2Poly* B, const Eta* E) {
+    K2Poly r = k2_zeros(0, B->kind);
     for (int k = 0; k < B->n; k++) {
-        kp2_accumulate(&r, k, kfrac_derivative(&B->a[k], E->t));
+        k2_accumulate(&r, k, kfrac_derivative(&B->a[k], E->t));
         if (k == 0) continue;
         Rational kk = rat_from_int(k);
         KFrac be = kfrac_mul(&B->a[k], &E->eta, B->kind);
-        kp2_accumulate(&r, k - 1, kf_scaled(&be, &kk, B->kind));
+        k2_accumulate(&r, k - 1, kf_scaled(&be, &kk, B->kind));
         kfrac_free(&be);
         rat_clear(&kk);
     }
-    kp2_trim(&r);
+    k2_trim(&r);
     return r;
 }
 
 // ∫ f = Σ_{k>=1} b_k θ2^k + ∫ g0
 typedef struct {
-    KP2 B;
+    K2Poly B;
     KFrac g0;
 } Levels;
 
@@ -620,17 +561,27 @@ static void set_level(Levels* L, const Step* st) {
     rat_clear(&kk); rat_clear(&d);
 }
 
+// a polynomial P in θ2 to integrate, in the towers of F
+typedef struct {
+    const Form2* F;
+    const Eta* E;
+    const K2Poly* P;
+} PolyIn;
+
 // the levels from the top; LIM_NONE at one that fails
-static LimStatus solve_levels(const Form2* F, const Eta* E, Levels* L) {
+static LimStatus solve_levels(const PolyIn* in, Levels* L) {
+    const Form2* F = in->F;
+    const Eta* E = in->E;
+    const K2Poly* P = in->P;
     TowerKind kind = F->t1.kind;
-    int n = F->f.n - 1;                                   // -1 for f = 0
-    L->B = kp2_zeros(n + 2 < 2 ? 2 : n + 2, kind);
+    int n = P->n - 1;                                     // -1 for P = 0
+    L->B = k2_zeros(n + 2 < 2 ? 2 : n + 2, kind);
     L->g0 = kf_zero();
     KFrac r_next = kf_zero();
     LimStatus st = LIM_OK;
     for (int k = n; st == LIM_OK && k >= 1; k--) {
         Rational kk = rat_from_int(k + 1);
-        KFrac re = kfrac_mul(&r_next, &E->eta, kind), t = kf_scaled(&re, &kk, kind), g = kfrac_sub(&F->f.a[k], &t, kind);
+        KFrac re = kfrac_mul(&r_next, &E->eta, kind), t = kf_scaled(&re, &kk, kind), g = kfrac_sub(&P->a[k], &t, kind);
         LimResult R;
         rat_init(&R.c);
         st = lim_integrate(&g, E, &R);
@@ -643,11 +594,11 @@ static LimStatus solve_levels(const Form2* F, const Eta* E, Levels* L) {
         L->B.a[1] = kf_copy(&r_next);
         KFrac re = kfrac_mul(&r_next, &E->eta, kind), zero = kf_zero();
         kfrac_free(&L->g0);
-        L->g0 = kfrac_sub(n >= 0 ? &F->f.a[0] : &zero, &re, kind);
+        L->g0 = kfrac_sub(n >= 0 ? &P->a[0] : &zero, &re, kind);
         kfrac_free(&re); kfrac_free(&zero);
     }
     kfrac_free(&r_next);
-    kp2_trim(&L->B);
+    k2_trim(&L->B);
     return st;
 }
 
@@ -655,6 +606,12 @@ static LimStatus solve_levels(const Form2* F, const Eta* E, Levels* L) {
 static Expr* level_term(const KFrac* b, const Form2* F, int k) {
     Expr* ln = create_ln(expr_copy(F->u_expr));
     if (k > 1) ln = create_pow(ln, create_const(k));
+    Rational c;
+    rat_init(&c);
+    bool constant = kf_constant(b, &c);
+    Expr* e = constant ? create_mul(create_const_rat(&c), ln) : NULL;  // 1·ln and -1·ln print bare
+    rat_clear(&c);
+    if (e) return e;
     if (kp_is_one(&b->d)) return create_mul(kfrac_expr(b, &F->t1), ln);
     KFrac num = { kp_copy(&b->n), kp_one() };
     Expr* top = kp_is_one(&num.n) ? ln : create_mul(kfrac_expr(&num, &F->t1), ln);
@@ -662,11 +619,12 @@ static Expr* level_term(const KFrac* b, const Form2* F, int k) {
     return create_div(top, lpoly_expr(&b->d, &F->t1));
 }
 
-// Σ_{k>=1} b_k·ln(u)^k, top power first
-static Expr* levels_expr(const KP2* B, const Form2* F) {
+// Σ_{k>=1} b_k·ln(u)^k (plus b_0 when with0), top power first
+static Expr* poly2_expr(const K2Poly* B, const Form2* F, bool with0) {
     Expr* acc = create_const(0);
     for (int k = B->n - 1; k >= 1; k--)
         if (!kf_is_zero(&B->a[k])) acc = plus(acc, level_term(&B->a[k], F, k));
+    if (with0 && B->n && !kf_is_zero(&B->a[0])) acc = plus(acc, kfrac_expr(&B->a[0], &F->t1));
     return acc;
 }
 
@@ -680,21 +638,339 @@ static RischResult integrate_k1(const KFrac* g0, const Tower* t) {
     return r;
 }
 
-static RischResult solve_form2(const Form2* F, const Eta* E, const Expr* f) {
+// ∫ P for a polynomial P in θ2: the levels, then ∫ g0 over K1 (f: the integrand, for a proof)
+static RischResult integrate_poly2(const PolyIn* in, const Expr* f) {
     Levels L;
-    LimStatus st = solve_levels(F, E, &L);
+    LimStatus st = solve_levels(in, &L);
     RischResult r;
     if (st == LIM_NONE) r = (RischResult){ RISCH_NONELEMENTARY, expr_copy(f), LEVEL_FAILS };
     else if (st == LIM_UNSUPPORTED) r = failure(RISCH_UNSUPPORTED, "internal check failed: limited integration over the inner tower");
     else {
-        KP2 dB = kp2_derivative(&L.B, E), G = kp2_const(kf_copy(&L.g0), L.B.kind), s = kp2_add(&dB, &G, 1), d = kp2_add(&s, &F->f, -1);
-        bool same = d.n == 0;                              // the exact check: D(B) + g0 = f
-        kp2_free(&dB); kp2_free(&G); kp2_free(&s); kp2_free(&d);
-        r = same ? integrate_k1(&L.g0, &F->t1) : failure(RISCH_UNSUPPORTED, "internal check failed: the outer ln part does not differentiate back");
-        if (r.status == RISCH_OK) r.result = plus(levels_expr(&L.B, F), r.result);
+        K2Poly dB = k2_derivative(&L.B, in->E), G = k2_const(kf_copy(&L.g0), L.B.kind), s = k2_add(&dB, &G, 1), d = k2_add(&s, in->P, -1);
+        bool same = d.n == 0;                              // the exact check: D(B) + g0 = P
+        k2_free(&dB); k2_free(&G); k2_free(&s); k2_free(&d);
+        r = same ? integrate_k1(&L.g0, &in->F->t1) : failure(RISCH_UNSUPPORTED, "internal check failed: the outer ln part does not differentiate back");
+        if (r.status == RISCH_OK) r.result = plus(poly2_expr(&L.B, in->F, false), r.result);
     }
-    kp2_free(&L.B);
+    k2_free(&L.B);
     kfrac_free(&L.g0);
+    return r;
+}
+
+// --- denominators in θ2: Hermite reduction and the residue test over K1 ---
+//
+// Every factor of a denominator in θ2 = ln(u) is normal (θ2 is a primitive monomial, η ∉ D(K1)),
+// so, as over Q(x) (§11.6): Bezout splits f = P + b/den, Hermite reduction with the derivation
+// gives ∫ b/den = g + ∫ h/d (d square-free), the residues of h/d must be constants (their power
+// sums Tr(s^k), s = h·D(d)⁻¹ mod d, all in Q), each rational residue c gives c·ln(gcd(d, h - c·D(d))),
+// and f - D(g) - D(logs) is a polynomial in θ2 (checked exactly) for the levels above.
+
+// D(n/d) = (D(n)·d - n·D(d))/d²
+static K2Frac k2frac_derivative(const K2Frac* a, const Eta* E) {
+    K2Poly dn = k2_derivative(&a->n, E), dd = k2_derivative(&a->d, E);
+    K2Poly l = k2_mul(&dn, &a->d), r = k2_mul(&a->n, &dd), n = k2_add(&l, &r, -1);
+    k2_free(&dn); k2_free(&dd); k2_free(&l); k2_free(&r);
+    return k2frac_make(n, k2_mul(&a->d, &a->d));
+}
+
+static K2Poly k2_pow(const K2Poly* a, int k) {
+    K2Poly r = k2_one(a->kind);
+    for (int i = 0; i < k; i++) { K2Poly m = k2_mul(&r, a); k2_free(&r); r = m; }
+    return r;
+}
+
+// c·a for a rational c
+static K2Poly k2_scaled(const K2Poly* a, const Rational* c) {
+    K2Poly r = k2_zeros(0, a->kind);
+    for (int i = 0; i < a->n; i++) if (!kf_is_zero(&a->a[i])) k2_accumulate(&r, i, kf_scaled(&a->a[i], c, a->kind));
+    return r;
+}
+
+// ∫ b/den = g + ∫ h/d
+typedef struct {
+    K2Frac g;
+    K2Poly h, d;
+} Reduced2;
+
+// one Hermite step for V^(j+1) in U·V^(j+1): A/(U·V^(j+1)) = D(B/V^j) + (-j·C - U·D(B))/(U·V^j),
+// with B·U·D(V) + C·V = -A/j
+typedef struct {
+    const K2Poly *U, *V, *UDV;
+    int j;
+    const Eta* E;
+} Step2;
+
+static void hermite2_step(Reduced2* R, K2Poly* A, const Step2* st) {
+    const Eta* E = st->E;
+    Rational mj = rat_from_si(-1, st->j), j = rat_from_int(-st->j);
+    K2Poly rhs = k2_scaled(A, &mj);
+    K2Bezout z = k2_bezout(st->UDV, st->V, &rhs);
+    K2Frac term = k2frac_make(k2_copy(&z.s), k2_pow(st->V, st->j)), g = k2frac_add(&R->g, &term, 1);
+    k2frac_free(&R->g);
+    R->g = g;
+    K2Poly DB = k2_derivative(&z.s, E), UDB = k2_mul(st->U, &DB), jC = k2_scaled(&z.t, &j);
+    k2_free(A);
+    *A = k2_add(&jC, &UDB, -1);
+    k2_free(&rhs); k2bezout_free(&z); k2frac_free(&term);
+    k2_free(&DB); k2_free(&UDB); k2_free(&jC);
+    rat_clear(&mj); rat_clear(&j);
+}
+
+// Bronstein's quadratic Hermite reduction over K1[θ2], den monic
+static Reduced2 hermite2(const K2Poly* b, const K2Poly* den, const Eta* E) {
+    TowerKind kind = den->kind;
+    Reduced2 R = { k2frac_zero(kind), k2_zeros(0, kind), k2_zeros(0, kind) };
+    K2SquareFree sf = k2_square_free(den);
+    K2Poly A = k2_copy(b), D = k2_copy(den);
+    for (int i = 2; i <= sf.m; i++) {
+        const K2Poly* V = &sf.f[i - 1];
+        if (k2_deg(V) <= 0) continue;
+        K2Poly Vi = k2_pow(V, i), U = k2_exact_div(&D, &Vi), DV = k2_derivative(V, E), UDV = k2_mul(&U, &DV);
+        for (int j = i - 1; j >= 1; j--) hermite2_step(&R, &A, &(Step2){ &U, V, &UDV, j, E });
+        k2_free(&D);
+        D = k2_mul(&U, V);                                // V^i -> V
+        k2_free(&Vi); k2_free(&U); k2_free(&DV); k2_free(&UDV);
+    }
+    K2Div q = k2_divmod(&A, &D);
+    k2_free(&R.h); k2_free(&R.d);
+    R.h = q.r;
+    R.d = D;
+    k2_free(&q.q); k2_free(&A);
+    k2sf_free(&sf);
+    return R;
+}
+
+static void reduced2_free(Reduced2* R) { k2frac_free(&R->g); k2_free(&R->h); k2_free(&R->d); }
+
+// the integrand's form, η, and the Hermite reduction of its proper part
+typedef struct {
+    const Form2* F;
+    const Eta* E;
+    const Reduced2* R;
+} Frac2;
+
+// the coefficient of θ2^k (0 outside)
+static KFrac k2_coeff(const K2Poly* p, int k) { return k >= 0 && k < p->n ? kf_copy(&p->a[k]) : kf_zero(); }
+
+// P[j] = Σ θ_i^j over the roots of monic d, j < deg d (Newton's identities over K1)
+static KFrac* root_power_sums2(const K2Poly* d) {
+    TowerKind kind = d->kind;
+    int n = k2_deg(d);
+    KFrac* P = malloc((size_t)n * sizeof(KFrac));
+    Rational nn = rat_from_int(n);
+    QFn nq = qfn_rat(&nn);
+    P[0] = kf_of_qfn(&nq, kind);
+    qfn_free(&nq); rat_clear(&nn);
+    for (int j = 1; j < n; j++) {                         // P_j = -(j·c_{n-j} + Σ_{i<j} c_{n-i}·P_{j-i})
+        Rational jj = rat_from_int(j), m1 = rat_from_int(-1);
+        KFrac cj = k2_coeff(d, n - j), acc = kf_scaled(&cj, &jj, kind);
+        for (int i = 1; i < j; i++) {
+            KFrac ci = k2_coeff(d, n - i), t = kfrac_mul(&ci, &P[j - i], kind), s2 = kfrac_add(&acc, &t, kind);
+            kfrac_free(&acc); kfrac_free(&ci); kfrac_free(&t);
+            acc = s2;
+        }
+        P[j] = kf_scaled(&acc, &m1, kind);
+        kfrac_free(&cj); kfrac_free(&acc);
+        rat_clear(&jj); rat_clear(&m1);
+    }
+    return P;
+}
+
+// Tr(g) = Σ_j g_j·P_j for deg g < deg d
+static KFrac trace2(const K2Poly* g, const KFrac* P, int n) {
+    KFrac acc = kf_zero();
+    for (int j = 0; j < g->n && j < n; j++) {
+        KFrac t = kfrac_mul(&g->a[j], &P[j], g->kind), s2 = kfrac_add(&acc, &t, g->kind);
+        kfrac_free(&acc); kfrac_free(&t);
+        acc = s2;
+    }
+    return acc;
+}
+
+typedef enum { RES_OK, RES_NONCONSTANT, RES_UNSUPPORTED } ResStatus;
+
+// the power sums p_k = Tr(s^k), k = 1 .. n, of the residues; RES_NONCONSTANT when one is not in Q
+static ResStatus residue_power_sums(const Reduced2* R, const Eta* E, Rational* p) {
+    int n = k2_deg(&R->d);
+    K2Poly Dd = k2_derivative(&R->d, E), one = k2_one(R->d.kind);
+    K2Bezout z = k2_bezout(&Dd, &R->d, &one);             // z.s = D(d)⁻¹ mod d
+    K2Poly hs = k2_mul(&R->h, &z.s);
+    K2Div sd = k2_divmod(&hs, &R->d);                     // s = h·D(d)⁻¹ mod d
+    KFrac* P = root_power_sums2(&R->d);
+    K2Poly pw = k2_one(R->d.kind);
+    ResStatus st = RES_OK;
+    for (int k = 1; k <= n && st == RES_OK; k++) {
+        K2Poly m = k2_mul(&pw, &sd.r);
+        K2Div md = k2_divmod(&m, &R->d);
+        k2_free(&pw); k2_free(&m); k2_free(&md.q);
+        pw = md.r;
+        KFrac tr = trace2(&pw, P, n);
+        if (!kf_is_zero(&tr) && !kf_constant(&tr, &p[k - 1])) st = RES_NONCONSTANT;
+        if (kf_is_zero(&tr)) rat_set_si(&p[k - 1], 0, 1);
+        kfrac_free(&tr);
+    }
+    for (int j = 0; j < n; j++) kfrac_free(&P[j]);
+    free(P);
+    k2_free(&Dd); k2_free(&one); k2bezout_free(&z); k2_free(&hs); k2div_free(&sd); k2_free(&pw);
+    return st;
+}
+
+// R(z) = Π (z - c_i) from the power sums p_1..p_n (Newton: k·e_k = Σ_{i=1}^{k} (-1)^(i-1)·e_{k-i}·p_i)
+static Polynomial* residue_poly(const Rational* p, int n) {
+    Rational* e = malloc((size_t)(n + 1) * sizeof(Rational));
+    for (int k = 0; k <= n; k++) rat_init(&e[k]);
+    rat_set_si(&e[0], 1, 1);
+    Rational t, kk;
+    rat_init(&t); rat_init(&kk);
+    for (int k = 1; k <= n; k++) {
+        for (int i = 1; i <= k; i++) {
+            rat_mul(&t, &e[k - i], &p[i - 1]);
+            if (i % 2) rat_add(&e[k], &e[k], &t); else rat_sub(&e[k], &e[k], &t);
+        }
+        rat_set_si(&kk, k, 1);
+        rat_div(&e[k], &e[k], &kk);
+    }
+    Polynomial* R = create_polynomial();
+    for (int k = 0; k <= n; k++) {
+        if (k % 2) rat_neg(&t, &e[k]); else rat_set(&t, &e[k]);
+        if (!rat_is_zero(&t)) add_term(R, &t, n - k);
+    }
+    for (int k = 0; k <= n; k++) rat_clear(&e[k]);
+    free(e);
+    rat_clear(&t); rat_clear(&kk);
+    return R;
+}
+
+// the distinct roots of R, all rational, or false (a factor of degree >= 2)
+typedef struct {
+    Rational* c;
+    int n;
+} Roots;
+
+static bool rational_roots(const Polynomial* R, Roots* out) {
+    Factorization* fz = factorize(R);
+    out->c = malloc((size_t)(fz->count + 1) * sizeof(Rational));
+    out->n = 0;
+    bool ok = true;
+    for (int i = 0; i < fz->count && ok; i++) {
+        Polynomial* q = fz->factors[i];
+        ok = polynomial_degree(q) == 1;
+        if (!ok) break;
+        Rational a, b;
+        rat_init(&a); rat_init(&b);
+        poly_coeff(&a, q, 1);
+        poly_coeff(&b, q, 0);
+        rat_div(&b, &b, &a);
+        rat_init(&out->c[out->n]);
+        rat_neg(&out->c[out->n++], &b);
+        rat_clear(&a); rat_clear(&b);
+    }
+    free_factorization(fz);
+    return ok;
+}
+
+static void roots_free(Roots* r) { for (int i = 0; i < r->n; i++) rat_clear(&r->c[i]); free(r->c); }
+
+// Σ c·ln(G_c), G_c = gcd(d, h - c·D(d)): the expression and its exact derivative
+typedef struct {
+    Expr* e;
+    K2Frac deriv;
+} LogPart2;
+
+static void log_part2(const Frac2* X, const Roots* Z, LogPart2* out) {
+    const Reduced2* R = X->R;
+    const Form2* F = X->F;
+    const Eta* E = X->E;
+    K2Poly Dd = k2_derivative(&R->d, E);
+    if (out->e) free_expr(out->e);
+    out->e = create_const(0);
+    k2frac_free(&out->deriv);
+    out->deriv = k2frac_zero(R->d.kind);
+    for (int i = 0; i < Z->n; i++) {
+        K2Poly cD = k2_scaled(&Dd, &Z->c[i]), hc = k2_add(&R->h, &cD, -1), G = k2_gcd(&R->d, &hc);
+        K2Poly DG = k2_derivative(&G, E), cDG = k2_scaled(&DG, &Z->c[i]);
+        K2Frac t = k2frac_make(cDG, k2_copy(&G)), s2 = k2frac_add(&out->deriv, &t, 1);
+        k2frac_free(&out->deriv); k2frac_free(&t);
+        out->deriv = s2;
+        Expr* term = create_mul(create_const_rat(&Z->c[i]), create_ln(poly2_expr(&G, F, true)));
+        out->e = plus(out->e, term);
+        k2_free(&cD); k2_free(&hc); k2_free(&G); k2_free(&DG);
+    }
+    k2_free(&Dd);
+}
+
+#define RESIDUES2_NOT_CONSTANT "has no elementary antiderivative (Risch: residues over the outer ln are not constants)"
+#define FRAC2_LIMIT 6 // deg of a denominator in θ2 beyond which Euclid over K1 is not attempted
+
+// g as an expression: num/den in ln(u)
+static Expr* frac2_expr(const K2Frac* g, const Form2* F) {
+    Expr* n = poly2_expr(&g->n, F, true);
+    if (k2_deg(&g->d) <= 0) return n;
+    return create_div(n, poly2_expr(&g->d, F, true));
+}
+
+// the log part of h/d with rational residues, or why not (out unchanged then)
+static RischResult residues2(const Frac2* X, LogPart2* out) {
+    const Reduced2* R = X->R;
+    int n = k2_deg(&R->d);
+    Rational* p = malloc((size_t)(n > 0 ? n : 1) * sizeof(Rational));
+    for (int k = 0; k < n; k++) rat_init(&p[k]);
+    ResStatus st = residue_power_sums(R, X->E, p);
+    RischResult r = { RISCH_OK, NULL, NULL };
+    if (st == RES_NONCONSTANT) r = (RischResult){ RISCH_NONELEMENTARY, NULL, RESIDUES2_NOT_CONSTANT };
+    else {
+        Polynomial* Rz = residue_poly(p, n);
+        Roots Z;
+        if (!rational_roots(Rz, &Z)) r = failure(RISCH_UNSUPPORTED, "residues over the outer ln that are irrational are not supported yet");
+        else log_part2(X, &Z, out);
+        roots_free(&Z);
+        free_polynomial(Rz);
+    }
+    for (int k = 0; k < n; k++) rat_clear(&p[k]);
+    free(p);
+    return r;
+}
+
+// f - D(g) - D(logs) as a polynomial in θ2, or false
+static bool remainder2(const Frac2* X, const K2Frac* logs, K2Poly* out) {
+    const Form2* F = X->F;
+    const Eta* E = X->E;
+    const Reduced2* R = X->R;
+    K2Frac Dg = k2frac_derivative(&R->g, E), a = k2frac_add(&F->f, &Dg, -1), b = k2frac_add(&a, logs, -1);
+    bool ok = k2_deg(&b.d) == 0;
+    if (ok) {
+        KFrac ic = kfrac_inv(&b.d.a[0], b.d.kind);
+        K2Poly icp = k2_const(ic, b.d.kind);
+        *out = k2_mul(&b.n, &icp);
+        k2_free(&icp);
+    }
+    k2frac_free(&Dg); k2frac_free(&a); k2frac_free(&b);
+    return ok;
+}
+
+// ∫ f for a fraction f = N/D in θ2 (D nonconstant)
+static RischResult integrate_frac2(const Form2* F, const Eta* E, const Expr* f) {
+    if (k2_deg(&F->f.d) > FRAC2_LIMIT) return failure(RISCH_UNSUPPORTED, "a denominator in the outer ln of high degree is not supported yet");
+    K2Div qd = k2_divmod(&F->f.n, &F->f.d);              // f = Q + R/D
+    Reduced2 R = hermite2(&qd.r, &F->f.d, E);
+    LogPart2 L = { NULL, k2frac_zero(R.d.kind) };
+    Frac2 X = { F, E, &R };
+    RischResult r = k2_deg(&R.d) > 0 && R.h.n ? residues2(&X, &L) : (RischResult){ RISCH_OK, NULL, NULL };
+    if (r.status == RISCH_NONELEMENTARY) r.result = frac2_expr(&(K2Frac){ R.h, R.d }, F);
+    K2Poly P;
+    if (r.status == RISCH_OK && !remainder2(&X, &L.deriv, &P)) r = failure(RISCH_UNSUPPORTED, "internal check failed: the remainder over the outer ln is not a polynomial");
+    else if (r.status == RISCH_OK) {
+        r = integrate_poly2(&(PolyIn){ F, E, &P }, f);
+        if (r.status == RISCH_OK) {
+            if (R.g.n.n) r.result = plus(r.result, frac2_expr(&R.g, F));
+            if (L.e) { r.result = plus(r.result, L.e); L.e = NULL; }
+        }
+        k2_free(&P);
+    }
+    if (L.e) free_expr(L.e);
+    k2frac_free(&L.deriv);
+    reduced2_free(&R);
+    k2div_free(&qd);
     return r;
 }
 
@@ -705,7 +981,9 @@ RischResult integrate_tower2(const Expr* f) {
     RischResult r;
     if (!eta_init(&F.u, &F.t1, &E)) r = failure(RISCH_UNSUPPORTED, "internal check failed: the outer ln's derivative over the inner tower");
     else if (eta_in_dk1(&E)) r = failure(RISCH_UNSUPPORTED, "the outer ln lies in the inner tower (such as ln(exp(x)) or ln(2x) beside ln(x)); this is not supported yet");
-    else r = solve_form2(&F, &E, f);
+    else if (k2_deg(&F.f.d) == 0) {                       // a polynomial in θ2 (the denominator is monic: 1)
+        r = integrate_poly2(&(PolyIn){ &F, &E, &F.f.n }, f);
+    } else r = integrate_frac2(&F, &E, f);
     eta_free(&E);
     form2_free(&F);
     return r;

@@ -1340,12 +1340,12 @@ By Liouville's theorem, `∫ f = Σ_{k=1}^{n+1} b_k θ^k + (an integral over Q(x
 
 **Transcendence.** θ2 is a new transcendental only if η ∉ D(K1), meaning not both h_η = 0 and s(p_η) ∈ Q·L1. The case `ln(x)·ln(2x)` (ln 2 is new) and `exp(x)·ln(exp(x))` (= x) is reported as unsupported.
 
-**Verdicts.** Non-elementary is claimed in exactly three cases:
+**Verdicts.** For a polynomial in θ2, non-elementary is claimed in exactly three cases:
 - a level's c-free part fails (step 2);
 - no (c, d) exists (steps 1 and 3);
 - level 0 is non-elementary over K1 (its own proof, §11.6).
 
-Everything else is unsupported: shapes outside this setting, an outer ln in a denominator, internal check failures, θ2 in K1, and cubic residues at level 0. The final answer is checked exactly: `D(Σ b_k θ2^k) + g_0 = f`.
+Denominators in θ2 add two more cases, given below. Everything else is unsupported: shapes outside this setting, internal check failures, θ2 in K1, and cubic residues at level 0. The final answer is checked exactly: `D(Σ b_k θ2^k) + g_0 = f`.
 
 Examples:
 - `∫ exp(x)·(ln x + 1/x) = exp(x)·ln|x|`, with c = 0.
@@ -1354,10 +1354,30 @@ Examples:
 - `∫ (1/x + 1/(x+1))·ln(x+1) + ln(x)/(x+1) = ln|x+1|·ln|x| + 1/2·ln|x+1|²`, which uses the d·L1 freedom.
 - `∫ exp(x)·ln(x)` is non-elementary: level 0 is `−eˣ/x`, the exponential integral. So is `∫ ln(x)·ln(x+1)`, which leads to the dilogarithm.
 
+**Denominators in θ2** (`integrate_frac2`). Every factor of a denominator is normal, because θ2 is a primitive monomial with η ∉ D(K1), and that is checked first. So the method of §11.6 carries over to K1[θ2]:
+- Bezout splits off the polynomial part.
+- Bronstein's quadratic Hermite reduction runs with the derivation `D(Σ b_k θ2^k) = Σ (D(b_k)·θ2^k + k·b_k·η·θ2^(k−1))`.
+- The residues of the square-free part h/d must be constants. Their power sums `Tr(s^k)`, with `s = h·D(d)⁻¹ mod d`, are computed from Newton's power sums of d's roots over K1, and each must lie in Q.
+- `R(z)` then follows over Q by Newton's identities. It is factored with `factor.c`, and each rational root c gives `c·ln(gcd(d, h − c·D(d)))`.
+- `f − D(g) − D(logs)` must be a polynomial in θ2. This is checked exactly, and the polynomial goes to the levels above.
+- Verdicts:
+  - Non-elementary is claimed when a power sum is not in Q (Bronstein Thm 5.6.1 for a primitive monomial), or when the polynomial remainder's levels fail.
+  - Irrational residues, such as `1/(x·ln(x)·(ln(ln(x))² + 1))`, which needs `atan(ln(ln x))`, are reported as unsupported, as are denominators of degree above 6 and internal failures.
+- Examples:
+  - `∫ 1/(x·ln x·ln ln x) = ln|ln|ln x||`, with residue 1;
+  - `∫ 1/(x·ln x·(ln ln x + 1)²) = −1/(ln|ln|x|| + 1)`, by Hermite;
+  - `∫ (1/x + eˣ)/(ln x + eˣ) = ln|ln|x| + eˣ|`;
+  - `1/(ln x·ln(x + 1))` is non-elementary with either ln on top.
+
+**The polynomial layer.** `kpoly_tmpl.h` holds divmod, gcd, Bezout, Yun's square-free decomposition, monic and d/dθ. They are written once over macros for the coefficient operations.
+- `kpoly.c` instantiates them over QFn (K = Q(x)), and the output is unchanged, which the whole suite checks.
+- `k2poly.c` instantiates them over KFrac (K1) for θ2. `test_prop_k2poly` checks the identities there: a = q·b + r, gcd·cofactor = input, s·a + t·b = 1, and that Yun's parts multiply back.
+- Euclid over K1 reduces fractions in θ1 at every step, which is why the degree cap exists.
+
 **Tests.**
-- `test_reg_integrate_tower2` pins 10 answers, each also checked numerically (three with a Hermite part or a negative power in θ1), 8 proofs and 6 unsupported inputs.
-- `test_prop_integrate_tower2` integrates the derivative of random `Σ c_k(x)·{θ1, θ1², θ1/(θ1 + 2)}·θ2^k` in four tower pairs. It adds a non-elementary integrand of the same towers, and checks that the sum is always rejected.
-- The SymPy `check_tower2` stream gives these towers to `risch_integrate` unchanged. Coefficients include `1/(θ1 + 2)`, so the Hermite branch is exercised. In 300 cases (seeds 100–399) there were 0 disagreements: 207 answers check numerically, 87 proofs of non-elementarity agree with SymPy, and 6 proofs remain unconfirmed because SymPy's Risch raised or timed out.
+- `test_reg_integrate_tower2` pins 16 answers, each also checked numerically (three with a Hermite part or a negative power in θ1, six with θ2 in a denominator, one of them with two residues and one with a non-monic denominator), 13 proofs (both orientations of `1/(ln(x)·ln(x+1))`) and 5 unsupported inputs.
+- `test_prop_integrate_tower2` integrates the derivative of random `Σ c_k(x)·{θ1, θ1², θ1/(θ1 + 2)}·θ2^k`, sometimes with `c·θ2²/(θ2 + 3)`, in four tower pairs. It adds a non-elementary integrand of the same towers, and checks that the sum is always rejected.
+- The SymPy `check_tower2` stream gives these towers to `risch_integrate` unchanged. Coefficients include `1/(θ1 + 2)`, and 40% of the integrands have a term `c/(θ2 + c')`, so both Hermite branches are exercised. In 300 cases (seeds 100–399) there were 0 disagreements: 186 answers check numerically, 112 proofs of non-elementarity agree with SymPy, and 2 proofs remain unconfirmed because SymPy's Risch raised or timed out.
 
 ---
 

@@ -406,12 +406,14 @@ def check_tan(rng):
 
 
 def check_tower2(rng):
-    """f polynomial in an outer ln over an inner exp or ln tower: half derivatives of
+    """f rational in an outer ln over an inner exp or ln tower (sometimes c/(θ2 + c')): half derivatives of
     Σ c_k(x)·θ1^j·θ2^k (elementary), half random Σ c_k(x)·θ1^j·θ2^k; SymPy's risch_integrate
     takes these towers as they are. Answers are checked numerically to 35 digits."""
     th1, th2 = rng.choice([(sp.exp(x), sp.log(x)), (sp.log(x), sp.log(x + 1)), (sp.log(x), sp.log(sp.log(x))),
                            (sp.exp(x), sp.log(sp.exp(x) + 1)), (sp.exp(2 * x), sp.log(x + 1))])
     F = sum((rng.randint(-2, 2) + rng.randint(0, 2) * x) * rng.choice([1, th1, 1 / (th1 + 2)]) * th2**k for k in range(rng.randint(1, 3)))
+    if rng.random() < 0.4:                       # the outer ln in a denominator
+        F += rng.randint(1, 3) * rng.choice([1, th1]) / (th2 + rng.randint(1, 3))
     f = sp.diff(F, x) if rng.random() < 0.5 else F
     if f == 0:
         return "elementary"

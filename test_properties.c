@@ -20,6 +20,7 @@
 #include "rootform.h"
 #include "definite.h"
 #include "constfold.h"
+#include "k2poly.h"
 #include "qsurd.h"
 #include "modgcd.h"
 #include "risch.h"
@@ -1593,7 +1594,7 @@ static void test_reg_integrate_log(void) {
         assert(r.status == RISCH_NONELEMENTARY && r.result);
         free_expr(r.result);
     }
-    const char* outside[] = { "ln(2x)*ln(x)", "ln(3)", "ln(x)*sin(x)", "1/(x*ln(x)*ln(ln(x)))" };
+    const char* outside[] = { "ln(2x)*ln(x)", "ln(3)", "ln(x)*sin(x)" };
     for (size_t i = 0; i < sizeof outside / sizeof outside[0]; i++) {
         RischResult r = risch_str(outside[i]);
         assert(r.status == RISCH_UNSUPPORTED && !r.result && r.reason);
@@ -1831,6 +1832,12 @@ static void test_reg_integrate_tower2(void) {
         { "1/((x+1)*ln(x)) - ln(x+1)/(x*ln(x)^2)", "ln(abs(x + 1)) / ln(abs(x))" },          // a Hermite part in θ1
         { "1/(x*(exp(x)+1)) - exp(x)*ln(x)/(exp(x)+1)^2", "ln(abs(x)) / (1 + exp(x))" },
         { "exp(-x)*(1/x - ln(x))", "exp(-x) * ln(abs(x))" },                                 // a negative power of exp
+        { "1/(x*ln(x)*ln(ln(x)))", "ln(abs(ln(abs(ln(abs(x))))))" },                         // θ2 in a denominator: residue 1
+        { "1/(x*ln(x)*(ln(ln(x))+1)^2)", "-1 / (ln(abs(ln(abs(x)))) + 1)" },                 // Hermite over K1[θ2]
+        { "(1/x+exp(x))/(ln(x)+exp(x))", "ln(abs(ln(abs(x)) + exp(x)))" },
+        { "1/((x+1)*ln(x+1)) + 1/(x*ln(x))", "ln(abs(ln(abs(x + 1)))) + ln(abs(ln(abs(x))))" },
+        { "1/(x*ln(x)*ln(ln(x))*(ln(ln(x))+1))", "-ln(abs(ln(abs(ln(abs(x)))) + 1)) + ln(abs(ln(abs(ln(abs(x))))))" }, // residues ±1
+        { "(ln(ln(x)) + 1/ln(x))/(x*ln(ln(x)) + 1)", "ln(abs(x)) + ln(abs(ln(abs(ln(abs(x)))) + 1 / x))" },   // lc(den) = x
     };
     for (size_t i = 0; i < sizeof ok / sizeof ok[0]; i++) {
         Expr* f = parse_input(ok[i][0]);
@@ -1842,13 +1849,14 @@ static void test_reg_integrate_tower2(void) {
     }
     const char* none[] = { "exp(x)*ln(x)", "x*exp(x)*ln(x)", "ln(ln(x))", "ln(x)*ln(x+1)", "ln(exp(x)+1)", "x*ln(x)*ln(x+1)",
                            "ln(x)/ln(x+1)",                         // a polynomial in ln(x) over Q(x)(ln(x+1)): level 1 is ∫ 1/ln(x+1)
-                           "ln(x+1)/exp(x)" };
+                           "ln(x+1)/exp(x)", "1/(ln(x)*ln(x+1))", "1/(ln(x+1)*ln(x))",   // both orientations
+                           "ln(x+1)/(x*ln(x)^2)", "1/(ln(x)+ln(x+1))", "ln(ln(x))^(-1)" };  // residues not constant
     for (size_t i = 0; i < sizeof none / sizeof none[0]; i++) {
         RischResult r = risch_str(none[i]);
         assert(r.status == RISCH_NONELEMENTARY && r.result);
         free_expr(r.result);
     }
-    const char* outside[] = { "ln(x)*ln(2x)", "exp(x)*ln(exp(x))", "1/(ln(x)+ln(x+1))", "ln(ln(x))^(-1)",
+    const char* outside[] = { "ln(x)*ln(2x)", "exp(x)*ln(exp(x))", "1/(x*ln(x)*(ln(ln(x))^2+1))",   // quadratic residues
                               "ln(ln(ln(x)))", "exp(x)*ln(x)*ln(x+1)" };                 // three levels   // θ2 in K1; θ2 below a fraction
     for (size_t i = 0; i < sizeof outside / sizeof outside[0]; i++) {
         RischResult r = risch_str(outside[i]);
@@ -1856,6 +1864,70 @@ static void test_reg_integrate_tower2(void) {
     }
     printf("  test_reg_integrate_tower2 PASSED (%zu exact, %zu non-elementary, %zu unsupported)\n",
            sizeof ok / sizeof ok[0], sizeof none / sizeof none[0], sizeof outside / sizeof outside[0]);
+}
+
+// a random element (c1·θ1 + c0)/(θ1 + c2) or c1·θ1 + c0 of K1 = Q(x)(θ1), θ1 = exp(x), small integers c_i
+static KFrac random_k1(void) {
+    LPoly n = { 0, 0, NULL };
+    for (int i = 0; i < 2; i++) {
+        QFn c = qfn_const(rnd(-3, 3), 1);
+        LPoly t = lpoly_term(c, i), s2 = lpoly_add(&n, &t, 1);
+        lpoly_free(&n); lpoly_free(&t);
+        n = s2;
+    }
+    LPoly d = kp_one();
+    if (rnd(0, 1)) {
+        LPoly t = lpoly_term(qfn_const(1, 1), 1), c = lpoly_term(qfn_const(rnd(1, 3), 1), 0), a = lpoly_add(&t, &c, 1);
+        lpoly_free(&d); lpoly_free(&t); lpoly_free(&c);
+        d = a;
+    }
+    return kfrac_make(n, d, TOWER_EXP);
+}
+
+// a random monic-free polynomial of degree deg in θ2 over K1
+static K2Poly random_k2(int deg) {
+    K2Poly p = k2_zeros(0, TOWER_EXP);
+    for (int k = 0; k <= deg; k++) k2_accumulate(&p, k, random_k1());
+    k2_trim(&p);                                                     // a zero draw on top
+    if (k2_deg(&p) < deg) k2_accumulate(&p, deg, kfrac_make(kp_one(), kp_one(), TOWER_EXP));
+    return p;
+}
+
+static bool k2_equal(const K2Poly* a, const K2Poly* b) {
+    K2Poly d = k2_add(a, b, -1);
+    bool z = d.n == 0;
+    k2_free(&d);
+    return z;
+}
+
+// the kpoly_tmpl.h algorithms over K1 = Q(x)(exp(x)): a = q·b + r with deg r < deg b, gcd(a·c, b·c)
+// = monic c for coprime random a, b, s·a + t·b = 1 for a and a + 1, and Yun's parts of c²·b multiply back
+static void test_prop_k2poly(void) {
+    for (int trial = 0; trial < TRIALS / 10; trial++) {          // few: Euclid over K1 is costly
+        K2Poly a = random_k2((int)rnd(1, 2)), b = random_k2(1), c = random_k2(1);
+        K2Div d = k2_divmod(&a, &b);
+        K2Poly qb = k2_mul(&d.q, &b), back = k2_add(&qb, &d.r, 1);
+        assert(k2_equal(&back, &a) && k2_deg(&d.r) < k2_deg(&b));
+        K2Poly ac = k2_mul(&a, &c), bc = k2_mul(&b, &c), g = k2_gcd(&ac, &bc), cm = k2_monic(&c), r1 = k2_exact_div(&ac, &g), r2 = k2_exact_div(&bc, &g);
+        K2Poly g1 = k2_gcd(&a, &b);
+        if (k2_deg(&g1) == 0) assert(k2_equal(&g, &cm));      // gcd(a, b) = 1 for almost every draw
+        K2Poly back1 = k2_mul(&r1, &g);
+        assert(k2_equal(&back1, &ac));
+        K2Poly one = k2_const(kfrac_make(kp_one(), kp_one(), TOWER_EXP), TOWER_EXP), a1 = k2_add(&a, &one, 1);
+        K2Bezout z = k2_bezout(&a, &a1, &one);
+        K2Poly sa = k2_mul(&z.s, &a), ta = k2_mul(&z.t, &a1), sum = k2_add(&sa, &ta, 1);
+        assert(k2_equal(&sum, &one) && k2_deg(&z.s) < k2_deg(&a1));
+        K2Poly sq = k2_mul(&cm, &cm), D = k2_copy(&sq), sfd = k2_mul(&D, &b), m = k2_monic(&sfd);  // c²·b
+        K2SquareFree sf = k2_square_free(&m);
+        K2Poly prod = k2_copy(&one);
+        for (int i = 0; i < sf.m; i++)
+            for (int j = 0; j <= i; j++) { K2Poly t = k2_mul(&prod, &sf.f[i]); k2_free(&prod); prod = t; }
+        assert(k2_equal(&prod, &m));
+        K2Poly* all[] = { &a, &b, &c, &qb, &back, &ac, &bc, &g, &cm, &r1, &r2, &g1, &back1, &one, &a1, &sa, &ta, &sum, &sq, &D, &sfd, &m, &prod };
+        for (size_t i = 0; i < sizeof all / sizeof all[0]; i++) k2_free(all[i]);
+        k2div_free(&d); k2bezout_free(&z); k2sf_free(&sf);
+    }
+    printf("  test_prop_k2poly PASSED (%d trials: divmod, gcd, bezout, square-free over Q(x)(exp(x)))\n", TRIALS / 10);
 }
 
 // d/dx of e built from x, constants, + - · /, integer powers, exp and ln (for the two-level test)
@@ -1901,6 +1973,11 @@ static void test_prop_integrate_tower2(void) {
             if (shape == 0) t = create_mul(t, parse_input(tw[0]));
             if (shape == 2) t = create_div(t, create_add(parse_input(tw[0]), create_const(2)));
             for (int i = 0; i < k; i++) t = create_mul(t, parse_input(tw[1]));
+            if (k == 2 && !rnd(0, 5)) {                               // θ2 below (Hermite): c·θ2²/(θ2 + 3)
+                free_expr(t);
+                t = create_div(create_mul(create_const(rnd(1, 2)), create_pow(parse_input(tw[1]), create_const(2))),
+                               create_add(parse_input(tw[1]), create_const(3)));
+            }
             F = F ? create_add(F, t) : t;
         }
         Expr* f = deriv(F);
@@ -2365,6 +2442,7 @@ void run_property_tests(void) {
     test_prop_integrate_tower_fractions();
     test_prop_integrate_trig();
     test_prop_integrate_tan();
+    test_prop_k2poly();
     test_prop_integrate_tower2();
     test_prop_definite_exp();
     test_prop_definite_tan();
