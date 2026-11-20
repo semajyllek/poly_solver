@@ -58,6 +58,9 @@ KFrac kfrac_inv(const KFrac* f, TowerKind kind);      // f ≠ 0
 KFrac kfrac_derivative(const KFrac* f, const Tower* t);
 void kfrac_free(KFrac* f);
 
+// e converted in a given tower t (expfield.c; its exp/ln arguments must fit t): NULL, or why not
+const char* exp_form_in(const Expr* e, const Tower* t, KFrac* out);
+
 LPoly kp_pow(const LPoly* a, int k);                   // a^k, k >= 0
 LPoly kp_primitive(const LPoly* a);                    // a·c, c ∈ Q(x), coefficients coprime in Z[x], lc > 0
 Expr* kfrac_expr(const KFrac* f, const Tower* t);

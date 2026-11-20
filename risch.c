@@ -17,6 +17,8 @@
 #include "residue.h"
 #include "expsum.h"
 #include "tanfield.h"
+#include "rischk1.h"
+#include "risch2.h"
 #include <stdlib.h>
 
 // --- the Risch differential equation y' + f·y = g, f a nonzero polynomial ---
@@ -76,16 +78,16 @@ static bool solve_rde(const Rde* r, QFn* y) {
 
 // --- integration ---
 
-static RischResult failure(RischStatus s, const char* why) { return (RischResult){ s, NULL, why }; }
+RischResult failure(RischStatus s, const char* why) { return (RischResult){ s, NULL, why }; }
 
 // the constant 0, as a constant or as the zero polynomial
-static bool is_zero_expr(const Expr* e) {
+bool is_zero_expr(const Expr* e) {
     return (e->type == EXPR_CONST && rat_is_zero(&e->constant)) || (e->type == EXPR_POLY && poly_is_zero(e->poly));
 }
 
 // Σ_{k≠0} y_k·θ^k with y_k' + k·v'·y_k = a_k; false (with *bad the failing index) when some
 // equation has no solution
-static bool exp_part(const ExpForm* F, LPoly* Y, int* bad) {
+bool exp_part(const ExpForm* F, LPoly* Y, int* bad) {
     Y->lo = F->f.lo;
     Y->n = F->f.n;
     Y->a = malloc((size_t)(Y->n > 0 ? Y->n : 1) * sizeof(QFn));
@@ -158,14 +160,7 @@ static QFn qfn_scaled(const QFn* q, const Rational* c) {
     return qfn_from(poly_scale(q->num, c), poly_copy(q->den));
 }
 
-// b_1 .. b_{n+1} from the top (b[0] unused), and g0 = a_0 - b_1·L; false at a level that fails
-typedef struct {
-    QFn* b;   // b[k], k = 0 .. n+1
-    QFn g0;
-    int n;
-} LogSolution;
-
-static bool solve_log_levels(const ExpForm* F, LogSolution* S) {
+bool solve_log_levels(const ExpForm* F, LogSolution* S) {
     QFn L = tower_L(&F->t);
     int n = S->n;
     QFn r_next = qfn_zero();                              // r_{k+1}
@@ -209,7 +204,7 @@ static bool solve_log_levels(const ExpForm* F, LogSolution* S) {
 }
 
 // Σ_{k>=1} b_k θ^k as a polynomial in θ
-static LPoly log_part_poly(const LogSolution* S) {
+LPoly log_part_poly(const LogSolution* S) {
     LPoly B = { 0, 0, NULL };
     for (int k = 1; k <= S->n + 1; k++) {
         LPoly t = lpoly_term(qfn_copy(&S->b[k]), k), sum = lpoly_add(&B, &t, 1);
@@ -272,7 +267,7 @@ static RischResult integrate_exp_poly(const ExpForm* F) {
 }
 
 // the integral of a polynomial (Laurent for exp) in θ
-static RischResult integrate_poly(const ExpForm* F, const Expr* f) {
+RischResult integrate_poly(const ExpForm* F, const Expr* f) {
     return F->t.kind == TOWER_LOG ? integrate_log(F, f) : integrate_exp_poly(F);
 }
 
@@ -290,14 +285,10 @@ static RischResult integrate_poly(const ExpForm* F, const Expr* f) {
 //      of K[θ]), g_c = gcd(d, h - c·D(d)) over the distinct roots c.
 //   4. f - D(g) - Σ c·D(g_c)/g_c is then a polynomial in θ (checked exactly), integrated as above.
 
-typedef struct {
-    KFrac g;     // the rational part of the integral
-    LPoly h, d;  // the remaining h/d: d square-free, deg h < deg d
-} Reduced;
 
 // b with f = p + b/den, deg b < deg den: for f = N·θ^-m (N a polynomial), Bezout gives
 // s·θ^m + t·den = N, so f = s/den + t·θ^-m
-static LPoly proper_part(const ExpForm* F) {
+LPoly proper_part(const ExpForm* F) {
     int m = F->f.n && F->f.lo < 0 ? -F->f.lo : 0;
     LPoly N = kp_shift(&F->f, m), one = kp_one(), tm = kp_shift(&one, m);
     KBezout z = kp_bezout(&tm, &F->den, &N);
@@ -334,7 +325,7 @@ static void hermite_step(Reduced* R, LPoly* A, const HermiteStep* st, const Towe
 }
 
 // ∫ b/den = g + ∫ h/d (Bronstein's quadratic HermiteReduce with the derivation D)
-static Reduced hermite_reduce(const LPoly* b, const ExpForm* F) {
+Reduced hermite_reduce(const LPoly* b, const ExpForm* F) {
     Reduced R = { { { 0, 0, NULL }, kp_one() }, { 0, 0, NULL }, { 0, 0, NULL } };
     KSquareFree sf = kp_square_free(&F->den);
     LPoly A = kp_copy(b), den = kp_copy(&F->den);
@@ -356,7 +347,7 @@ static Reduced hermite_reduce(const LPoly* b, const ExpForm* F) {
     return R;
 }
 
-static void reduced_free(Reduced* R) { kfrac_free(&R->g); lpoly_free(&R->h); lpoly_free(&R->d); }
+void reduced_free(Reduced* R) { kfrac_free(&R->g); lpoly_free(&R->h); lpoly_free(&R->d); }
 
 // the integrand f = F (in its tower F->t) and its reduction R
 typedef struct {
@@ -385,7 +376,7 @@ static bool remainder_poly(const FracCtx* X, const LogPart* L, LPoly* r) {
 }
 
 // acc + e, acc possibly zero; takes both
-static Expr* plus(Expr* acc, Expr* e) {
+Expr* plus(Expr* acc, Expr* e) {
     if (is_zero_expr(e)) { free_expr(e); return acc; }
     if (is_zero_expr(acc)) { free_expr(acc); return e; }
     return expr_append_sum(acc, e);
@@ -409,7 +400,7 @@ static RischResult finish_fraction(const FracCtx* X, LogPart* L) {
 
 #define RESIDUES_NOT_CONSTANT "has no elementary antiderivative (Risch: its residues are not constants)"
 
-static RischResult integrate_fraction(const ExpForm* F, const Expr* f) {
+RischResult integrate_fraction(const ExpForm* F, const Expr* f) {
     LPoly b = proper_part(F);
     Reduced R = hermite_reduce(&b, F);
     KFrac hd = { R.h, R.d };
@@ -785,6 +776,10 @@ RischResult integrate_exp(const Expr* f) {
         if (r.status == RISCH_UNSUPPORTED) r.reason = F.unsupported;
         exp_form_free(&F);
         return r;
+    }
+    if (F.unsupported && expr_has_ln(f)) {                // two towers: ln over exp or ln (risch2.c)
+        RischResult r2 = integrate_tower2(f);
+        if (r2.reason != TOWER2_NOT_APPLICABLE) { exp_form_free(&F); return r2; }
     }
     if (F.unsupported) { const char* why = F.unsupported; exp_form_free(&F); return failure(RISCH_UNSUPPORTED, why); }
     RischResult r = kp_is_one(&F.den) ? integrate_poly(&F, f) : integrate_fraction(&F, f);

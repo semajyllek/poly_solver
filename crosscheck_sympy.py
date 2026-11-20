@@ -405,6 +405,19 @@ def check_tan(rng):
     return compare_risch(f, f.rewrite(sp.exp), numeric=True, limit=20)
 
 
+def check_tower2(rng):
+    """f polynomial in an outer ln over an inner exp or ln tower: half derivatives of
+    Σ c_k(x)·θ1^j·θ2^k (elementary), half random Σ c_k(x)·θ1^j·θ2^k; SymPy's risch_integrate
+    takes these towers as they are. Answers are checked numerically to 35 digits."""
+    th1, th2 = rng.choice([(sp.exp(x), sp.log(x)), (sp.log(x), sp.log(x + 1)), (sp.log(x), sp.log(sp.log(x))),
+                           (sp.exp(x), sp.log(sp.exp(x) + 1)), (sp.exp(2 * x), sp.log(x + 1))])
+    F = sum((rng.randint(-2, 2) + rng.randint(0, 2) * x) * rng.choice([1, th1, 1 / (th1 + 2)]) * th2**k for k in range(rng.randint(1, 3)))
+    f = sp.diff(F, x) if rng.random() < 0.5 else F
+    if f == 0:
+        return "elementary"
+    return compare_risch(f, None, numeric=True, limit=20)
+
+
 PI_BOUNDS = {"pi": sp.pi, "pi/4": sp.pi / 4, "-pi/2": -sp.pi / 2, "3pi/2": 3 * sp.pi / 2, "2pi": 2 * sp.pi, "-pi": -sp.pi}
 
 
@@ -523,6 +536,7 @@ def main():
     rng_tan = random.Random(args.seed + 8)
     rng_dexp = random.Random(args.seed + 9)
     rng_dtow = random.Random(args.seed + 10)
+    rng_tw2 = random.Random(args.seed + 11)
     rootsums = radicals = 0
     definite = {"exact": 0, "numeric": 0, "pole": 0}
     infinite = {"exact": 0, "numeric": 0, "divergent": 0}
@@ -533,6 +547,7 @@ def main():
     tans = dict(exps)
     dexps = {"exact": 0, "numeric": 0, "refused": 0}
     dtows = {"exact": 0, "numeric": 0, "pole": 0, "refused": 0, "skipped": 0}
+    tw2s = dict(exps)
     for t in range(args.trials):
         p = random_poly(rng)
         check_factor(p)
@@ -551,6 +566,7 @@ def main():
         tans[check_tan(rng_tan)] += 1
         dexps[check_definite_exp(rng_dexp)] += 1
         dtows[check_definite_tower(rng_dtow)] += 1
+        tw2s[check_tower2(rng_tw2)] += 1
         check_matrix(rng)
         print(f"  trial {t + 1}/{args.trials} ok", flush=True)
     print(f"crosscheck OK: {args.trials} trials (factor, solve, integrate, det); "
@@ -572,7 +588,9 @@ def main():
           f"definite exp/sin/cos: {dexps['exact']} exact (28 digits), {dexps['numeric']} numeric-only, "
           f"{dexps['refused']} refused at infinity; definite with sin/cos/exp denominators: "
           f"{dtows['exact']} exact, {dtows['numeric']} numeric-only, {dtows['pole']} poles, "
-          f"{dtows['refused']} refused, {dtows['skipped']} skipped")
+          f"{dtows['refused']} refused, {dtows['skipped']} skipped; ln over exp/ln: {tw2s['elementary']} elementary, "
+          f"{tw2s['nonelementary']} proved non-elementary (SymPy agrees), {tw2s['unconfirmed']} unconfirmed, "
+          f"{tw2s['unsupported']} unsupported")
 
 
 if __name__ == "__main__":

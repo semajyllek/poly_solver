@@ -1457,7 +1457,7 @@ static void test_reg_integrate_exp(void) {
         assert(r.status == RISCH_NONELEMENTARY && r.result);
         free_expr(r.result);
     }
-    const char* outside[] = { "exp(x)/(exp(3x)+2)", "exp(x)/(exp(x)+exp(x^2))", "exp(1/x)", "x*exp(x)*ln(x)", "exp(3)", "exp(exp(x))", "exp(x)^(1/2)" };
+    const char* outside[] = { "exp(x)/(exp(3x)+2)", "exp(x)/(exp(x)+exp(x^2))", "exp(1/x)", "exp(3)", "exp(exp(x))", "exp(x)^(1/2)" };
     for (size_t i = 0; i < sizeof outside / sizeof outside[0]; i++) {
         RischResult r = risch_str(outside[i]);
         assert(r.status == RISCH_UNSUPPORTED && !r.result && r.reason);
@@ -1593,7 +1593,7 @@ static void test_reg_integrate_log(void) {
         assert(r.status == RISCH_NONELEMENTARY && r.result);
         free_expr(r.result);
     }
-    const char* outside[] = { "ln(x)+ln(x+1)", "ln(2x)*ln(x)", "ln(ln(x))", "ln(x)*exp(x)", "ln(3)" };
+    const char* outside[] = { "ln(2x)*ln(x)", "ln(3)", "ln(x)*sin(x)", "1/(x*ln(x)*ln(ln(x)))" };
     for (size_t i = 0; i < sizeof outside / sizeof outside[0]; i++) {
         RischResult r = risch_str(outside[i]);
         assert(r.status == RISCH_UNSUPPORTED && !r.result && r.reason);
@@ -1815,6 +1815,108 @@ static void test_reg_integrate_trig(void) {
     }
     printf("  test_reg_integrate_trig PASSED (%zu exact, %zu non-elementary, %zu unsupported, %zu identities)\n",
            sizeof ok / sizeof ok[0], sizeof none / sizeof none[0], sizeof outside / sizeof outside[0], sizeof simp / sizeof simp[0]);
+}
+
+// two levels: θ2 = ln(u) over K1 = Q(x)(exp(x)) or Q(x)(ln(x)), polynomials in θ2. Each answer
+// is also checked numerically; the proofs exercise each way a level can fail
+static void test_reg_integrate_tower2(void) {
+    const char* ok[][2] = {
+        { "exp(x)*(ln(x)+1/x)", "exp(x) * ln(abs(x))" },                                     // c = 0
+        { "ln(ln(x))/x", "ln(abs(x)) * ln(abs(ln(abs(x)))) - ln(abs(x))" },                  // the tower only inside u
+        { "ln(ln(x))/(x*ln(x))", "1/2 * ln(abs(ln(abs(x))))^2" },                            // c from the simple part
+        { "(exp(x)+1/x)*ln(x)+exp(x)/x", "1/2 * ln(abs(x))^2 + exp(x) * ln(abs(x))" },       // c from the θ1^0 part
+        { "(1/x+1/(x+1))*ln(x+1)+ln(x)/(x+1)", "ln(abs(x + 1)) * ln(abs(x)) + 1/2 * ln(abs(x + 1))^2" }, // d·L1
+        { "ln(x)+ln(x+1)", "x * ln(abs(x + 1)) + x * ln(abs(x)) - 2x + ln(abs(x + 1))" },
+        { "exp(x)*ln(exp(x)+1)", "exp(x) * ln(exp(x) + 1) - exp(x) + ln(exp(x) + 1)" },     // level 0 has a log in exp
+        { "1/((x+1)*ln(x)) - ln(x+1)/(x*ln(x)^2)", "ln(abs(x + 1)) / ln(abs(x))" },          // a Hermite part in θ1
+        { "1/(x*(exp(x)+1)) - exp(x)*ln(x)/(exp(x)+1)^2", "ln(abs(x)) / (1 + exp(x))" },
+        { "exp(-x)*(1/x - ln(x))", "exp(-x) * ln(abs(x))" },                                 // a negative power of exp
+    };
+    for (size_t i = 0; i < sizeof ok / sizeof ok[0]; i++) {
+        Expr* f = parse_input(ok[i][0]);
+        RischResult r = integrate_exp(f);
+        assert(r.status == RISCH_OK);
+        expect_str(expr_to_string(r.result), ok[i][1]);
+        assert(derivative_matches(r.result, f));
+        free_expr(r.result); free_expr(f);
+    }
+    const char* none[] = { "exp(x)*ln(x)", "x*exp(x)*ln(x)", "ln(ln(x))", "ln(x)*ln(x+1)", "ln(exp(x)+1)", "x*ln(x)*ln(x+1)",
+                           "ln(x)/ln(x+1)",                         // a polynomial in ln(x) over Q(x)(ln(x+1)): level 1 is ∫ 1/ln(x+1)
+                           "ln(x+1)/exp(x)" };
+    for (size_t i = 0; i < sizeof none / sizeof none[0]; i++) {
+        RischResult r = risch_str(none[i]);
+        assert(r.status == RISCH_NONELEMENTARY && r.result);
+        free_expr(r.result);
+    }
+    const char* outside[] = { "ln(x)*ln(2x)", "exp(x)*ln(exp(x))", "1/(ln(x)+ln(x+1))", "ln(ln(x))^(-1)",
+                              "ln(ln(ln(x)))", "exp(x)*ln(x)*ln(x+1)" };                 // three levels   // θ2 in K1; θ2 below a fraction
+    for (size_t i = 0; i < sizeof outside / sizeof outside[0]; i++) {
+        RischResult r = risch_str(outside[i]);
+        assert(r.status == RISCH_UNSUPPORTED && !r.result && r.reason);
+    }
+    printf("  test_reg_integrate_tower2 PASSED (%zu exact, %zu non-elementary, %zu unsupported)\n",
+           sizeof ok / sizeof ok[0], sizeof none / sizeof none[0], sizeof outside / sizeof outside[0]);
+}
+
+// d/dx of e built from x, constants, + - · /, integer powers, exp and ln (for the two-level test)
+static Expr* deriv(const Expr* e) {
+    switch (e->type) {
+        case EXPR_CONST: return create_const(0);
+        case EXPR_VAR: return create_const(1);
+        case EXPR_POLY: return create_poly_expr(poly_derivative(e->poly));
+        case EXPR_NEG: return create_neg(deriv(e->operand));
+        case EXPR_EXP: return create_mul(expr_copy(e), deriv(e->fn_arg));
+        case EXPR_LN: return create_div(deriv(e->ln_arg), expr_copy(e->ln_arg));
+        case EXPR_BINOP: {
+            const Expr *l = e->binop.left, *r = e->binop.right;
+            switch (e->binop.op) {
+                case OP_ADD: return create_add(deriv(l), deriv(r));
+                case OP_SUB: return create_sub(deriv(l), deriv(r));
+                case OP_MUL: return create_add(create_mul(deriv(l), expr_copy(r)), create_mul(expr_copy(l), deriv(r)));
+                case OP_DIV: return create_div(create_sub(create_mul(deriv(l), expr_copy(r)), create_mul(expr_copy(l), deriv(r))),
+                                               create_pow(expr_copy(r), create_const(2)));
+                case OP_POW: return create_mul(create_mul(expr_copy(r), create_pow(expr_copy(l), create_sub(expr_copy(r), create_const(1)))), deriv(l));
+            }
+        }
+        default: assert(0); return NULL;
+    }
+}
+
+// random F = Σ_{k=0}^{2} c_k(x)·θ1^j_k·θ2^k in one of four two-level towers; integrate(F') must give
+// an answer whose derivative is F' (checked numerically), and F' + g, g a non-elementary
+// integrand of the same towers, must be proved non-elementary
+static void test_prop_integrate_tower2(void) {
+    const char* towers[][3] = {                                    // θ1, θ2, a non-elementary g
+        { "exp(x)", "ln(x)", "exp(x)*ln(x)" }, { "ln(x)", "ln(x+1)", "ln(x)*ln(x+1)" },
+        { "ln(x)", "ln(ln(x))", "ln(ln(x))" }, { "exp(x)", "ln(exp(x)+1)", "ln(exp(x)+1)" },
+    };
+    int roundtrips = 0, rejected = 0;
+    for (int trial = 0; trial < TRIALS / 2; trial++) {
+        const char* const* tw = towers[rnd(0, 3)];
+        Expr* F = NULL;
+        for (int k = 0; k <= 2; k++) {
+            if (k < 2 && !rnd(0, 2)) continue;
+            Expr* t = create_mul(create_poly_expr(poly_si((long[]){ rnd(-2, 2), rnd(0, 2) }, 1)), parse_input(tw[0]));
+            long shape = rnd(0, 2);                               // θ1², θ1, or θ1/(θ1 + 2): a Hermite part in θ1
+            if (shape == 0) t = create_mul(t, parse_input(tw[0]));
+            if (shape == 2) t = create_div(t, create_add(parse_input(tw[0]), create_const(2)));
+            for (int i = 0; i < k; i++) t = create_mul(t, parse_input(tw[1]));
+            F = F ? create_add(F, t) : t;
+        }
+        Expr* f = deriv(F);
+        RischResult r = integrate_exp(f);
+        if (r.status != RISCH_OK) { char* s = expr_to_string(f); fprintf(stderr, "tower2 f = %s: %s\n", s, r.reason ? r.reason : "-"); free(s); }
+        assert(r.status == RISCH_OK);
+        assert(derivative_matches(r.result, f));
+        roundtrips++;
+        Expr* bad = create_add(expr_copy(f), parse_input(tw[2]));
+        RischResult rb = integrate_exp(bad);
+        assert(rb.status == RISCH_NONELEMENTARY);
+        rejected++;
+        free_expr(rb.result); free_expr(bad);
+        free_expr(r.result); free_expr(f); free_expr(F);
+    }
+    printf("  test_prop_integrate_tower2 PASSED (%d round trips, %d non-elementary by construction)\n", roundtrips, rejected);
 }
 
 // denominators in sin/cos: θ = tan(x) (Bioche) or tan(x/2); normal part, polynomial part
@@ -2243,6 +2345,7 @@ void run_property_tests(void) {
     test_reg_integrate_tower_fractions();
     test_reg_integrate_trig();
     test_reg_integrate_tan();
+    test_reg_integrate_tower2();
     test_lrt_direct();
     printf("\nProperty Tests (seed %s):\n", env ? env : "default");
     test_prop_factor_roundtrip();
@@ -2262,6 +2365,7 @@ void run_property_tests(void) {
     test_prop_integrate_tower_fractions();
     test_prop_integrate_trig();
     test_prop_integrate_tan();
+    test_prop_integrate_tower2();
     test_prop_definite_exp();
     test_prop_definite_tan();
 }

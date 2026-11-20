@@ -39,6 +39,8 @@ typedef struct {
 } ExpForm;
 
 ExpForm exp_form(const Expr* e);
+Tower tower_copy(const Tower* t);
+void tower_free(Tower* t);
 void exp_form_free(ExpForm* F);
 QFn tower_L(const Tower* t);                          // u'/u for TOWER_LOG (a copy)
 

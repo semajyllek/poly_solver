@@ -216,21 +216,27 @@ static Polynomial* first_arg(const Expr* e) {
     }
 }
 
-// the rational gcd g of the multiples r (A = r·A0 for each argument A), folded in
-static void fold_multiple(const Expr* e, const Polynomial* A0, Rational* g, bool* ok) {
-    if (!*ok) return;
-    if (e->type == EXPR_NEG) { fold_multiple(e->operand, A0, g, ok); return; }
-    if (e->type == EXPR_BINOP) { fold_multiple(e->binop.left, A0, g, ok); fold_multiple(e->binop.right, A0, g, ok); return; }
+// the rational gcd g of the multiples r (A = r·A0 for each argument A), while ok
+typedef struct {
+    const Polynomial* A0;
+    Rational g;   // 0/1 at the start: gcd(0, r) = r
+    bool ok;
+} Multiples;
+
+static void fold_multiple(const Expr* e, Multiples* M) {
+    if (!M->ok) return;
+    if (e->type == EXPR_NEG) { fold_multiple(e->operand, M); return; }
+    if (e->type == EXPR_BINOP) { fold_multiple(e->binop.left, M); fold_multiple(e->binop.right, M); return; }
     if (e->type != EXPR_SIN && e->type != EXPR_COS) return;
     Polynomial* u = trig_arg(e->fn_arg);
     Rational r;
     rat_init(&r);
-    *ok = u && proportional(u, A0, &r);
-    if (*ok) {                                             // gcd(a/b, c/d) = gcd(a, c)/lcm(b, d)
+    M->ok = u && proportional(u, M->A0, &r);
+    if (M->ok) {                                           // gcd(a/b, c/d) = gcd(a, c)/lcm(b, d)
         mpq_abs(r.val, r.val);
-        mpz_gcd(mpq_numref(g->val), mpq_numref(g->val), mpq_numref(r.val));
-        mpz_lcm(mpq_denref(g->val), mpq_denref(g->val), mpq_denref(r.val));
-        mpq_canonicalize(g->val);
+        mpz_gcd(mpq_numref(M->g.val), mpq_numref(M->g.val), mpq_numref(r.val));
+        mpz_lcm(mpq_denref(M->g.val), mpq_denref(M->g.val), mpq_denref(r.val));
+        mpq_canonicalize(M->g.val);
     }
     free_polynomial(u);
     rat_clear(&r);
@@ -240,10 +246,11 @@ static void fold_multiple(const Expr* e, const Polynomial* A0, Rational* g, bool
 static Polynomial* base_of(const Expr* e) {
     Polynomial* A0 = first_arg(e);
     if (!A0) return NULL;
-    Rational g;
-    rat_init(&g);                                          // 0/1: gcd(0, r) = r
-    bool ok = true;
-    fold_multiple(e, A0, &g, &ok);
+    Multiples M = { A0, { { 0 } }, true };
+    rat_init(&M.g);
+    fold_multiple(e, &M);
+    Rational g = M.g;
+    bool ok = M.ok;
     Rational lc;
     rat_init(&lc);
     poly_coeff(&lc, A0, polynomial_degree(A0));

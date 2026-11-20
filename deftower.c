@@ -154,42 +154,37 @@ typedef struct {
     double end[2];
 } TanCtx;
 
-// the points α + (k + off)/h1·π, α = -h0/h1, for k over the range: each placed; calls back
 typedef struct {
-    double off;      // 1/2 for θ = ∞, 0 for θ = 0
-    int place;       // per point: -1, 0, 1, 2
-    double x;
-    bool rational;   // k = 0 with off = 0: the rational point α
-} TanPoint;
+    long k1, k2;
+} KRange;
 
 // the k range covering [end0, end1] for H = h1·x + h0 at H = (k + off)·π
-static void k_range(const TanCtx* T, double off, long* k1, long* k2) {
+static KRange k_range(const TanCtx* T, double off) {
     double h1 = rat_to_double(&T->h1), h0 = rat_to_double(&T->h0);
     double a = (h1 * T->end[0] + h0) / M_PI - off, b = (h1 * T->end[1] + h0) / M_PI - off;
-    *k1 = (long)floor(fmin(a, b)) - 1;
-    *k2 = (long)ceil(fmax(a, b)) + 1;
+    return (KRange){ (long)floor(fmin(a, b)) - 1, (long)ceil(fmax(a, b)) + 1 };
 }
 
-// point k of the family off (exact a + b·π)
-static void tan_point(const TanCtx* T, long k, double off, PiPt* p) {
-    pp_init(p);
-    rat_div(&p->a, &T->h0, &T->h1);
-    rat_neg(&p->a, &p->a);
+// point k of the family off, x = α + (k + off)/h1·π with α = -h0/h1 (exact a + b·π)
+static PiPt tan_point(const TanCtx* T, long k, double off) {
+    PiPt p;
+    pp_init(&p);
+    rat_div(&p.a, &T->h0, &T->h1);
+    rat_neg(&p.a, &p.a);
     Rational kb = rat_from_si(2 * k + (off > 0 ? 1 : 0), 2);
-    rat_div(&p->b, &kb, &T->h1);
+    rat_div(&p.b, &kb, &T->h1);
     rat_clear(&kb);
+    return p;
 }
 
 // θ = ∞ points: poles when deg N > deg D, else the crossings (recorded)
 static const char* tan_infinities(const TanCtx* T, const ExpForm* F, TowerPoints* out) {
-    long k1, k2;
-    k_range(T, 0.5, &k1, &k2);
-    if (k2 - k1 > MAX_POINTS) return "too many crossings of tan in [a, b]";
+    KRange K = k_range(T, 0.5);
+    if (K.k2 - K.k1 > MAX_POINTS) return "too many crossings of tan in [a, b]";
     bool pole = kp_deg(&F->f) > kp_deg(&F->den);
     const char* why = NULL;
-    for (long k = k1; k <= k2 && !why; k++) {
-        PiPt p;
-        tan_point(T, k, 0.5, &p);
+    for (long k = K.k1; k <= K.k2 && !why; k++) {
+        PiPt p = tan_point(T, k, 0.5);
         int w = place(&p, T->ends);
         if (w == 2) why = UNDECIDED;
         else if (w >= 0 && pole) why = DIVERGES;
@@ -202,13 +197,11 @@ static const char* tan_infinities(const TanCtx* T, const ExpForm* F, TowerPoints
 
 // θ = 0 (D(0) = 0): x = α + k/h1·π; the rational point α is a pole unless N vanishes there
 static const char* tan_zero_root(const TanCtx* T, const ExpForm* F) {
-    long k1, k2;
-    k_range(T, 0, &k1, &k2);
-    if (k2 - k1 > MAX_POINTS) return "too many crossings of tan in [a, b]";
+    KRange K = k_range(T, 0);
+    if (K.k2 - K.k1 > MAX_POINTS) return "too many crossings of tan in [a, b]";
     const char* why = NULL;
-    for (long k = k1; k <= k2 && !why; k++) {
-        PiPt p;
-        tan_point(T, k, 0, &p);
+    for (long k = K.k1; k <= K.k2 && !why; k++) {
+        PiPt p = tan_point(T, k, 0);
         int w = place(&p, T->ends);
         if (w == 2) why = UNDECIDED;
         else if (w >= 0) why = k == 0 && numerator_zero_at(&F->f, &p.a, 0) ? REMOVABLE : DIVERGES;
@@ -220,17 +213,26 @@ static const char* tan_zero_root(const TanCtx* T, const ExpForm* F) {
 // a root r ≠ 0 of D in [r1, r2]: x = (atan(r) + kπ - h0)/h1, transcendental, a pole
 static const char* tan_root(const TanCtx* T, double r1, double r2) {
     double h1 = rat_to_double(&T->h1), h0 = rat_to_double(&T->h0);
-    long k1, k2;
-    k_range(T, 0, &k1, &k2);
+    KRange K = k_range(T, 0);
     const char* why = NULL;
-    for (long k = k1 - 1; k <= k2 + 1 && !why; k++) {
+    for (long k = K.k1 - 1; k <= K.k2 + 1 && !why; k++) {
         double a = (atan(r1) + k * M_PI - h0) / h1, b = (atan(r2) + k * M_PI - h0) / h1;
         why = numeric_pole(fmin(a, b), fmax(a, b), T->end);
     }
     return why;
 }
 
-static const char* tan_points(const ExpForm* F, const Polynomial* D, const TowerEnds* E, TowerPoints* out) {
+// f's tower form, D's constant coefficients as a polynomial over Q, and the ends
+typedef struct {
+    const ExpForm* F;
+    const Polynomial* D;
+    const TowerEnds* E;
+} TowerIn;
+
+static const char* tan_points(const TowerIn* in, TowerPoints* out) {
+    const ExpForm* F = in->F;
+    const Polynomial* D = in->D;
+    const TowerEnds* E = in->E;
     TanCtx T;
     rat_init(&T.h0); rat_init(&T.h1);
     const char* why = linear(F->t.v, &T.h0, &T.h1) ? NULL : "tan of a nonlinear argument in a denominator is not supported yet";
@@ -254,7 +256,10 @@ static const char* tan_points(const ExpForm* F, const Polynomial* D, const Tower
 // --- exp(v) ---
 
 // positive roots of D: r = 1 at the rational point -v0/v1, others at (ln r - v0)/v1
-static const char* exp_points(const ExpForm* F, const Polynomial* D, const TowerEnds* E) {
+static const char* exp_points(const TowerIn* in) {
+    const ExpForm* F = in->F;
+    const Polynomial* D = in->D;
+    const TowerEnds* E = in->E;
     RootIntervalList L = fine_roots(D);
     Rational v0, v1, one = rat_one_val(), d;
     rat_init(&v0); rat_init(&v1); rat_init(&d);
@@ -294,7 +299,8 @@ const char* tower_points(const ExpForm* F, const TowerEnds* ends, TowerPoints* o
     *out = (TowerPoints){ NULL, 0, false, false };
     Polynomial* D = constant_poly(&F->den);
     if (!D) return "a denominator in exp or tan with coefficients depending on x is not supported yet";
-    const char* why = F->t.kind == TOWER_TAN ? tan_points(F, D, ends, out) : exp_points(F, D, ends);
+    TowerIn in = { F, D, ends };
+    const char* why = F->t.kind == TOWER_TAN ? tan_points(&in, out) : exp_points(&in);
     free_polynomial(D);
     return why;
 }

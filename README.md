@@ -31,6 +31,10 @@ A fast C library and CLI for symbolic polynomial algebra and linear systems with
     - `1/(1+cos(x))` gives `tan(1/2x)`, and `cos(x)/(1+sin(x))` gives `ln(abs(1 + sin(x)))`;
     - `1/(2+cos(x))` gives `2/3 * sqrt(3) * atan(1/3 * sqrt(3) * tan(1/2x))`;
     - `x*tan(x)` and `1/(x+sin(x))` are proved non-elementary.
+  - **ln over an exp or ln tower** (two levels, polynomials in the outer ln; `integrate` only, not `differentiate` or `simplify`):
+    - `exp(x)*(ln(x)+1/x)` gives `exp(x) * ln(abs(x))`, `ln(ln(x))/x` gives `ln(abs(x)) * ln(abs(ln(abs(x)))) - ln(abs(x))`;
+    - `ln(x)+ln(x+1)` and `exp(x)*ln(exp(x)+1)` integrate;
+    - `exp(x)*ln(x)`, `ln(ln(x))`, `ln(x)*ln(x+1)` and `ln(exp(x)+1)` are proved non-elementary.
   - Products and sums of different exponentials work as well: `exp(x)*exp(x^2)*(2x+1)` gives `exp(x^2 + x)`, and `exp(x) + exp(x^2)` is proved non-elementary.
   - `differentiate` and `simplify` accept the same expressions; `simplify "sin(x)^2+cos(x)^2"` gives `1`. `differentiate` also takes sin/cos denominators that are rational in `tan(x)` (`tan(x)` gives `tan(x)^2 + 1`).
 - **Linear systems**: solve Ax=b, determinant, inverse, rank and RREF with exact rational arithmetic.
@@ -116,8 +120,8 @@ Matrix entries can be integers, fractions or decimals of any size (`1/3`, `-5/7`
   - `simplify` of any sum of sin/cos in a denominator (`tan(x)`), and `differentiate` of those that need `tan(x/2)`, such as `1/(1+cos(x))` (the exact derivative would be unreadable in `tan(x/2)`);
   - denominators with independent exponentials, such as `exp(x)/(exp(x)+exp(x^2))`;
   - `exp(1/x)`, `sin(1/x)`, and constants such as `exp(3)` or `cos(1)`;
-  - `ln(x) + ln(x+1)` and `ln(2x)·ln(x)`, which need two independent logarithms or a new constant `ln 2`;
-  - `ln` together with `exp`, `sin` or `cos`, and `ln(ln(x))`;
+  - `ln(2x)·ln(x)` and `exp(x)·ln(exp(x))`, where the outer ln lies in the inner tower (a new constant `ln 2`, or `ln(exp(x)) = x`);
+  - an outer ln in a denominator (`1/(x·ln(x)·ln(ln(x)))`), three or more levels, `exp` of a non-polynomial (`exp(exp(x))`), and `ln` together with `sin` or `cos`;
   - definite integrals with `ln`; with a sum of sin/cos or exp in a denominator over an infinite range, or whose denominator has coefficients depending on x (`1/(x+exp(x))`) or a nonlinear argument (`1/(2+cos(x^2))`); and where such a denominator vanishes at a point where the numerator may too (`x/sin(x)` on `[-1, 1]`, which is finite there);
   - definite integrals over a range where a coefficient's denominator vanishes, even when the integrand stays finite (`sin(x)/x` on `[0, 1]`);
   - infinite ranges where some exp/sin/cos term does not decay exponentially: `cos(x)/x` on `[1, inf]` converges but is refused, and so is the divergent `exp(x)` on `[0, inf]`.

@@ -1157,7 +1157,7 @@ Anything else is reported as unsupported, with a reason: independent exponential
 - `∫ (2x²+1)·exp(x²) = x·exp(x²)`.
 - `∫ exp(x²)`: here a = 1, h = 1 and B = 2x. The equation 2x·q + q' = 1 needs deg q = −1, so there is no solution.
 
-**The ln (primitive) case.** Here θ = ln(u) with u ∈ Q(x) nonconstant, θ' = L = u'/u, and the integrand is a polynomial `Σ_{k=0}^{n} a_k θ^k`. Every `ln` argument must be `u^k` exactly for an integer k: `ln(x^2) = 2·θ` and `ln(1/x) = −θ`. The base is oriented so that `deg num ≥ deg den`. `ln(2x)` together with `ln(x)` would bring in the constant `ln 2`, so it is unsupported.
+**The ln (primitive) case.** Here θ = ln(u) with u ∈ Q(x) nonconstant, θ' = L = u'/u, and the integrand is a polynomial `Σ_{k=0}^{n} a_k θ^k`. Every `ln` argument must be `u^k` exactly for an integer k: `ln(x^2) = 2·θ` and `ln(1/x) = −θ`. The base is oriented so that `deg num ≥ deg den`. `ln(2x)` together with `ln(x)` would bring in the constant `ln 2`, so it is unsupported. Two independent logarithms, such as `ln(x)·ln(x+1)`, go to the two-level integrator (§11.9).
 
 By Liouville's theorem, `∫ f = Σ_{k=1}^{n+1} b_k θ^k + (an integral over Q(x))`, with `b_{n+1}` constant and `b_k ∈ Q(x)`. Matching θ^k gives `a_k = b_k' + (k+1)·b_{k+1}·L`.
 - **Top-down.** Write `b_k = r_k + d_k` with `d_k` constant. From k = n down to 1, `g_k = a_k − (k+1)·r_{k+1}·L` must satisfy `∫ g_k = r_k + (k+1)·d_{k+1}·θ`. This is *limited integration*: `hermite_split` gives `∫ g = R + ∫ A/D` with D square-free, and then `A/D = c·L` must hold exactly for a rational c. Any other log or atan at a level k ≥ 1 proves that ∫ f is not elementary.
@@ -1310,6 +1310,54 @@ By Liouville's theorem, `∫ f = Σ_{k=1}^{n+1} b_k θ^k + (an integral over Q(x
 - It also has 3 unsupported inputs and the derivatives.
 - `test_prop_integrate_tan` builds `D(N/E) + c·D(G)/G + D(P)/(1 + P²)` from random trig polynomials, using the quotient rule by hand, so the input is in sin/cos of x. It checks the printed answer's derivative numerically, and that adding `x·sin(x)/(1 + cos(x))` is always rejected.
 - The SymPy `check_tan` stream compares with `risch_integrate` on f in exponential form. SymPy is given 20 CPU seconds per case, and answers are checked numerically to 35 digits. In 300 cases (seeds 100–399) there were 0 disagreements: 204 answers differentiate back to f, and 96 proofs of non-elementarity agree with SymPy (none unconfirmed, none unsupported).
+
+### 11.9 Two levels: ln over an exp or ln tower (`risch2.c`)
+
+**Setting.** θ2 = ln(u) over K1 = Q(x)(θ1), where θ1 = exp(v) or ln(u1) as in §11.6, u ∈ K1, and f is a polynomial in θ2 with coefficients in K1.
+- Examples: `exp(x)·ln(x)` (K1 = Q(x)(eˣ), u = x), `ln(ln(x))/x` (K1 = Q(x)(ln x), u = ln x) and `ln(x)·ln(x+1)` (K1 = Q(x)(ln x), u = x + 1).
+- The path is entered only when the one-tower conversion fails on an integrand with ln. So no earlier answer changes. It serves `integrate` only: `differentiate` and `simplify` still refuse two towers.
+- **Conversion.**
+  - The outer argument is chosen among the ln arguments: nested ones (containing exp or ln) first, then the others from the last.
+  - K1 is the tower of the rest of f, with each outer ln replaced by x (argument collection is syntactic), together with u. This matters because in `ln(ln(x))/x` the tower appears only inside u.
+  - f is then converted coefficientwise in that fixed tower (`exp_form_in`).
+
+**Levels** (Bronstein, *Symbolic Integration I*, §5.8; Liouville's theorem as for one ln, §11.6).
+- `∫ f = Σ_{k=1}^{n+1} b_k·θ2^k + ∫ g_0`, with b_{n+1} constant, b_k ∈ K1, and `a_k = D(b_k) + (k+1)·b_{k+1}·η`, where η = D(u)/u.
+- From the top, g_k = a_k − (k+1)·r_{k+1}·η must equal D(r_k) + c·η with r_k ∈ K1 and c ∈ Q. This is limited integration over K1 (Bronstein §7.2), and then b_{k+1} = r_{k+1} + c/(k+1).
+- Level 0, `g_0 = a_0 − b_1·η`, is any integral over K1 and goes to the one-tower integrator.
+
+**Limited integration over K1, by Hermite reduction alone.** Write g = D(R) + h/d + P, with d square-free and P a polynomial in θ1 (Laurent for exp).
+- R′ ∈ K1 with only simple normal poles in D(R′) has no normal poles at all, so it is a polynomial. Hence the simple part of an element of D(K1) + Q·η is c times η's.
+- η's polynomial part p_η lies in Q(x):
+  - for exp, `D(G)/G` has only a θ1⁰ Laurent part;
+  - for ln, it is proper in θ1.
+- So g = D(r) + c·η exactly when:
+  1. `h_g/d_g = c·h_η/d_η`, which fixes c when η has a simple part;
+  2. the θ1^k parts of P_g with k ≠ 0 integrate in K1: for exp, an RDE per k (`exp_part`); for ln, the levels of §11.6 (`solve_log_levels`), which leave the θ1⁰ remainder q = p_0 − b_1·L1;
+  3. at θ1⁰, `q − c·p_η` has an integral in Q(x), up to `d·L1 = D(d·θ1)` for a ln base. In Hermite simple parts over Q(x) this reads `s(q) = c·s(p_η) + d·L1`, solved for constants over Q (`linsys_solve`).
+- Then `r = R_g − c·R_η + Y + d·θ1 + ∫(q − c·p_η − d·L1)`, and `g − D(r) − c·η = 0` is checked exactly.
+- The residue test is not needed here. Cubic residues therefore cannot make a level "unsupported": either a level fails, which is a proof, or it is solved exactly.
+
+**Transcendence.** θ2 is a new transcendental only if η ∉ D(K1), meaning not both h_η = 0 and s(p_η) ∈ Q·L1. The case `ln(x)·ln(2x)` (ln 2 is new) and `exp(x)·ln(exp(x))` (= x) is reported as unsupported.
+
+**Verdicts.** Non-elementary is claimed in exactly three cases:
+- a level's c-free part fails (step 2);
+- no (c, d) exists (steps 1 and 3);
+- level 0 is non-elementary over K1 (its own proof, §11.6).
+
+Everything else is unsupported: shapes outside this setting, an outer ln in a denominator, internal check failures, θ2 in K1, and cubic residues at level 0. The final answer is checked exactly: `D(Σ b_k θ2^k) + g_0 = f`.
+
+Examples:
+- `∫ exp(x)·(ln x + 1/x) = exp(x)·ln|x|`, with c = 0.
+- `∫ ln(ln x)/(x·ln x) = 1/2·ln|ln|x||²`, with c from the simple part.
+- `∫ (eˣ + 1/x)·ln x + eˣ/x = 1/2·ln|x|² + eˣ·ln|x|`, with c from the θ1⁰ part.
+- `∫ (1/x + 1/(x+1))·ln(x+1) + ln(x)/(x+1) = ln|x+1|·ln|x| + 1/2·ln|x+1|²`, which uses the d·L1 freedom.
+- `∫ exp(x)·ln(x)` is non-elementary: level 0 is `−eˣ/x`, the exponential integral. So is `∫ ln(x)·ln(x+1)`, which leads to the dilogarithm.
+
+**Tests.**
+- `test_reg_integrate_tower2` pins 10 answers, each also checked numerically (three with a Hermite part or a negative power in θ1), 8 proofs and 6 unsupported inputs.
+- `test_prop_integrate_tower2` integrates the derivative of random `Σ c_k(x)·{θ1, θ1², θ1/(θ1 + 2)}·θ2^k` in four tower pairs. It adds a non-elementary integrand of the same towers, and checks that the sum is always rejected.
+- The SymPy `check_tower2` stream gives these towers to `risch_integrate` unchanged. Coefficients include `1/(θ1 + 2)`, so the Hermite branch is exercised. In 300 cases (seeds 100–399) there were 0 disagreements: 207 answers check numerically, 87 proofs of non-elementarity agree with SymPy, and 6 proofs remain unconfirmed because SymPy's Risch raised or timed out.
 
 ---
 

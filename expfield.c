@@ -560,9 +560,9 @@ ExpForm exp_form(const Expr* e) {
     Args A = { NULL, 0, NULL, 0, NULL };
     collect(e, &A);
     F.unsupported = A.unsupported;
-    if (!F.unsupported && A.n > 0 && A.nw > 0) F.unsupported = "exp and ln together (two towers) are not supported yet";
+    if (!F.unsupported && A.n > 0 && A.nw > 0) F.unsupported = "exp and ln together (two towers) are not supported here yet (integrate takes a polynomial in one outer ln over an exp or ln tower)";
     if (!F.unsupported && A.nw > 0 && !make_log_tower(&A, &F.t))
-        F.unsupported = "ln of arguments that are not integer powers of one function (such as ln(x)·ln(x+1) or ln(2x)) is not supported yet";
+        F.unsupported = "ln of arguments that are not integer powers of one function (such as ln(2x) beside ln(x), a new constant ln(2)) is not supported yet";
     if (!F.unsupported && A.n > 0 && !make_tower(&A, &F.t))
         F.unsupported = "a denominator with exponentials of independent arguments (such as exp(x)/(exp(x) + exp(x^2))) is not supported yet";
     if (!F.unsupported && F.t.kind == TOWER_EXP && !F.t.v) F.t.v = poly_one(); // no θ: any v works
@@ -579,10 +579,29 @@ ExpForm exp_form(const Expr* e) {
     return F;
 }
 
+const char* exp_form_in(const Expr* e, const Tower* t, KFrac* out) {
+    Conv C = { t, NULL };
+    KFrac q = conv(e, &C);
+    if (C.unsupported) kfrac_free(&q);
+    else *out = q;
+    return C.unsupported;
+}
+
+static Polynomial* poly_copy_or_null(const Polynomial* p) { return p ? poly_copy(p) : NULL; }
+
+Tower tower_copy(const Tower* t) {
+    return (Tower){ t->kind, poly_copy_or_null(t->v), poly_copy_or_null(t->un), poly_copy_or_null(t->ud),
+                    poly_copy_or_null(t->Ln), poly_copy_or_null(t->Ld), t->half };
+}
+
+void tower_free(Tower* t) {
+    Polynomial* parts[] = { t->v, t->un, t->ud, t->Ln, t->Ld };
+    for (int i = 0; i < 5; i++) free_polynomial(parts[i]);
+    *t = (Tower){ TOWER_EXP, NULL, NULL, NULL, NULL, NULL, false };
+}
+
 void exp_form_free(ExpForm* F) {
     lpoly_free(&F->f);
     lpoly_free(&F->den);
-    Polynomial* parts[] = { F->t.v, F->t.un, F->t.ud, F->t.Ln, F->t.Ld };
-    for (int i = 0; i < 5; i++) free_polynomial(parts[i]);
-    F->t = (Tower){ TOWER_EXP, NULL, NULL, NULL, NULL, NULL, false };
+    tower_free(&F->t);
 }
