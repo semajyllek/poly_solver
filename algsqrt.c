@@ -5,6 +5,9 @@
 #include "kpoly.h"
 #include "factor.h"
 #include "residue.h"
+#include "sqrtlog.h"
+#include "partial_frac.h"
+#include <math.h>
 #include <stdlib.h>
 
 // a + b·y
@@ -723,46 +726,243 @@ static Expr* base_integral(const Polynomial* U, const Rational* lambda) {
     return e;
 }
 
-// ∫ b·y by reduction when den(b) is a power of U: Σ Q_i·y/U^(m_i) + λ·∫ 1/y, the algebraic part
-// checked exactly (its derivative plus λ/y must be b·y); NULL with *why otherwise
-static Expr* integrate_by_reduction(const SqCtx* c, const QFn* b, const char** why) {
+// b·y split by the partial fractions of b·U: bU·y with den(bU) a power of U, the algebraic part
+// G·y from Hermite steps at the other factors, and the simple poles r[i]/(d[i]·y), d[i] monic
+typedef struct {
+    QFn bU, G;
+    Polynomial **d, **r;
+    int count;
+} PoleSplit;
+
+static void pole_split_free(PoleSplit* S) {
+    qfn_free(&S->bU); qfn_free(&S->G);
+    for (int i = 0; i < S->count; i++) { free_polynomial(S->d[i]); free_polynomial(S->r[i]); }
+    free(S->d); free(S->r);
+}
+
+// acc += p/q (takes p and q)
+static void qfn_accumulate(QFn* acc, Polynomial* p, Polynomial* q) {
+    QFn t = qfn_from(p, q), s = qfn_add(acc, &t, 1);
+    qfn_free(acc); qfn_free(&t);
+    *acc = s;
+}
+
+// a pole d^j of the integrand (d coprime to U)
+typedef struct {
+    const Polynomial *U, *d;
+    int j;
+} Pole;
+
+// one Hermite step, j >= 2: p/(d^j·y) = D(Q·y/d^(j-1)) + p1/(d^(j-1)·y), where
+// D(Q·y/d^(j-1)) = (Q'·U·d + Q·U'·d/2 - (j-1)·Q·d'·U)/(d^j·y) and Q ≡ -p/((j-1)·d'·U) mod d; returns p1
+static Polynomial* hermite_step(const Pole* P, const Polynomial* p, Polynomial** Q) {
+    Rational k, half;
+    rat_init(&k); rat_init(&half);
+    mpq_set_si(k.val, P->j - 1, 1);
+    mpq_set_si(half.val, 1, 2);
+    Polynomial *dd = poly_derivative(P->d), *dU = poly_derivative(P->U), *ddU = poly_multiply(dd, P->U);
+    Polynomial *kddU = poly_scale(ddU, &k), *m = poly_mod(kddU, P->d);
+    PolyBezout bz = poly_xgcd(m, P->d);                       // s·m ≡ 1 mod d
+    Polynomial *ps = poly_multiply(p, bz.s), *q = poly_mod(ps, P->d), *z = create_polynomial();
+    *Q = poly_subtract(z, q);
+    Polynomial *dQ = poly_derivative(*Q), *a = poly_multiply(dQ, P->U), *ad = poly_multiply(a, P->d);
+    Polynomial *b = poly_multiply(*Q, dU), *bd = poly_multiply(b, P->d), *bh = poly_scale(bd, &half);
+    Polynomial *c = poly_multiply(*Q, kddU), *s1 = poly_add(ad, bh), *D = poly_subtract(s1, c);
+    Polynomial *rest = poly_subtract(p, D), *p1 = poly_divide(rest, P->d);
+    free_polynomial(dd); free_polynomial(dU); free_polynomial(ddU); free_polynomial(kddU); free_polynomial(m);
+    free_polynomial(ps); free_polynomial(q); free_polynomial(z); free_polynomial(dQ); free_polynomial(a);
+    free_polynomial(ad); free_polynomial(b); free_polynomial(bd); free_polynomial(bh); free_polynomial(c);
+    free_polynomial(s1); free_polynomial(D); free_polynomial(rest);
+    free_bezout(&bz);
+    rat_clear(&k); rat_clear(&half);
+    return p1;
+}
+
+// numerators[j-1]/F^j for a primitive factor F = l·d (d monic): numerators[j-1]/l^j over d^j
+static Polynomial* over_monic(const PFTerm* T, int j, const Rational* l) {
+    Rational lj;
+    rat_init(&lj);
+    rat_pow_int(&lj, l, -j);
+    Polynomial* p = poly_scale(T->numerators[j - 1], &lj);
+    rat_clear(&lj);
+    return p;
+}
+
+// a factor F ≠ U of the denominator of b·U: Hermite steps from F^m down to F, then the simple pole
+static void split_other(const SqCtx* c, const PFTerm* T, PoleSplit* S) {
+    Rational l;
+    rat_init(&l);
+    poly_coeff(&l, T->factor, polynomial_degree(T->factor));
+    Polynomial* d = poly_copy(T->factor);
+    poly_make_monic(d);
+    Polynomial* p = over_monic(T, T->power, &l);
+    for (int j = T->power; j >= 2; j--) {
+        Polynomial* Q;
+        Polynomial *p1 = hermite_step(&(Pole){ c->U, d, j }, p, &Q), *nx = over_monic(T, j - 1, &l);
+        qfn_accumulate(&S->G, Q, poly_pow(d, (unsigned)(j - 1)));
+        free_polynomial(p);
+        p = poly_add(p1, nx);
+        free_polynomial(p1); free_polynomial(nx);
+    }
+    PolyDivResult qr = poly_divmod(p, d);                     // p/(d·y) = quo/y + rem/(d·y)
+    qfn_accumulate(&S->bU, qr.quotient, poly_copy(c->U));
+    S->d[S->count] = d;
+    S->r[S->count++] = qr.remainder;
+    free_polynomial(p);
+    rat_clear(&l);
+}
+
+// the factor F of the partial fractions is U up to a constant: numerators[j-1]/F^j = n·κ^j/U^j, κ = U/F
+static bool split_radicand(const SqCtx* c, const PFTerm* T, PoleSplit* S) {
+    Rational lu, lf, k;
+    rat_init(&lu); rat_init(&lf); rat_init(&k);
+    poly_coeff(&lu, c->U, 2);
+    poly_coeff(&lf, T->factor, polynomial_degree(T->factor));
+    rat_div(&k, &lu, &lf);
+    Polynomial* F = poly_scale(T->factor, &k);
+    bool is_u = same_poly(F, c->U);
+    for (int j = 1; is_u && j <= T->power; j++) {             // b gets n·κ^j/U^(j+1)
+        Rational kj;
+        rat_init(&kj);
+        rat_pow_int(&kj, &k, j);
+        qfn_accumulate(&S->bU, poly_scale(T->numerators[j - 1], &kj), poly_pow(c->U, (unsigned)(j + 1)));
+        rat_clear(&kj);
+    }
+    free_polynomial(F);
+    rat_clear(&lu); rat_clear(&lf); rat_clear(&k);
+    return is_u;
+}
+
+static void split_poles(const SqCtx* c, const QFn* b, PoleSplit* S) {
+    QFn u = qfn_poly(c->U), R = qfn_mul(b, &u);
+    PartialFractionDecomp* pf = partial_fractions(R.num, R.den);
+    *S = (PoleSplit){ qfn_zero(), qfn_zero(), malloc((size_t)(pf->num_terms + 1) * sizeof(Polynomial*)),
+                      malloc((size_t)(pf->num_terms + 1) * sizeof(Polynomial*)), 0 };
+    if (pf->poly_part) qfn_accumulate(&S->bU, poly_copy(pf->poly_part), poly_copy(c->U));
+    for (int i = 0; i < pf->num_terms; i++)
+        if (!split_radicand(c, &pf->terms[i], S)) split_other(c, &pf->terms[i], S);
+    free_pf_decomp(pf);
+    qfn_free(&u); qfn_free(&R);
+}
+
+// a reduction of b·y: the algebraic part alg = G·y, λ of λ·∫ 1/y, the simple poles, their log terms
+typedef struct {
+    PoleSplit S;
+    SqFn alg;
+    Rational lambda;
+    Expr* logs;
+} Reduction;
+
+// the chain for b with den(b) a power of U: b·y = D(G·y) + λ/y with G = Σ Q_i/U^(m_i), into R
+static bool reduce_powers(const SqCtx* c, const QFn* b, Reduction* R) {
     Polynomial* N = NULL;
     int m = 0;
-    if (!as_reduction(c->U, b, &N, &m)) {
-        *why = "this square root of a quadratic has no rational parametrization over Q (the conic y^2 = U has no rational point), and only p(x)·sqrt(U)^(2k+1) is reduced without one";
-        return NULL;
-    }
-    QFn G = qfn_zero();                                        // Σ Q_i/U^(m_i): the coefficient of y
+    if (!as_reduction(c->U, b, &N, &m)) return false;
+    QFn G0 = qfn_zero(), *G = &G0;
+    Rational* lambda = &R->lambda;
     for (; m >= 1; m--) {
         Polynomial* Q;
         Polynomial* N1 = reduce_step(c->U, N, m, &Q);
         Polynomial* Um = poly_pow(c->U, (unsigned)m);
-        QFn t = qfn_from(Q, Um), s = qfn_add(&G, &t, 1);
-        qfn_free(&G); qfn_free(&t);
-        G = s;
+        QFn t = qfn_from(Q, Um), s = qfn_add(G, &t, 1);
+        qfn_free(G); qfn_free(&t);
+        *G = s;
         free_polynomial(N);
         N = N1;
     }
-    Rational lambda;
-    rat_init(&lambda);
-    Polynomial* Q0 = reduce_base(c->U, N, &lambda);
-    QFn q0 = qfn_poly(Q0), s = qfn_add(&G, &q0, 1);
-    qfn_free(&G); qfn_free(&q0);
-    G = s;
-    SqFn alg = { qfn_zero(), G }, d = sq_deriv(c, &alg);
-    QFn lu = qfn_from(poly_constant(&lambda), poly_copy(c->U)), nb = qfn_add(&d.b, &lu, 1);   // + λ/y = λ/U·y
-    SqFn want = { qfn_zero(), qfn_copy(b) }, got = { qfn_copy(&d.a), nb };
-    Expr* F = NULL;
-    if (!sq_equal(&got, &want)) *why = "internal check failed: the square-root reduction does not differentiate back";
-    else {
-        F = sq_is_zero(&alg) ? NULL : sq_expr(&alg, c->U);
-        if (!rat_is_zero(&lambda)) F = expr_append_sum(F, base_integral(c->U, &lambda));
-        if (!F) F = create_const(0);
-    }
-    sq_free(&alg); sq_free(&d); sq_free(&want); sq_free(&got);
-    qfn_free(&lu);
+    Polynomial* Q0 = reduce_base(c->U, N, lambda);
+    QFn q0 = qfn_poly(Q0), s = qfn_add(G, &q0, 1), all = qfn_add(&s, &R->S.G, 1);
+    qfn_free(G); qfn_free(&q0); qfn_free(&s);
+    R->alg = (SqFn){ qfn_zero(), all };                      // with the Hermite steps at the other poles
     free_polynomial(N); free_polynomial(Q0);
-    rat_clear(&lambda);
+    return true;
+}
+
+// the exact check of the algebraic part: D(G·y) + λ/y + Σ r_i/(d_i·y) = b·y
+static bool reduction_checks(const SqCtx* c, const Reduction* R, const QFn* b) {
+    const PoleSplit* S = &R->S;
+    SqFn d = sq_deriv(c, &R->alg);
+    QFn acc = qfn_copy(&d.b);
+    qfn_accumulate(&acc, poly_constant(&R->lambda), poly_copy(c->U));
+    for (int i = 0; i < S->count; i++) qfn_accumulate(&acc, poly_copy(S->r[i]), poly_multiply(S->d[i], c->U));
+    SqFn want = { qfn_zero(), qfn_copy(b) }, got = { qfn_copy(&d.a), acc };
+    bool ok = sq_equal(&got, &want);
+    sq_free(&d); sq_free(&want); sq_free(&got);
+    return ok;
+}
+
+// F' ≈ f at points inside the real domain of y (central differences): a guard on the ln, atan and
+// RootSum terms of the simple poles, which the exact check does not cover
+static bool numeric_agrees(const Expr* F, const Expr* f, const Polynomial* U) {
+    static const double u[] = { -0.93, -0.71, -0.52, -0.37, -0.18, 0.11, 0.29, 0.43, 0.61, 0.83 };
+    Rational a, b, c0;
+    rat_init(&a); rat_init(&b); rat_init(&c0);
+    poly_coeff(&a, U, 2); poly_coeff(&b, U, 1); poly_coeff(&c0, U, 0);
+    double A = rat_to_double(&a), B = rat_to_double(&b), C = rat_to_double(&c0);
+    double mid = -B / (2 * A), disc = B * B - 4 * A * C, h = disc > 0 ? sqrt(disc) / (2 * fabs(A)) : 0;
+    rat_clear(&a); rat_clear(&b); rat_clear(&c0);
+    int checked = 0;
+    for (size_t i = 0; i < 2 * (sizeof u / sizeof u[0]); i++) {
+        double v = u[i % 10], x0 = A < 0 ? mid + h * v : mid + (h + 1) * (v + (v > 0 ? 1 : -1)) * (i < 10 ? 1 : 2);
+        bool ok = true;
+        double s = 1e-4 * (1 + fabs(x0)), g = expr_eval(f, x0, &ok);
+        double d1 = (expr_eval(F, x0 + s, &ok) - expr_eval(F, x0 - s, &ok)) / (2 * s);
+        double d2 = (expr_eval(F, x0 + s / 2, &ok) - expr_eval(F, x0 - s / 2, &ok)) / s;
+        if (!ok || !isfinite(g) || fabs(g) > 1e6 || fabs(d1 - d2) > 1e-6 * (1 + fabs(g))) continue;
+        if (fabs(d2 - g) > 1e-6 * (1 + fabs(g))) return false;
+        checked++;
+    }
+    return checked >= 2;
+}
+
+// the ln/atan/RootSum terms of the simple poles r_i/(d_i·y) in R->logs (NULL when there are none);
+// false with *why when one is unsupported
+static bool simple_poles(const SqCtx* c, Reduction* R, const char** why) {
+    const PoleSplit* S = &R->S;
+    Expr** out = &R->logs;
+    *out = NULL;
+    for (int i = 0; i < S->count; i++) {
+        if (poly_is_zero(S->r[i])) continue;
+        Expr* t = sqrt_log_part(&(SqrtLog){ c->U, S->r[i], S->d[i] }, why);
+        if (!t) { free_expr(*out); *out = NULL; return false; }
+        *out = expr_append_sum(*out, t);
+    }
+    return true;
+}
+
+// ∫ b·y on a conic without a rational point: Hermite steps at every pole (U's powers by the
+// chain to ∫ 1/y), λ·∫ 1/y, and the simple poles' logarithmic part; the algebraic part is checked
+// exactly, the whole answer numerically; NULL with *why otherwise
+static Expr* integrate_by_reduction(const SqCtx* c, const QFn* b, const char** why) {
+    Reduction R = { .logs = NULL };
+    split_poles(c, b, &R.S);
+    rat_init(&R.lambda);
+    Expr* F = NULL;
+    if (!reduce_powers(c, &R.S.bU, &R)) {
+        *why = "internal error: the square-root reduction left a denominator that is not a power of U";
+        pole_split_free(&R.S); rat_clear(&R.lambda);
+        return NULL;
+    }
+    bool ok = reduction_checks(c, &R, b);
+    if (!ok) *why = "internal check failed: the square-root reduction does not differentiate back";
+    if (ok && simple_poles(c, &R, why)) {
+        F = sq_is_zero(&R.alg) ? NULL : sq_expr(&R.alg, c->U);
+        if (!rat_is_zero(&R.lambda)) F = expr_append_sum(F, base_integral(c->U, &R.lambda));
+        if (R.logs) F = expr_append_sum(F, R.logs);
+        if (!F) F = create_const(0);
+        SqFn fb = { qfn_zero(), qfn_copy(b) };
+        Expr* f = sq_expr(&fb, c->U);
+        if (R.S.count && !numeric_agrees(F, f, c->U)) {
+            *why = "internal check failed: the logarithmic part of the square-root integral does not differentiate back";
+            free_expr(F);
+            F = NULL;
+        }
+        free_expr(f);
+        sq_free(&fb);
+    }
+    sq_free(&R.alg);
+    pole_split_free(&R.S);
+    rat_clear(&R.lambda);
     return F;
 }
 

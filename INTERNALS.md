@@ -1399,7 +1399,7 @@ The derivative is `D(a + b·y) = a' + (b' + b·U'/(2U))·y`.
 | a rational point (x₀, y₀) | (y − y₀)/(x − x₀) | X = (x₀t² − 2y₀t + u₁ − a·x₀)/(t² − a), Y = (−y₀t² + u₁t − a·y₀)/(t² − a), u₁ = U'(x₀) |
 
 - **The rational point.** The search tries x₀ = p/q by increasing |p| + q, up to 40, with x₀ = 0 first, and needs U(x₀) to be a rational square.
-- **No point.** A conic with no rational point, such as x² + y² = 3, has no parametrization over Q, so it is unsupported.
+- **No point.** A conic with no rational point, such as x² + y² = 3, has no parametrization over Q. It goes to the reduction below.
 - **The exact check.** `X(T) = x` and `Y(T) = y` must hold in Q(x)(y). Then, for `F'(t) = R(t) = b(X)·Y·X'`, the chain rule gives `d/dx F(T) = R(T)·T' = b(x)·y`, because `X'(T)·T' = 1`.
 - **Back-substitution.** R is integrated by `integrate()`. The answer's terms that are rational in t are summed in Q(t) and substituted once, so they come back as one normal form `a + b·y`, written over one denominator, with an additive constant dropped. The ln, atan and RootSum terms are substituted node by node; a RootSum in t becomes the expression form `Σ αⁱ·cᵢ(x, y)`.
 
@@ -1407,49 +1407,69 @@ The derivative is `D(a + b·y) = a' + (b' + b·U'/(2U))·y`.
 - `∫ 1/sqrt(x²+1)`: here t = x + y, X = (t² − 1)/(2t), Y = (t² + 1)/(2t), and R(t) = 1/t, so the answer is `ln|x + sqrt(x² + 1)|`.
 - `∫ sqrt(1−x²)`: the point (0, 1) gives t = (y − 1)/x, and the answer is `x/2·y − atan((y − 1)/x)`. The argument tends to 0 as x → 0, so there is no jump.
 
-**Conics without a rational point.** Here the integrand must be `b·y = N/(U^m·y)`, with den(b) a power of U.
+**Conics without a rational point.** Write `b·y = R/y` with R = b·U and take R's partial fractions over Q. U is irreducible here (a rational root would be a rational point), so every other factor d is coprime to U.
+- **Powers of U** (and the polynomial part) form `N/(U^m·y)`, reduced as below.
+- **Other poles d^j, j ≥ 2: Hermite steps.** `d/dx(Q·y/d^(j−1)) = (Q'U·d + Q·U'·d/2 − (j−1)·Q·d'·U)/(d^j·y)`, so `Q ≡ −p/((j−1)·d'·U) mod d` lowers the power by one. The quotient of the last step goes to the polynomial part.
+- **Simple poles r/(d·y)** give the logarithmic part (`sqrtlog.c`). Each root ρ of d contributes `c·∫ dx/((x−ρ)·y)` with `c = r(ρ)/d'(ρ)`, and for any w with w² = U(ρ)
+  `∫ dx/((x − ρ)·y) = −(1/w)·ln((2U(ρ) + U'(ρ)(x − ρ) + 2w·y)/(x − ρ))`.
+  With t = −c/(2w), the term is 2t·ln G, and s = t² = c²/(4U(ρ)) lies in Q(ρ):
+  - **s rational** (always for linear d; also `1/((x²+1)·sqrt(3−x²))`): w = c/(2√s) at every root, so the terms combine through the norm `E = Π_ρ (L(ρ) + B(ρ)·ν)`, ν = y/√s, L = 2U(ρ) + U'(ρ)(x − ρ). E is computed by interpolation: determinants of multiplication matrices in Q[ρ]/d on an (n+1)² grid of (x, ν). With ν² = U/s, `E = P0 + P1·ν`, and the answer is `−2√s·(ln|P0 + P1·y/√s| − ln|d|)` for s > 0, or `2√|s|·atan(√|s|·P0/(P1·y))` for s < 0.
+  - **s generating Q(ρ)**: R = minpoly(s), found from the powers of s in Q[ρ]/d by linear algebra, which also gives ρ, U(ρ) and c as polynomials in s. The answer is `Σ_t t·ln(L(ρ) + 2w·y)` over the roots t of R(t²), one RootSum per irreducible factor. The ln(x − ρ) parts cancel between t and −t.
+  - **s generating a proper subfield** (`1/((x⁴+1)·sqrt(3−x²))`): unsupported.
 - **Steps for m ≥ 1.** Use `d/dx(Q·y/U^m) = (Q'U + (½ − m)·Q·U')/(U^m·y)` and choose `Q ≡ N·U'^{-1}/(½ − m) mod U`. U is square-free, so U′ is invertible mod U. Then U divides the difference, and m drops by one.
 - **Base case m = 0.** Write `N = Q'U + Q·U'/2 + λ`. Q is solved from its top coefficient down: x^j in Q puts `a·(j + 1)` on x^(j+1).
 - **The last integral** is `∫ 1/y`:
   - `(1/√A)·atan(√A·(x + b/2a)/y)` with A = −a > 0, continuous inside the domain;
   - `(1/√a)·ln|2ax + b + 2√a·y|` when a > 0.
-- **The exact check.** The algebraic part is verified in Q(x)(y): `D(Σ Q_i·y/U^i) + λ/y = b·y`.
+- **The exact check.** The algebraic part is verified in Q(x)(y): `D(G·y) + λ/y + Σ r_i/(d_i·y) = b·y`, G holding every Hermite step. The ln/atan/RootSum terms of the simple poles have surd coefficients outside Q(x)(y), so the whole answer is also checked by central differences at sample points inside the domain; a mismatch is reported as an internal failure, never returned.
 - **Examples.**
   - `∫ 1/sqrt(3 − x²) = atan(x/sqrt(3 − x²))`.
   - `∫ x²·sqrt(5 − 2x²)` comes out as `(1/4x³ − 5/16x)·sqrt(5 − 2x²) + 25/32·√2·atan(√2·x/sqrt(5 − 2x²))`.
+  - `∫ 1/((x − 2)·sqrt(3 − x²)) = atan((3 − 2x)/sqrt(3 − x²))` (U(2) < 0), and `∫ 1/(x·sqrt(3 − x²))` is a ln with √3.
+  - `∫ 1/((x² + x + 1)·sqrt(3 − x²))` is a RootSum over t⁴ + 7/156·t² + 1/1872.
 
-**Definite integrals** (`sqrtdef.c`), for finite rational bounds.
+**Definite integrals** (`sqrtdef.c`), for rational and infinite bounds.
 - **Exact range checks.**
   - U ≥ 0 on [a, b]: no root of U strictly inside (from refined isolating intervals), and U > 0 at the middle.
-  - No pole of a in [a, b], and none of b away from the roots of U.
-  - An end e at a root of U needs (x − e)^k in den(b) with k ≤ 1, because the integrand is O((x − e)^(1/2 − k)).
+  - No pole of a or b strictly inside.
+  - At each end e, the exact order of f = a + b·y must exceed −1. It is the smaller of the orders of a and b·y (half-integers at a root of U), unless their leading terms cancel (α = −β·sqrt(U(e)), checked exactly as α² = β²·U(e) with opposite signs). Then it is `ord(a² − b²U) − ord(a)`.
 - **Evaluating F(b) − F(a)**, term by term.
   - Constant factors stay as they are.
   - ln and atan take their arguments' values.
   - Algebraic pieces, and those arguments, go through Q(x)(y) (`sqrt_value_at`).
   - **0/0 at an end.** Where the common denominator D vanishes at the end, `(A + B·y)/D = (A² − B²U)/(D·(A − B·y))`. The factor (x − e)^k is cancelled from `A² − B²U`, which handles cases like `(sqrt(1 − x²) − 1)/x` at 0.
-  - **Constant square roots.** An argument with an x-free factor such as `/sqrt(2)` has the factor peeled off first. Otherwise x is substituted everywhere, inside roots too, and `expr_at` folds the result, merging `sqrt(3)·sqrt(5)`.
+  - **Mixed arguments.** An argument that is not in Q(x)(y) as a whole (it mixes `sqrt(3)` with y) is evaluated side by side through + − · /, each side through Q(x)(y) with its limit, and folded by `expr_at`, merging `sqrt(3)·sqrt(5)`. A quotient whose sides are both infinite is rescaled by (x − e)^k, k ≤ 4, distributed over the sums. Otherwise x is substituted everywhere, inside roots too.
+  - **Algebraic terms together.** All summands without ln or atan are evaluated as one element of Q(x)(y), since each may be infinite at an end while the sum has a limit.
+  - **atan jumps.** Where an atan argument `c·N/(W·y)` has a pole inside (a zero of W, isolated exactly), the jump ±π is subtracted, with the signs read just beside it.
   - **Infinite atan arguments.** An atan whose argument tends to ±∞ at an end (`atan(y/x)` at 0) takes ±π/2. The sign comes from the argument just inside the range, which must grow toward the end.
   - The constants are summed by `const_fold_sum`.
 - **The numeric check.** The value is compared with tanh-sinh quadrature, done on each half from its own end. The polynomials of `a + b·sqrt(U)` are shifted exactly there, so u near 0, a singular end, keeps its precision: sampling `1 − d` near 1 would round away a √d-sized sliver. Without an exact value, the number is given with the reason.
+- **The conjugate in quadrature.** Where `a` and `b·y` nearly cancel, the integrand is evaluated as `(a² − b²U)/(a − b·y)`, with the exact powers of u divided out of every shifted polynomial so that u^12/u^12 does not underflow.
+- **Infinite bounds.** x = 1/u maps [c, ∞) to (0, 1/c], with `sqrt(U(1/u)) = sqrt(V(u))/u^k`, V = u^(2k)·U(1/u), k = ⌈deg U/2⌉. A −∞ end is mirrored by x → −x first, and (−∞, ∞) is split at 0.
+  - Convergence is the exact order test at u = 0 for G(u) = f(1/u)/u², so `(sqrt(x² + 1) − x)²` converges and `sqrt(x² + 1) − x` is refused.
+  - The number is the quadrature of G on [0, 1/c] (plus [c, 1] when c ≤ 0).
+  - The exact value is `lim F − F(c)` for one antiderivative F: the limit is F(1/u) at u → 0⁺ with the evaluation above, minus the atan jumps on (c, ∞) (roots isolated up to Cauchy's bound). Before the limit, ln terms with opposite equal coefficients are merged into one ln of a quotient, and products are split into their x-free factors and one element of Q(x)(y), so that ∞·0 inside a rescaled quotient still has its limit.
 - **Results.**
+  - `∫₀^∞ 1/(1 + x²)^(3/2) = 1`, `∫₀^∞ (sqrt(x² + 1) − x)² = 2/3`, `∫₀^∞ 1/((x + 1)·sqrt(x)) = π`.
+  - `∫₋₁^½ 1/((x² + 1)·sqrt(3 − x²))` crosses the atan jump at 0.
   - `∫₀¹ sqrt(1 − x²) = π/4`, `∫₀¹ 1/sqrt(x(1 − x)) = π` and `∫₀¹ 1/sqrt(1 + x²) = ln(1 + √2)`.
   - `∫₀¹ 1/sqrt(x³ + 1) ≈ 0.9096042426`, given as a number because the integral is elliptic.
 
 **Not supported:**
-- deg U ≥ 3 (elliptic and beyond);
-- other denominators on conics without a rational point (definite integrals give the number);
+- deg U ≥ 3 (elliptic and beyond; definite integrals give the number);
+- on conics without a rational point, residues generating a proper subfield of Q(ρ);
 - two radicands in one expression;
 - roots of rational functions;
 - roots together with exp, ln, sin or cos;
-- definite integrals with roots over infinite ranges or at multiples of π.
+- definite integrals with roots at multiples of π, or over a RootSum (the number only).
 
 **Tests.**
-- `test_reg_integrate_sqrt` pins 23 answers (six by the reduction), each checked by its numeric derivative, plus 7 unsupported inputs and 4 simplify/differentiate forms.
-- `test_prop_integrate_sqrt` integrates `r(x)·y + s(x)/y`, `D(p·y + q)`, and on conics without a point `p·y + q/y`, over four kinds of U, each checked numerically.
-- `test_reg_definite_sqrt` pins 13 exact values, 4 errors (not real on the range, a pole, a non-integrable end, an infinite bound) and one elliptic number. `test_prop_definite_sqrt` integrates 60 random integrands on [0, 1/2], all exact and all passing the quadrature check.
-- The SymPy stream `check_definite_sqrt` compares exact values with `mpmath.quad` to 30 digits: 94 of 120 are exact and match. The rest are numeric only, on conics without a rational point with a rational factor.
-- The SymPy stream `check_sqrt` differentiates every answer back to 35 digits: 149 of 150 integrate, and the remaining one is a perfect-square radicand, correctly refused.
+- `test_reg_integrate_sqrt` pins 31 answers (14 by the reduction: powers of U, linear and quadratic poles, a RootSum), each checked by its numeric derivative, plus 7 unsupported inputs and 4 simplify/differentiate forms.
+- `test_prop_integrate_sqrt` integrates `r(x)·y + s(x)/y`, `D(p·y + q)`, and on conics without a point `p·y + q/y + k/((x + e)·y)` (sometimes `+ (x + c)/((x² + g)^j·y)`), over four kinds of U, each checked numerically.
+- `test_reg_definite_sqrt` pins 25 exact values (9 on infinite ranges), 6 errors (not real, a pole, a non-integrable end, not real on a half-line, two divergent at infinity) and 3 numbers (elliptic on [0, 1] and [0, ∞), a RootSum). `test_prop_definite_sqrt` integrates 60 random integrands on [0, 1/2] (on [−1, 1/2] with a pole (x − h)² + g centred on U for conics without a point, five radicands: c − x², 7 − (x − 1)², 2·(7 − x²)), all exact, and 30 on [0, ∞), at least a third exact (26 of 30 at the default seed; the rest are RootSums from x² + g).
+- The SymPy stream `check_definite_sqrt` compares exact values with `mpmath.quad` to 30 digits. On its original 120 cases all are now exact and match; with `1/((x² + g)·y)` terms and shifted or scaled radicands without a point (`6 + 2x − x²`, `14 − 2x²`) added, 85 of 120 are exact; the rest are numeric only, all but 3 from RootSums (those 3 are nested 0/0 atan arguments at a rational point, numeric on `main` too).
+- `check_infinite_sqrt` does the same on [c, ∞) and (−∞, ∞), with the reference computed through x = c + 1/v² (and the conjugate form for `(y − √k·x)²`, which loses digits at large x): 115 of 150 exact and matching, 35 numeric (RootSums), 0 failures. Before ln pairs were merged for the limit at ∞ (`−c·ln|A| + c·ln|B|` → `c·ln|A/B|`, each infinite alone), 17 of these were numeric.
+- `check_sqrt` differentiates every answer back to 35 digits, or 60 for RootSums at points inside the domain: of 400, 316 elementary, 78 RootSum, and 6 perfect-square radicands correctly refused.
 
 ## 12. CLI Pipeline
 

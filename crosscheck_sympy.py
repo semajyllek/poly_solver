@@ -462,23 +462,31 @@ def check_tower2(rng):
 
 
 def check_sqrt(rng):
-    """f = r(x)·sqrt(U) + s(x)/sqrt(U) with U linear, a square leading coefficient, or with the
-    rational point (0, k); half are derivatives of p(x)·sqrt(U) + c·ln(x + sqrt(U)) style
+    """f = r(x)·sqrt(U) + s(x)/sqrt(U) with U linear, a square leading coefficient, with the
+    rational point (0, k), or c - x² with no rational point (r's poles linear, double or at ±i·√g); half are derivatives of p(x)·sqrt(U) + c·ln(x + sqrt(U)) style
     antiderivatives. Our answer must differentiate back to f (35 digits); SymPy is not consulted
     for a verdict, since every such integral is elementary."""
     a, b, k = rng.randint(1, 3), rng.randint(-2, 2), rng.randint(1, 3)
-    U = rng.choice([a * x + rng.randint(1, 3), a**2 * x**2 + b * x + rng.randint(1, 4), -(a + 1) * x**2 + b * x + k**2])
+    U = rng.choice([a * x + rng.randint(1, 3), a**2 * x**2 + b * x + rng.randint(1, 4), -(a + 1) * x**2 + b * x + k**2,
+                    rng.choice([7 - x**2, 11 - x**2, 6 + 2 * x - x**2, 14 - 2 * x**2])])
     y = sp.sqrt(U)
     if rng.random() < 0.5:
         F = (rng.randint(-2, 2) * x**2 + rng.randint(-2, 2) * x + rng.randint(1, 3)) * y
         f = sp.diff(F, x)
     else:
-        r = (rng.randint(-3, 3) * x + rng.randint(1, 3)) / (x + rng.choice([-3, -2, 2, 3, 4]))
+        den = rng.choice([x + rng.choice([-3, -2, 2, 3, 4]), x**2 + rng.randint(1, 3), (x + rng.choice([3, 4]))**2])
+        r = (rng.randint(-3, 3) * x + rng.randint(1, 3)) / den
         f = r * y + (rng.randint(-2, 2) * x + rng.randint(1, 3)) / y
     code, out, err = run_cli("integrate", to_cli(f))
     if code != 0:
         assert "not supported" in err, f"failed on {f}: {err}"
         return "unsupported"
+    if "RootSum" in out:                         # complex roots: checked where U > 0, off the poles
+        pts = [p for p in (sp.Rational(-6, 5), sp.Rational(-3, 5), sp.Rational(1, 7), sp.Rational(13, 10), sp.Rational(9, 5),
+                           sp.Rational(-1, 5), sp.Rational(2, 5), sp.Rational(1, 3))
+               if U.subs(x, p) > 0 and sp.denom(sp.together(f)).subs(x, p) != 0][:4]
+        assert len(pts) >= 2 and rootsum_ok(f, out, pts), f"d/dx of our {out} differs from {f}"
+        return "rootsum"
     d = sp.diff(to_sympy(out), x) - f
     assert numerically_zero(d, f), f"d/dx of our {out} differs from {f}"
     return "elementary"
@@ -491,9 +499,11 @@ def check_definite_sqrt(rng):
     c = rng.randint(1, 4)
     c += b * b == 4 * a * a * c                          # not a perfect square
     U = rng.choice([a * x + rng.randint(1, 3), a**2 * x**2 + abs(b) * x + c,
-                    -(a + 1) * x**2 + b * x + (k + 1)**2, rng.choice([3, 7, 11]) - x**2])
+                    -(a + 1) * x**2 + b * x + (k + 1)**2, rng.choice([3 - x**2, 7 - x**2, 11 - x**2, 6 + 2 * x - x**2, 14 - 2 * x**2])])
     y = sp.sqrt(U)
     f = (rng.randint(-3, 3) * x + rng.randint(1, 3)) / (x + rng.randint(3, 5)) * y + rng.randint(1, 3) / y
+    if rng.random() < 0.4:                               # poles at ±i·√g
+        f += rng.randint(1, 2) / ((x**2 + rng.randint(1, 3)) * y)
     code, out, err = run_cli("integrate", to_cli(f), "0", "1/2")
     assert code == 0, f"failed on {f}: {err}"
     if out.startswith("~"):
@@ -504,6 +514,43 @@ def check_definite_sqrt(rng):
         ref = mp.quad(g, [0, mp.mpf(1) / 2])
         val = sp.N(exact, 40)
     assert abs(val - ref) < mp.mpf(10)**-30 * (1 + abs(ref)), f"∫_0^1/2 {f}: {out} vs {ref}"
+    return "exact"
+
+
+def check_infinite_sqrt(rng):
+    """integrate f a inf (or -inf inf) for f decaying faster than 1/x with sqrt(U), U > 0 on the
+    range: c/((x + e)·y), (p x + q)/((x² + g)·y), y/(x + e)³, (y - √k·x)² over U = k·x² + m, ...:
+    an exact value must match mpmath.quad to 30 digits; a divergent f must be refused."""
+    k, m = rng.choice([1, 4, 3, 2]), rng.randint(1, 3)
+    whole = rng.random() < 0.4                           # (-inf, inf): U positive everywhere
+    U = k * x**2 + m if whole or rng.random() < 0.5 else rng.choice([x + rng.randint(1, 3), k * x**2 + rng.randint(1, 2) * x + m + 1,
+                                                                     2 * x**2 + 2 * x + 3])   # 2x² + 2x + 3: no rational point
+    y = sp.sqrt(U)
+    e = rng.randint(2, 4)
+    choices = [rng.randint(1, 3) / ((x**2 + rng.randint(1, 3)) * y), (rng.randint(-2, 2) * x + rng.randint(1, 3)) / ((x**2 + 2)**2 * y),
+               y / (x**2 + e)**2, rng.randint(1, 3) / (U * y)]
+    if not whole:
+        choices += [rng.randint(1, 3) / ((x + e) * y), y / (x + e)**3]
+    if not whole and sp.degree(U, x) == 2 and sp.sqrt(k).is_rational and sp.Poly(U, x).coeff_monomial(x) == 0:
+        choices.append((y - sp.sqrt(k) * x)**2)          # a and b·y cancel at infinity
+    f = rng.choice(choices)
+    fr = (U - k * x**2)**2 / (y + sp.sqrt(k) * x)**2 if f == choices[-1] and len(choices) == 7 else f   # the reference without cancellation
+    a = "-inf" if whole else rng.choice(["0", "1", "1/2", "2"])
+    code, out, err = run_cli("integrate", to_cli(f), a, "inf")
+    if code != 0:
+        assert "diverges" in err, f"failed on {f} from {a}: {err}"
+        return "divergent"
+    g = sp.lambdify(x, fr, "mpmath")
+    with mp.workdps(50):                                 # [c, c + 1], then x = c + 1/v²: smooth even for x^(-3/2) decay
+        def half(c, sgn):
+            return mp.quad(lambda t: g(sgn * t), [c, c + 1]) + mp.quad(lambda v: g(sgn * (c + 1 / v**2)) * 2 / v**3, [0, 1])
+        ref = half(0, 1) + half(0, -1) if whole else half(mp.mpf(sp.Rational(a)), 1)
+    if out.startswith("~"):
+        assert abs(float(out.split()[1]) - float(ref)) < 1e-8 * (1 + abs(float(ref))), f"∫ {f}: {out} vs {ref}"
+        return "numeric"
+    with mp.workdps(40):                                 # re: SymPy reads ln|negative constant| as log(...) + iπ
+        val = sp.re(sp.N(to_sympy(out.split(" ~ ")[0]), 40))
+    assert abs(val - ref) < mp.mpf(10)**-30 * (1 + abs(ref)), f"∫_{a}^inf {f}: {out} vs {ref}"
     return "exact"
 
 
@@ -628,6 +675,7 @@ def main():
     rng_tw2 = random.Random(args.seed + 11)
     rng_sq = random.Random(args.seed + 12)
     rng_dsq = random.Random(args.seed + 13)
+    rng_isq = random.Random(args.seed + 14)
     rootsums = radicals = 0
     definite = {"exact": 0, "numeric": 0, "pole": 0}
     infinite = {"exact": 0, "numeric": 0, "divergent": 0}
@@ -641,6 +689,7 @@ def main():
     tw2s = dict(exps)
     sqs = dict(exps)
     dsqs = {"exact": 0, "numeric": 0}
+    isqs = {"exact": 0, "numeric": 0, "divergent": 0}
     for t in range(args.trials):
         p = random_poly(rng)
         check_factor(p)
@@ -662,6 +711,7 @@ def main():
         tw2s[check_tower2(rng_tw2)] += 1
         sqs[check_sqrt(rng_sq)] += 1
         dsqs[check_definite_sqrt(rng_dsq)] += 1
+        isqs[check_infinite_sqrt(rng_isq)] += 1
         check_matrix(rng)
         print(f"  trial {t + 1}/{args.trials} ok", flush=True)
     print(f"crosscheck OK: {args.trials} trials (factor, solve, integrate, det); "
@@ -686,8 +736,9 @@ def main():
           f"{dtows['refused']} refused, {dtows['skipped']} skipped; ln over exp/ln: {tw2s['elementary']} elementary ({tw2s['rootsum']} more with a RootSum), "
           f"{tw2s['nonelementary']} proved non-elementary (SymPy agrees), {tw2s['unconfirmed']} unconfirmed, "
           f"{tw2s['unsupported']} unsupported; square roots: {sqs['elementary']} elementary (checked to 35 digits), "
-          f"{sqs['unsupported']} unsupported; definite with square roots: {dsqs['exact']} exact (30 digits), "
-          f"{dsqs['numeric']} numeric-only")
+          f"{sqs['rootsum']} RootSum (60 digits), {sqs['unsupported']} unsupported; definite with square roots: {dsqs['exact']} exact (30 digits), "
+          f"{dsqs['numeric']} numeric-only; infinite with square roots: {isqs['exact']} exact (30 digits), "
+          f"{isqs['numeric']} numeric-only, {isqs['divergent']} divergent")
 
 
 if __name__ == "__main__":

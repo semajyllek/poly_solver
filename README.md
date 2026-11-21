@@ -337,11 +337,11 @@ no elementary antiderivative: the part -1 / ln(abs(x)) (Risch: its residues are 
 
 Here the input has one square root `sqrt(U)` of a polynomial U, or powers like `x^(3/2)`. Every root must be of the same U up to a constant square: `sqrt(4x+4)` is `2*sqrt(x+1)`. `simplify` and `differentiate` work for any U, and `integrate` for deg U <= 2.
 - **With a rational parametrization.** The conic y² = U is parametrized rationally: `t = y` for linear U, Euler's `t = y + s·x` when the leading coefficient is `s²`, otherwise a line through a rational point. The rational function of t is integrated exactly and substituted back, after checking that the parametrization inverts exactly.
-- **Without one.** A conic with no rational point (`3 - x^2`: x² + y² = 3 has none) takes the classical reduction `∫ P/sqrt(U) = Q·sqrt(U) + λ·∫ 1/sqrt(U)`, solved exactly, for integrands `p(x)·sqrt(U)^(2k+1)`.
+- **Without one.** A conic with no rational point (`3 - x^2`: x² + y² = 3 has none) is reduced directly. Partial fractions and Hermite steps leave `λ·∫ 1/sqrt(U)` and simple poles `r/(d·sqrt(U))`. Those give real ln/atan terms with square-root coefficients when the roots of d combine through a norm (every linear d, and `x^2+1`), otherwise a RootSum.
 
 These are reported as not supported:
 - degree 3 or more (elliptic integrals and beyond);
-- other denominators on conics without a rational point (`1/(x*sqrt(3-x^2))`);
+- on a conic without a rational point, poles whose residues generate only part of the roots' field (`1/((x^4+1)*sqrt(3-x^2))`);
 - two different roots;
 - roots of rational functions;
 - square roots mixed with exp, ln, sin or cos.
@@ -396,15 +396,24 @@ $ ./polysolver integrate "1/sqrt(x^3+1)"
 Error: could not integrate: square roots of polynomials of degree 3 or more (elliptic integrals and beyond) are not supported.
 
 $ ./polysolver integrate "1/(x*sqrt(3-x^2))"
-Error: could not integrate: this square root of a quadratic has no rational parametrization over Q (the conic y^2 = U has no rational point), and only p(x)·sqrt(U)^(2k+1) is reduced without one.
+-1/3 * sqrt(3) * ln(abs(1 + 1/3 * sqrt(3) * sqrt(-x^2 + 3))) + 1/3 * sqrt(3) * ln(abs(x))
+
+$ ./polysolver integrate "1/((x-2)*sqrt(3-x^2))"
+atan(-(2x - 3) / sqrt(-x^2 + 3))
+
+$ ./polysolver integrate "1/((x^2+1)*sqrt(3-x^2))"
+1/4 * atan(1/4 * (5x^2 - 3) / (x * sqrt(-x^2 + 3)))
+
+$ ./polysolver integrate "1/((x^4+1)*sqrt(3-x^2))"
+Error: could not integrate: the residues of this square-root integrand generate only part of the field of the denominator's roots (not supported).
 ```
 
-Definite integrals with a square root need finite rational bounds. The range is checked exactly:
+Definite integrals with a square root take rational bounds and `inf`/`-inf`. The range is checked exactly:
 - U must be ≥ 0 on [a, b];
-- there must be no pole in it;
-- an end at a root of U is allowed only where the integrand is integrable there, like `1/sqrt(1-x^2)` at 1.
+- there must be no pole inside;
+- at each end the integrand's exact order must exceed −1, like `1/sqrt(1-x^2)` at 1. That includes cancellations: `(sqrt(x^2+1)-x)^2` decays like 1/(4x²).
 
-The antiderivative is then evaluated term by term at both ends, taking limits where a term is 0/0 (`(sqrt(1-x^2) - 1)/x` at 0), or where an arctangent's argument tends to infinity. The result is folded exactly and compared with tanh-sinh quadrature, which handles the endpoint singularities. When no exact value is available, the number is given alone with the reason.
+The antiderivative is then evaluated at both ends, taking limits where a term is 0/0 (`(sqrt(1-x^2) - 1)/x` at 0), where an arctangent's argument tends to infinity, or where several terms are each infinite but their sum is not. An arctangent that jumps by π inside the range is corrected. An infinite end goes through x = 1/u, which turns it into a finite end of an integrand in u, so the same exact limits apply. The result is folded exactly and compared with tanh-sinh quadrature, which handles the endpoint singularities. When no exact value is available, the number is given alone with the reason.
 
 ```console
 $ ./polysolver integrate "sqrt(1-x^2)" 0 1
@@ -428,8 +437,26 @@ $ ./polysolver integrate "x^3*sqrt(x^2+1)" 0 2
 $ ./polysolver integrate "1/sqrt(3-x^2)" -1 1
 2 * atan(1/2 * sqrt(2)) ~ 1.230959417
 
+$ ./polysolver integrate "1/((x^2+1)*sqrt(3-x^2))" -1 1/2
+1/4 * atan(1/4 * sqrt(2)) - 1/4 * atan(7/44 * sqrt(11)) + 1/4 * pi ~ 0.7489778602
+
+$ ./polysolver integrate "1/(1+x^2)^(3/2)" -inf inf
+2 ~ 2
+
+$ ./polysolver integrate "(sqrt(x^2+1)-x)^2" 0 inf
+2/3 ~ 0.6666666667
+
+$ ./polysolver integrate "1/((x+1)*sqrt(x))" 0 inf
+pi ~ 3.141592654
+
+$ ./polysolver integrate "1/((x+3)*sqrt(x^2+2))" 0 inf
+1/11 * sqrt(11) * ln(3 + sqrt(11) + sqrt(2)) - 1/11 * sqrt(11) * ln(abs(3 - sqrt(11) + sqrt(2))) ~ 0.5885807669
+
 $ ./polysolver integrate "1/sqrt(x^3+1)" 0 1
 ~ 0.9096042426 (square roots of polynomials of degree 3 or more (elliptic integrals and beyond) are not supported)
+
+$ ./polysolver integrate "1/sqrt(x^2+1)" 0 inf
+Error: the integrand does not decay faster than 1/x, so the integral diverges at infinity.
 
 $ ./polysolver integrate "sqrt(x^2-1)" 0 1
 Error: the square root is not real on all of [a, b].
@@ -852,7 +879,7 @@ simplify_exp:  1 + exp(x)
   - `RISCH_NONELEMENTARY` with the part that has no elementary integral (a proof);
   - `RISCH_UNSUPPORTED` with a reason.
 - **`integrate_rootsum`** works like `integrate` but always keeps a `RootSum` instead of rewriting it in radicals.
-- **`integrate_sqrt(f)`** handles one square root of a polynomial of degree 2 or less. It returns `RISCH_OK` with the antiderivative, or `RISCH_UNSUPPORTED` with a reason; it never claims non-elementarity. `differentiate_sqrt` and `simplify_sqrt` work for any polynomial radicand, and `integrate_definite_sqrt(f, &bounds)` gives definite integrals with a square root (finite rational bounds) in a `DefiniteResult`.
+- **`integrate_sqrt(f)`** handles one square root of a polynomial of degree 2 or less. It returns `RISCH_OK` with the antiderivative, or `RISCH_UNSUPPORTED` with a reason; it never claims non-elementarity. `differentiate_sqrt` and `simplify_sqrt` work for any polynomial radicand, and `integrate_definite_sqrt(f, &bounds)` gives definite integrals with a square root (rational or infinite bounds) in a `DefiniteResult`.
 
 ```c
 // examples/integrate.c
@@ -1131,9 +1158,9 @@ det      = 9999999999999999997900000000000000000021/99999999999999999999
 - When a logarithm's coefficient is an algebraic number of degree 3 or more, the answer is an exact `RootSum(q(t), t -> t * ln(S(t, x)))`: the sum of `t·ln(S(t, x))` over the roots of `q`. For rational functions this happens only when the roots aren't known in closed form. Over exp, ln or tan (and an outer ln) the RootSum is always kept, with S a polynomial in the tower written as `Σ t^i·(…)`; definite integrals over it give the numeric value.
 - Square roots: one radicand per expression, integrated for degree 2 or less. These are reported as not supported:
   - `1/sqrt(x^3+1)` (elliptic);
-  - integrands other than `p(x)·sqrt(U)^(2k+1)` on a conic without a rational point, such as `1/(x*sqrt(3-x^2))` (for these, definite integrals give the number with the reason);
+  - on a conic without a rational point, poles whose residues generate only part of the roots' field, such as `1/((x^4+1)*sqrt(3-x^2))` (definite integrals give the number with the reason);
   - square roots with exp/ln/sin/cos, or of rational functions;
-  - definite integrals with square roots over infinite ranges.
+  - definite integrals with square roots at multiples of π. Those whose antiderivative has a RootSum give the number only.
 
   `sqrt(x^2)` is `|x|`, which is not supported.
 - Complex roots of other irreducible factors of degree 3 or more (for example `x^3 + x + 1`, or the Capelli factors `x^4 ± 2x^2 + 2` of `x^8 + 4`) are counted but not located.

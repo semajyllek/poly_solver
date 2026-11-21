@@ -2,8 +2,9 @@
 // Q(x)(y) (a, b ∈ Q(x)). simplify and differentiate work for any U; integrate needs deg U <= 2:
 // the conic y² = U is parametrized rationally (Euler's substitutions, or a line through a
 // rational point), the integral becomes a rational one in t, and t = T(x, y) is substituted
-// back. A conic without a rational point takes N/(U^m·sqrt(U)) by reduction to ∫1/sqrt(U)
-// (atan or ln); other forms there, and deg U >= 3 (elliptic and beyond), are unsupported.
+// back. Without a rational point, partial fractions and Hermite steps reduce b·y to λ/y and
+// simple poles r/(d·y), whose ln/atan or RootSum terms come from sqrtlog.c. deg U >= 3 (elliptic
+// and beyond), and poles whose residues generate only part of Q(ρ), are unsupported.
 #ifndef ALGSQRT_H
 #define ALGSQRT_H
 
@@ -16,8 +17,9 @@ RischResult integrate_sqrt(const Expr* f);                  // RISCH_OK or RISCH
 Expr* differentiate_sqrt(const Expr* f, const char** why);  // NULL with *why on failure
 Expr* simplify_sqrt(const Expr* f, const char** why);
 
-// ∫_a^b f for finite rational bounds (sqrtdef.c): exact when the antiderivative evaluates at both
-// ends, always with tanh-sinh quadrature; an error for a range where sqrt(U) is not real or f has a pole
+// ∫_a^b f for rational or infinite bounds (sqrtdef.c): exact when the antiderivative's values (or its
+// limit at ∞) are found, always with tanh-sinh quadrature; an error for a range where sqrt(U) is not
+// real, f has a pole, or f decays no faster than 1/x at an infinite end
 DefiniteResult integrate_definite_sqrt(const Expr* f, const Bounds* ab);
 
 // for definite integrals (sqrtdef.c): f = a + b·sqrt(U), U NULL when f has no root, with

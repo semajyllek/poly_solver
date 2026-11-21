@@ -3,7 +3,7 @@ CFLAGS = -Wall -Wextra -g -I/opt/homebrew/include -MMD -MP
 LDFLAGS = -L/opt/homebrew/lib -lgmp -lm
 
 # shared library sources (everything except the two entry points)
-LIB_SRCS = algsqrt.c sqrtdef.c strbuf.c rational_num.c polynomial.c poly_zp.c poly_zx.c zx_factor.c factor.c roots.c solver.c subres.c logpart.c surd.c rootform.c definite.c constfold.c qsurd.c modgcd.c expfield.c risch.c kpoly.c residue.c cfield.c expsum.c tanfield.c deftower.c risch2.c k2poly.c \
+LIB_SRCS = algsqrt.c sqrtdef.c sqrtlog.c strbuf.c rational_num.c polynomial.c poly_zp.c poly_zx.c zx_factor.c factor.c roots.c solver.c subres.c logpart.c surd.c rootform.c definite.c constfold.c qsurd.c modgcd.c expfield.c risch.c kpoly.c residue.c cfield.c expsum.c tanfield.c deftower.c risch2.c k2poly.c \
            expression.c integrate.c matrix.c partial_frac.c token.c parser.c
 
 # Test binary
