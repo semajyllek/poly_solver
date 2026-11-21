@@ -31,29 +31,29 @@ typedef enum {
     OP_POW
 } BinOp;
 
-typedef struct Expr {
+typedef struct ps_expr {
     ExprType type;
     union {
         Rational constant;         // EXPR_CONST
         char* var_name;            // EXPR_VAR
         struct {                   // EXPR_BINOP
             BinOp op;
-            struct Expr* left;
-            struct Expr* right;
+            struct ps_expr* left;
+            struct ps_expr* right;
         } binop;
-        struct Expr* operand;      // EXPR_NEG
+        struct ps_expr* operand;      // EXPR_NEG
         Polynomial* poly;          // EXPR_POLY
         struct {                   // EXPR_RATIONAL_FN
             Polynomial* num;
             Polynomial* den;
         } ratfn;
-        struct Expr* ln_arg;       // EXPR_LN: ln(abs(arg))
-        struct Expr* fn_arg;       // EXPR_ATAN: atan(arg), EXPR_SQRT: sqrt(arg), EXPR_EXP: exp(arg), EXPR_SIN/COS: sin/cos(arg)
+        struct ps_expr* ln_arg;       // EXPR_LN: ln(abs(arg))
+        struct ps_expr* fn_arg;       // EXPR_ATAN: atan(arg), EXPR_SQRT: sqrt(arg), EXPR_EXP: exp(arg), EXPR_SIN/COS: sin/cos(arg)
         struct {                   // EXPR_ROOTSUM: Σ over roots t of q of t·ln(S(t, x))
             Polynomial* q;         //   univariate in t, irreducible over Q
             Polynomial** s;        //   S = Σ s[k](t)·x^k, each s[k] of degree < deg q (NULL with c)
             int s_deg;
-            struct Expr** c;       //   or S = Σ t^i·c[i], c[i] an expression in x (NULL for 0), i < deg q:
+            struct ps_expr** c;       //   or S = Σ t^i·c[i], c[i] an expression in x (NULL for 0), i < deg q:
         } rootsum;                 //   over exp/ln/tan towers, where S is a polynomial in θ
         struct {                   // EXPR_TRIG: cos/sin/cot/csc(angle·π), or angle·π (TRIG_NONE)
             TrigKind kind;

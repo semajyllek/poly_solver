@@ -4,9 +4,9 @@
 #include <gmp.h>
 #include <stdbool.h>
 
-typedef struct {
-    mpq_t val;
-} Rational;
+#include "polysolver.h"
+
+typedef ps_rational Rational;
 
 // lifecycle — every Rational must be initialized before use and cleared after
 void rat_init(Rational* r);

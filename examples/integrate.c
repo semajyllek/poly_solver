@@ -1,26 +1,26 @@
-// Indefinite integrals: rational functions (integrate), exp/ln/sin/cos (integrate_exp, the
+// Indefinite integrals: rational functions (ps_integrate), exp/ln/sin/cos (ps_integrate_exp, the
 // Risch algorithm, which also proves when no elementary antiderivative exists), and one square
-// root of a quadratic (integrate_sqrt).
+// root of a quadratic (ps_integrate_sqrt).
 #include "polysolver.h"
 #include <stdio.h>
 #include <stdlib.h>
 
 static void rational(const char* text) {
-    Expr* f = parse_input(text);
-    Expr* F = integrate(f, "x");                    // NULL with integrate_error() on failure
-    char* s = F ? expr_to_string(F) : NULL;
-    printf("∫ %-22s = %s\n", text, s ? s : integrate_error());
-    free(s); free_expr(F); free_expr(f);
+    ps_expr* f = ps_parse(text);
+    ps_expr* F = ps_integrate(f, "x");                    // NULL with ps_integrate_error() on failure
+    char* s = F ? ps_expr_to_string(F) : NULL;
+    printf("∫ %-22s = %s\n", text, s ? s : ps_integrate_error());
+    free(s); ps_expr_free(F); ps_expr_free(f);
 }
 
 static void risch(const char* text) {
-    Expr* f = parse_input(text);
-    RischResult r = integrate_exp(f);
-    char* s = r.result ? expr_to_string(r.result) : NULL;
-    if (r.status == RISCH_OK) printf("∫ %-22s = %s\n", text, s);
-    else if (r.status == RISCH_NONELEMENTARY) printf("∫ %-22s : no elementary antiderivative (the part %s)\n", text, s);
+    ps_expr* f = ps_parse(text);
+    ps_risch_result r = ps_integrate_exp(f);
+    char* s = r.result ? ps_expr_to_string(r.result) : NULL;
+    if (r.status == PS_RISCH_OK) printf("∫ %-22s = %s\n", text, s);
+    else if (r.status == PS_RISCH_NONELEMENTARY) printf("∫ %-22s : no elementary antiderivative (the part %s)\n", text, s);
     else printf("∫ %-22s : unsupported (%s)\n", text, r.reason);
-    free(s); free_expr(r.result); free_expr(f);
+    free(s); ps_expr_free(r.result); ps_expr_free(f);
 }
 
 int main(void) {
@@ -38,19 +38,19 @@ int main(void) {
     risch("ln(x)/(x+1)");
 
     const char* roots[] = { "sqrt(x^2+1)", "1/sqrt(1-x^2)", "x/sqrt(x+1)" };
-    for (size_t i = 0; i < 3; i++) {              // integrate_sqrt: RISCH_OK or RISCH_UNSUPPORTED
-        Expr* f = parse_input(roots[i]);
-        RischResult r = integrate_sqrt(f);
-        char* s = r.result ? expr_to_string(r.result) : NULL;
+    for (size_t i = 0; i < 3; i++) {              // ps_integrate_sqrt: PS_RISCH_OK or PS_RISCH_UNSUPPORTED
+        ps_expr* f = ps_parse(roots[i]);
+        ps_risch_result r = ps_integrate_sqrt(f);
+        char* s = r.result ? ps_expr_to_string(r.result) : NULL;
         printf("∫ %-22s = %s\n", roots[i], s ? s : r.reason);
-        free(s); free_expr(r.result); free_expr(f);
+        free(s); ps_expr_free(r.result); ps_expr_free(f);
     }
 
-    const char* why = NULL;                       // differentiate_exp: the same expressions
-    Expr* g = parse_input("x*exp(x)*sin(x)");
-    Expr* dg = differentiate_exp(g, &why);
-    char* s = expr_to_string(dg);
+    const char* why = NULL;                       // ps_differentiate_exp: the same expressions
+    ps_expr* g = ps_parse("x*exp(x)*sin(x)");
+    ps_expr* dg = ps_differentiate_exp(g, &why);
+    char* s = ps_expr_to_string(dg);
     printf("d/dx x*exp(x)*sin(x) = %s\n", s);
-    free(s); free_expr(dg); free_expr(g);
+    free(s); ps_expr_free(dg); ps_expr_free(g);
     return 0;
 }

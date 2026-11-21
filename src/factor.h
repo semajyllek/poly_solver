@@ -6,19 +6,11 @@
 
 // poly == content · Π factors[i]^multiplicities[i]; factors are primitive
 // integer polynomials with positive leading coefficient, irreducible over Q
-typedef struct {
-    Polynomial** factors;
-    int* multiplicities;
-    int count;
-    Rational content;
-} Factorization;
+typedef ps_factorization Factorization;
 
 // square-free decomposition (Yun): poly == lc · Π parts[i]^(i+1), parts monic,
 // pairwise coprime, square-free (a part may be the constant 1)
-typedef struct {
-    Polynomial** parts;
-    int count;
-} SquareFreeDecomp;
+typedef ps_sqfree SquareFreeDecomp;
 
 SquareFreeDecomp square_free_decompose(const Polynomial* poly);
 void free_square_free(SquareFreeDecomp* d);

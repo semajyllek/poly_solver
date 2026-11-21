@@ -10,16 +10,19 @@ gave when recorded. Re-record only when an output change is intended (and checke
 import argparse
 import json
 import resource
+import os
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
 
-CORPUS = "golden.jsonl"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CLI = [os.path.join(ROOT, "polysolver")]  # the binary under test (--cli)
+CORPUS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "golden.jsonl")
 
 
 def run(args):
     try:
-        r = subprocess.run(["./polysolver", *args], capture_output=True, text=True, timeout=60)
+        r = subprocess.run([CLI[0], *args], capture_output=True, text=True, timeout=60)
         return r.returncode, r.stdout.strip()
     except subprocess.TimeoutExpired:
         return None, "TIMEOUT"
@@ -64,10 +67,13 @@ def record(path, seeds, trials):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--record", action="store_true")
+    ap.add_argument("--cli", help="the polysolver binary to replay against (default: ./polysolver)")
     ap.add_argument("--seeds", type=int, nargs="*", default=[1, 2, 3])
     ap.add_argument("--trials", type=int, default=40)
     ap.add_argument("--jobs", type=int, default=8)
     a = ap.parse_args()
+    if a.cli:
+        CLI[0] = os.path.abspath(a.cli)
     if a.record:
         record(CORPUS, a.seeds, a.trials)
     else:

@@ -23,6 +23,7 @@ import argparse
 import random
 import re
 import signal
+import os
 import subprocess
 import sys
 
@@ -31,6 +32,8 @@ import sympy as sp
 from sympy.parsing.sympy_parser import (implicit_multiplication_application,
                                         parse_expr, standard_transformations)
 
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # the repo, where ./polysolver is built
+
 x, t = sp.symbols("x t")
 mp.mp.dps = 60
 ROOTSUM = r"RootSum\(([^,]*), t -> t \* ln\((.*?)\)\)(?= [+-] |$)"
@@ -38,7 +41,7 @@ TRANSFORMS = standard_transformations + (implicit_multiplication_application,)
 
 
 def run_cli(*args):
-    r = subprocess.run(["./polysolver", *args], capture_output=True, text=True, timeout=60)
+    r = subprocess.run([os.path.join(ROOT, "polysolver"), *args], capture_output=True, text=True, timeout=60)
     return r.returncode, r.stdout.strip(), r.stderr.strip()
 
 

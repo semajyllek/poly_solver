@@ -46,16 +46,28 @@ no elementary antiderivative: the part exp(x^2) (Risch: y' + k·v'·y = a has no
 
 ## Build
 
+You need a C compiler, `make` and [GMP](https://gmplib.org/): `brew install gmp` on macOS, or `apt install libgmp-dev` on Debian/Ubuntu. GMP is found through `pkg-config` (or Homebrew's prefix). `CFLAGS` defaults to `-Wall -Wextra -g -O2`; `make CFLAGS=...` replaces just that.
+
 ```bash
-make              # the test binary (test_symbolic_solver)
-make cli          # the command-line tool (polysolver)
-make lib          # the static library (libpolysolver.a)
-make examples     # build and run the C examples in examples/
-make check        # the suite plus the golden CLI corpus (a few seconds)
+make cli          # the command-line tool (./polysolver)
+make lib          # build/libpolysolver.a and the shared library (.so or .dylib)
+make check        # the suite, the golden CLI corpus and the symbol checks (a few seconds)
+make examples     # build and run the C examples in examples/ against the library
+sudo make install # header, libraries, CLI and polysolver.pc under /usr/local (PREFIX=..., DESTDIR=...)
+make uninstall
 make clean
 ```
 
-You need `gcc` (or `clang`), `make` and [GMP](https://gmplib.org/): `brew install gmp` on macOS, or `apt install libgmp-dev` on Debian/Ubuntu. The Makefile looks in `/opt/homebrew`; adjust `CFLAGS`/`LDFLAGS` for other prefixes.
+CMake works too, and installs a package for `find_package`:
+
+```bash
+cmake -S . -B build-cmake -DCMAKE_BUILD_TYPE=Release   # -DBUILD_SHARED_LIBS=OFF for a static library
+cmake --build build-cmake
+ctest --test-dir build-cmake
+cmake --install build-cmake                             # --prefix ... for elsewhere
+```
+
+The sources are in `src/` (the library), `include/polysolver.h` (the public API), `cli/`, `tests/`, `examples/` and `tools/` (the golden corpus and the SymPy cross-check).
 
 ## Command-line cookbook
 
@@ -615,17 +627,23 @@ $ ./polysolver rank "[[1,2],[2,4.0000000000000000000000001]]"
 
 ## Using the C library
 
-`make lib` builds `libpolysolver.a`. Include the umbrella header `polysolver.h` (it pulls in every public header) and link with GMP:
+After `make install` (or `cmake --install`), include `polysolver.h` and link with pkg-config or CMake:
 
 ```bash
-make lib
-cc -I/path/to/polysolver my_prog.c /path/to/polysolver/libpolysolver.a -lgmp -lm
+cc my_prog.c $(pkg-config --cflags --libs polysolver)                 # the shared library
+cc my_prog.c $(pkg-config --cflags polysolver) /usr/local/lib/libpolysolver.a $(pkg-config --libs gmp) -lm   # static
+```
+
+```cmake
+find_package(polysolver 0.1 REQUIRED)
+target_link_libraries(my_prog PRIVATE polysolver::polysolver)
 ```
 
 Conventions that hold everywhere:
 
-- **Ownership.** The caller owns its inputs, and every function returns new allocations. Nothing frees or changes its arguments. Free results with `free_expr`, `free_polynomial`, `free_factorization`, `free_solutions`, `matrix_free`, `definite_free`, and so on; strings from `*_to_string` with `free`.
-- **Rationals.** `Rational` wraps `mpq_t`. Call `rat_init` before use and `rat_clear` after. The arithmetic functions write into an initialized result (`rat_add(&r, &a, &b)`), and `r->val` is the raw `mpq_t` when you need GMP directly.
+- **Names.** Everything public is prefixed `ps_` (`PS_` for macros and enum constants): `ps_parse`, `ps_integrate`, `ps_poly_gcd`, `ps_expr_free`, `PS_RISCH_OK`. The libraries define nothing else a program could collide with: the static one has only `ps_` and internal `psi_` symbols, and the shared one exports only `ps_`. `PS_VERSION` and `ps_version()` give the version.
+- **Ownership.** Every function returns new allocations, which the caller frees. The `ps_expr_` constructors (`ps_expr_add`, `ps_expr_from_poly`, ...) take ownership of their arguments, so a tree is freed once at its root; every other function leaves its inputs alone. Free results with `ps_expr_free`, `ps_poly_free`, `ps_factorization_free`, `ps_solutions_free`, `ps_matrix_free`, `ps_definite_free`, and so on; strings from `*_to_string` with `free`.
+- **Rationals.** `ps_rational` wraps `mpq_t`. Call `ps_rat_init` before use and `ps_rat_clear` after. The arithmetic functions write into an initialized result (`ps_rat_add(&r, &a, &b)`), and `r->val` is the raw `mpq_t` when you need GMP directly.
 - **Never partial.** An operation that cannot finish returns `NULL` (or an error status) with a reason. It never returns a silently incomplete result.
 - **One variable.** Expressions are in `x`.
 
@@ -640,26 +658,26 @@ Each program below is a complete file in [`examples/`](examples/); `make example
 #include <stdio.h>
 #include <stdlib.h>
 
-static void show(const char* label, const Rational* r) {
-    char* s = rat_to_string(r);
+static void show(const char* label, const ps_rational* r) {
+    char* s = ps_rat_to_string(r);
     printf("%-22s %s\n", label, s);
     free(s);
 }
 
 int main(void) {
-    Rational a, b, sum, big;
-    rat_init(&a); rat_init(&b); rat_init(&sum); rat_init(&big);
-    rat_parse_literal(&a, "0.1");                  // exactly 1/10
-    rat_set_si(&b, 1, 3);
-    rat_add(&sum, &a, &b);
+    ps_rational a, b, sum, big;
+    ps_rat_init(&a); ps_rat_init(&b); ps_rat_init(&sum); ps_rat_init(&big);
+    ps_rat_parse(&a, "0.1");                  // exactly 1/10
+    ps_rat_set_si(&b, 1, 3);
+    ps_rat_add(&sum, &a, &b);
     show("0.1 + 1/3 =", &sum);                     // 13/30
-    rat_parse_literal(&big, "2.5e30");
-    rat_mul(&big, &big, &big);
+    ps_rat_parse(&big, "2.5e30");
+    ps_rat_mul(&big, &big, &big);
     show("(2.5e30)^2 =", &big);                    // every digit kept
-    char* dec = rat_to_decimal(&b, 20);
+    char* dec = ps_rat_to_decimal(&b, 20);
     printf("%-22s %s\n", "1/3 to 20 places:", dec);
     free(dec);
-    rat_clear(&a); rat_clear(&b); rat_clear(&sum); rat_clear(&big);
+    ps_rat_clear(&a); ps_rat_clear(&b); ps_rat_clear(&sum); ps_rat_clear(&big);
     return 0;
 }
 ```
@@ -674,7 +692,7 @@ Output:
 
 ### Polynomials: arithmetic, gcd, Bezout, calculus
 
-`Polynomial` is a sparse list of terms with `Rational` coefficients. Build one from text with `parse_input` plus `canonicalize`, or term by term with `add_term`.
+`ps_poly` is a sparse list of terms with `ps_rational` coefficients. Build one from text with `ps_parse` plus `ps_canonicalize`, or term by term with `ps_poly_add_term`.
 
 ```c
 // examples/polynomials.c
@@ -684,54 +702,54 @@ Output:
 #include <stdlib.h>
 
 // text -> polynomial (NULL if the text is not a polynomial)
-static Polynomial* poly_of(const char* text) {
-    Expr* raw = parse_input(text);
-    Expr* e = raw ? canonicalize(raw) : NULL;
-    Polynomial* p = e && e->type == EXPR_POLY ? poly_copy(e->poly) : NULL;
-    free_expr(raw); free_expr(e);
+static ps_poly* poly_of(const char* text) {
+    ps_expr* raw = ps_parse(text);
+    ps_expr* e = raw ? ps_canonicalize(raw) : NULL;
+    ps_poly* p = ps_expr_poly(e) ? ps_poly_copy(ps_expr_poly(e)) : NULL;
+    ps_expr_free(raw); ps_expr_free(e);
     return p;
 }
 
-static void show(const char* label, const Polynomial* p) {
-    char* s = poly_to_string(p);
+static void show(const char* label, const ps_poly* p) {
+    char* s = ps_poly_to_string(p);
     printf("%-16s %s\n", label, s);
     free(s);
 }
 
 int main(void) {
-    Polynomial* a = poly_of("(x - 1)^2 * (x + 2)");
-    Polynomial* b = create_polynomial();          // x^2 - 1, term by term
-    Rational one = rat_from_int(1), minus_one = rat_from_int(-1);
-    add_term(b, &one, 2);
-    add_term(b, &minus_one, 0);
+    ps_poly* a = poly_of("(x - 1)^2 * (x + 2)");
+    ps_poly* b = ps_poly_new();          // x^2 - 1, term by term
+    ps_rational one = ps_rat_from_int(1), minus_one = ps_rat_from_int(-1);
+    ps_poly_add_term(b, &one, 2);
+    ps_poly_add_term(b, &minus_one, 0);
 
     show("a =", a);
     show("b =", b);
-    Polynomial* prod = poly_multiply(a, b);
+    ps_poly* prod = ps_poly_mul(a, b);
     show("a * b =", prod);
-    PolyDivResult qr = poly_divmod(a, b);
+    ps_divmod_result qr = ps_poly_divmod(a, b);
     show("a div b =", qr.quotient);
     show("a mod b =", qr.remainder);
-    Polynomial* g = poly_gcd(a, b);
+    ps_poly* g = ps_poly_gcd(a, b);
     show("gcd(a, b) =", g);
-    PolyBezout bz = poly_xgcd(a, b);               // s·a + t·b = gcd
+    ps_bezout bz = ps_poly_xgcd(a, b);               // s·a + t·b = gcd
     show("Bezout s =", bz.s);
     show("Bezout t =", bz.t);
-    Polynomial* da = poly_derivative(a);
+    ps_poly* da = ps_poly_derivative(a);
     show("a' =", da);
 
-    Rational x0, v;                                // exact evaluation at x = 1/2
-    rat_init(&x0); rat_init(&v);
-    rat_set_si(&x0, 1, 2);
-    poly_eval_rat(&v, a, &x0);
-    char* vs = rat_to_string(&v);
+    ps_rational x0, v;                                // exact evaluation at x = 1/2
+    ps_rat_init(&x0); ps_rat_init(&v);
+    ps_rat_set_si(&x0, 1, 2);
+    ps_poly_eval(&v, a, &x0);
+    char* vs = ps_rat_to_string(&v);
     printf("%-16s %s\n", "a(1/2) =", vs);
     free(vs);
 
-    rat_clear(&one); rat_clear(&minus_one); rat_clear(&x0); rat_clear(&v);
-    free_bezout(&bz);
-    free_polynomial(a); free_polynomial(b); free_polynomial(prod); free_polynomial(g); free_polynomial(da);
-    free_polynomial(qr.quotient); free_polynomial(qr.remainder);
+    ps_rat_clear(&one); ps_rat_clear(&minus_one); ps_rat_clear(&x0); ps_rat_clear(&v);
+    ps_bezout_free(&bz);
+    ps_poly_free(a); ps_poly_free(b); ps_poly_free(prod); ps_poly_free(g); ps_poly_free(da);
+    ps_poly_free(qr.quotient); ps_poly_free(qr.remainder);
     return 0;
 }
 ```
@@ -753,7 +771,7 @@ a(1/2) =         5/8
 
 ### Factoring, solving and certified roots
 
-`factorize` gives `poly == content · Π factors[i]^multiplicities[i]`. `solve_polynomial` collects the exact and certified roots. `isolate_real_roots` and `refine_root` give intervals with exact rational endpoints, each proved to hold exactly one root, refined as far as you ask.
+`ps_factorize` gives `poly == content · Π factors[i]^multiplicities[i]`. `ps_solve` collects the exact and certified roots. `ps_real_roots` and `ps_root_refine` give intervals with exact rational endpoints, each proved to hold exactly one root, refined as far as you ask.
 
 ```c
 // examples/factor_solve.c
@@ -762,46 +780,46 @@ a(1/2) =         5/8
 #include <stdio.h>
 #include <stdlib.h>
 
-static Polynomial* poly_of(const char* text) {
-    Expr* raw = parse_input(text);
-    Expr* e = raw ? canonicalize(raw) : NULL;
-    Polynomial* p = e && e->type == EXPR_POLY ? poly_copy(e->poly) : NULL;
-    free_expr(raw); free_expr(e);
+static ps_poly* poly_of(const char* text) {
+    ps_expr* raw = ps_parse(text);
+    ps_expr* e = raw ? ps_canonicalize(raw) : NULL;
+    ps_poly* p = ps_expr_poly(e) ? ps_poly_copy(ps_expr_poly(e)) : NULL;
+    ps_expr_free(raw); ps_expr_free(e);
     return p;
 }
 
 int main(void) {
-    Polynomial* p = poly_of("2x^6 - 2x^4 + 8x^2 - 8");
-    Factorization* f = factorize(p);               // p == content · Π factors^mult
-    char* fs = factorization_to_string(f);
+    ps_poly* p = poly_of("2x^6 - 2x^4 + 8x^2 - 8");
+    ps_factorization* f = ps_factorize(p);               // p == content · Π factors^mult
+    char* fs = ps_factorization_to_string(f);
     printf("factor: %s\n", fs);
     free(fs);
     for (int i = 0; i < f->count; i++) {
-        char* s = poly_to_string(f->factors[i]);
+        char* s = ps_poly_to_string(f->factors[i]);
         printf("  factor %d: %s (multiplicity %d)\n", i + 1, s, f->multiplicities[i]);
         free(s);
     }
 
-    Solutions* sol = solve_polynomial(p);
-    char* ss = solutions_to_string(sol);
+    ps_solutions* sol = ps_solve(p);
+    char* ss = ps_solutions_to_string(sol);
     printf("solve:  %s\n", ss);
     free(ss);
 
-    Polynomial* q = poly_of("x^5 - 3x + 1");     // no radicals: certified real-root intervals
-    RootIntervalList L = isolate_real_roots(q);
-    Rational w;
-    rat_init(&w);
-    rat_set_si(&w, 1, 1000000);
+    ps_poly* q = poly_of("x^5 - 3x + 1");     // no radicals: certified real-root intervals
+    ps_root_list L = ps_real_roots(q);
+    ps_rational w;
+    ps_rat_init(&w);
+    ps_rat_set_si(&w, 1, 1000000);
     for (int i = 0; i < L.count; i++) {
-        refine_root(&L.items[i], q, &w);          // shrink to width 1e-6, exactly
-        char *lo = rat_to_decimal(&L.items[i].lo, 8), *hi = rat_to_decimal(&L.items[i].hi, 8);
+        ps_root_refine(&L.items[i], q, &w);          // shrink to width 1e-6, exactly
+        char *lo = ps_rat_to_decimal(&L.items[i].lo, 8), *hi = ps_rat_to_decimal(&L.items[i].hi, 8);
         printf("  root of x^5 - 3x + 1 in (%s, %s)\n", lo, hi);
         free(lo); free(hi);
     }
-    rat_clear(&w);
-    root_interval_list_free(&L);
-    free_solutions(sol); free_factorization(f);
-    free_polynomial(p); free_polynomial(q);
+    ps_rat_clear(&w);
+    ps_root_list_free(&L);
+    ps_solutions_free(sol); ps_factorization_free(f);
+    ps_poly_free(p); ps_poly_free(q);
     return 0;
 }
 ```
@@ -822,7 +840,7 @@ solve:  x = -1, x = 1, x = 1 +/- i, x = -1 +/- i
 
 ### Building and evaluating expressions
 
-Constructors (`create_add`, `create_pow`, `create_var`, ...) take ownership of their arguments. `simplify`, `differentiate` and `integrate` do not; they return new trees.
+Constructors (`ps_expr_add`, `ps_expr_pow`, `ps_expr_var`, ...) take ownership of their arguments. `ps_simplify`, `ps_differentiate` and `ps_integrate` do not; they return new trees.
 
 ```c
 // examples/expressions.c
@@ -832,31 +850,31 @@ Constructors (`create_add`, `create_pow`, `create_var`, ...) take ownership of t
 #include <stdio.h>
 #include <stdlib.h>
 
-static void show(const char* label, const Expr* e) {
-    char* s = expr_to_string(e);
+static void show(const char* label, const ps_expr* e) {
+    char* s = ps_expr_to_string(e);
     printf("%-14s %s\n", label, s);
     free(s);
 }
 
 int main(void) {
     // f = (x^2 - 1)/(x - 1) + 1/x, built from constructors (each takes its arguments)
-    Expr* x2 = create_pow(create_var("x"), create_const(2));
-    Expr* f = create_add(create_div(create_sub(x2, create_const(1)), create_sub(create_var("x"), create_const(1))),
-                         create_div(create_const(1), create_var("x")));
+    ps_expr* x2 = ps_expr_pow(ps_expr_var("x"), ps_expr_int(2));
+    ps_expr* f = ps_expr_add(ps_expr_div(ps_expr_sub(x2, ps_expr_int(1)), ps_expr_sub(ps_expr_var("x"), ps_expr_int(1))),
+                         ps_expr_div(ps_expr_int(1), ps_expr_var("x")));
     show("f =", f);
-    Expr* s = simplify(f);                         // a reduced rational function
+    ps_expr* s = ps_simplify(f);                         // a reduced rational function
     show("simplified:", s);
-    Expr* d = differentiate(f, "x");
+    ps_expr* d = ps_differentiate(f, "x");
     show("f' =", d);
     bool ok = true;
-    printf("%-14s %.12g\n", "f(2.5) =", expr_eval(f, 2.5, &ok));
+    printf("%-14s %.12g\n", "f(2.5) =", ps_expr_eval(f, 2.5, &ok));
 
-    // with exp: canonical Laurent form in exp(x) through simplify_exp
+    // with exp: canonical Laurent form in exp(x) through ps_simplify_exp
     const char* why = NULL;
-    Expr* g = parse_input("(exp(2x) - 1)/(exp(x) - 1)");
-    Expr* gs = simplify_exp(g, &why);
+    ps_expr* g = ps_parse("(exp(2x) - 1)/(exp(x) - 1)");
+    ps_expr* gs = ps_simplify_exp(g, &why);
     show("simplify_exp:", gs);
-    free_expr(f); free_expr(s); free_expr(d); free_expr(g); free_expr(gs);
+    ps_expr_free(f); ps_expr_free(s); ps_expr_free(d); ps_expr_free(g); ps_expr_free(gs);
     return 0;
 }
 ```
@@ -873,39 +891,39 @@ simplify_exp:  1 + exp(x)
 
 ### Indefinite integrals
 
-- **`integrate(f, "x")`** handles rational functions. It returns `NULL` on failure, with the reason in `integrate_error()`.
-- **`integrate_exp(f)`** handles anything with exp, ln, sin, cos or tan. Its `RischResult` has one of three statuses:
-  - `RISCH_OK` with the antiderivative;
-  - `RISCH_NONELEMENTARY` with the part that has no elementary integral (a proof);
-  - `RISCH_UNSUPPORTED` with a reason.
-- **`integrate_rootsum`** works like `integrate` but always keeps a `RootSum` instead of rewriting it in radicals.
-- **`integrate_sqrt(f)`** handles one square root of a polynomial of degree 2 or less. It returns `RISCH_OK` with the antiderivative, or `RISCH_UNSUPPORTED` with a reason; it never claims non-elementarity. `differentiate_sqrt` and `simplify_sqrt` work for any polynomial radicand, and `integrate_definite_sqrt(f, &bounds)` gives definite integrals with a square root (rational or infinite bounds) in a `DefiniteResult`.
+- **`ps_integrate(f, "x")`** handles rational functions. It returns `NULL` on failure, with the reason in `ps_integrate_error()`.
+- **`ps_integrate_exp(f)`** handles anything with exp, ln, sin, cos or tan. Its `ps_risch_result` has one of three statuses:
+  - `PS_RISCH_OK` with the antiderivative;
+  - `PS_RISCH_NONELEMENTARY` with the part that has no elementary integral (a proof);
+  - `PS_RISCH_UNSUPPORTED` with a reason.
+- **`ps_integrate_rootsum`** works like `ps_integrate` but always keeps a `RootSum` instead of rewriting it in radicals.
+- **`ps_integrate_sqrt(f)`** handles one square root of a polynomial of degree 2 or less. It returns `PS_RISCH_OK` with the antiderivative, or `PS_RISCH_UNSUPPORTED` with a reason; it never claims non-elementarity. `ps_differentiate_sqrt` and `ps_simplify_sqrt` work for any polynomial radicand, and `ps_integrate_definite_sqrt(f, &bounds)` gives definite integrals with a square root (rational or infinite bounds) in a `ps_definite_result`.
 
 ```c
 // examples/integrate.c
-// Indefinite integrals: rational functions (integrate), exp/ln/sin/cos (integrate_exp, the
+// Indefinite integrals: rational functions (ps_integrate), exp/ln/sin/cos (ps_integrate_exp, the
 // Risch algorithm, which also proves when no elementary antiderivative exists), and one square
-// root of a quadratic (integrate_sqrt).
+// root of a quadratic (ps_integrate_sqrt).
 #include "polysolver.h"
 #include <stdio.h>
 #include <stdlib.h>
 
 static void rational(const char* text) {
-    Expr* f = parse_input(text);
-    Expr* F = integrate(f, "x");                    // NULL with integrate_error() on failure
-    char* s = F ? expr_to_string(F) : NULL;
-    printf("∫ %-22s = %s\n", text, s ? s : integrate_error());
-    free(s); free_expr(F); free_expr(f);
+    ps_expr* f = ps_parse(text);
+    ps_expr* F = ps_integrate(f, "x");                    // NULL with ps_integrate_error() on failure
+    char* s = F ? ps_expr_to_string(F) : NULL;
+    printf("∫ %-22s = %s\n", text, s ? s : ps_integrate_error());
+    free(s); ps_expr_free(F); ps_expr_free(f);
 }
 
 static void risch(const char* text) {
-    Expr* f = parse_input(text);
-    RischResult r = integrate_exp(f);
-    char* s = r.result ? expr_to_string(r.result) : NULL;
-    if (r.status == RISCH_OK) printf("∫ %-22s = %s\n", text, s);
-    else if (r.status == RISCH_NONELEMENTARY) printf("∫ %-22s : no elementary antiderivative (the part %s)\n", text, s);
+    ps_expr* f = ps_parse(text);
+    ps_risch_result r = ps_integrate_exp(f);
+    char* s = r.result ? ps_expr_to_string(r.result) : NULL;
+    if (r.status == PS_RISCH_OK) printf("∫ %-22s = %s\n", text, s);
+    else if (r.status == PS_RISCH_NONELEMENTARY) printf("∫ %-22s : no elementary antiderivative (the part %s)\n", text, s);
     else printf("∫ %-22s : unsupported (%s)\n", text, r.reason);
-    free(s); free_expr(r.result); free_expr(f);
+    free(s); ps_expr_free(r.result); ps_expr_free(f);
 }
 
 int main(void) {
@@ -923,20 +941,20 @@ int main(void) {
     risch("ln(x)/(x+1)");
 
     const char* roots[] = { "sqrt(x^2+1)", "1/sqrt(1-x^2)", "x/sqrt(x+1)" };
-    for (size_t i = 0; i < 3; i++) {              // integrate_sqrt: RISCH_OK or RISCH_UNSUPPORTED
-        Expr* f = parse_input(roots[i]);
-        RischResult r = integrate_sqrt(f);
-        char* s = r.result ? expr_to_string(r.result) : NULL;
+    for (size_t i = 0; i < 3; i++) {              // ps_integrate_sqrt: PS_RISCH_OK or PS_RISCH_UNSUPPORTED
+        ps_expr* f = ps_parse(roots[i]);
+        ps_risch_result r = ps_integrate_sqrt(f);
+        char* s = r.result ? ps_expr_to_string(r.result) : NULL;
         printf("∫ %-22s = %s\n", roots[i], s ? s : r.reason);
-        free(s); free_expr(r.result); free_expr(f);
+        free(s); ps_expr_free(r.result); ps_expr_free(f);
     }
 
-    const char* why = NULL;                       // differentiate_exp: the same expressions
-    Expr* g = parse_input("x*exp(x)*sin(x)");
-    Expr* dg = differentiate_exp(g, &why);
-    char* s = expr_to_string(dg);
+    const char* why = NULL;                       // ps_differentiate_exp: the same expressions
+    ps_expr* g = ps_parse("x*exp(x)*sin(x)");
+    ps_expr* dg = ps_differentiate_exp(g, &why);
+    char* s = ps_expr_to_string(dg);
     printf("d/dx x*exp(x)*sin(x) = %s\n", s);
-    free(s); free_expr(dg); free_expr(g);
+    free(s); ps_expr_free(dg); ps_expr_free(g);
     return 0;
 }
 ```
@@ -964,7 +982,7 @@ d/dx x*exp(x)*sin(x) = (x + 1) * exp(x) * sin(x) + x * exp(x) * cos(x)
 
 ### Definite integrals
 
-`integrate_definite` returns the exact value (or `NULL` with a `note` when only the number exists), the quadrature value `approx`, or an `error` (a pole, divergence). Bounds come from `parse_endpoint`, which reads `1/2`, `pi/4`, `inf` and `-inf`.
+`ps_integrate_definite` returns the exact value (or `NULL` with a `note` when only the number exists), the quadrature value `approx`, or an `error` (a pole, divergence). Bounds come from `ps_parse_endpoint`, which reads `1/2`, `pi/4`, `inf` and `-inf`.
 
 ```c
 // examples/definite.c
@@ -974,20 +992,20 @@ d/dx x*exp(x)*sin(x) = (x + 1) * exp(x) * sin(x) + x * exp(x) * cos(x)
 #include <stdlib.h>
 
 static void definite(const char* text, const char* a_text, const char* b_text) {
-    Rational a, b;
-    rat_init(&a); rat_init(&b);
-    Bounds ab = { { &a, 0, false }, { &b, 0, false } };
-    Expr* f = parse_integrand(text);
-    parse_endpoint(&a, &ab.a, a_text);            // "1/2", "pi/4", "inf", "-inf"
-    parse_endpoint(&b, &ab.b, b_text);
-    DefiniteResult r = integrate_definite(f, &ab);
+    ps_rational a, b;
+    ps_rat_init(&a); ps_rat_init(&b);
+    ps_bounds ab = { { &a, 0, false }, { &b, 0, false } };
+    ps_expr* f = ps_parse_integrand(text);
+    ps_parse_endpoint(&a, &ab.a, a_text);            // "1/2", "pi/4", "inf", "-inf"
+    ps_parse_endpoint(&b, &ab.b, b_text);
+    ps_definite_result r = ps_integrate_definite(f, &ab);
     printf("∫ %-15s on [%s, %s]: ", text, a_text, b_text);
     if (r.error) printf("error: %s\n", r.error);
-    else if (r.exact) { char* s = expr_to_string(r.exact); printf("= %s ~ %.12g\n", s, r.approx); free(s); }
+    else if (r.exact) { char* s = ps_expr_to_string(r.exact); printf("= %s ~ %.12g\n", s, r.approx); free(s); }
     else printf("~ %.12g (%s)\n", r.approx, r.note);
-    definite_free(&r);
-    free_expr(f);
-    rat_clear(&a); rat_clear(&b);
+    ps_definite_free(&r);
+    ps_expr_free(f);
+    ps_rat_clear(&a); ps_rat_clear(&b);
 }
 
 int main(void) {
@@ -1016,7 +1034,7 @@ Output:
 
 ### Linear algebra
 
-`MAT_AT(m, r, c)` is the `Rational` at row r, column c. `linsys_solve` reports `LINSYS_UNIQUE`, `LINSYS_INCONSISTENT` or `LINSYS_INFINITE` along with the rank.
+`PS_MAT_AT(m, r, c)` is the `ps_rational` at row r, column c. `ps_linsys_solve` reports `PS_LINSYS_UNIQUE`, `PS_LINSYS_INCONSISTENT` or `PS_LINSYS_INFINITE` along with the rank.
 
 ```c
 // examples/linear.c
@@ -1031,29 +1049,29 @@ static void show(const char* label, char* s) {
 }
 
 int main(void) {
-    Matrix* H = matrix_create(3, 3);              // the Hilbert matrix 1/(i + j + 1)
+    ps_matrix* H = ps_matrix_new(3, 3);              // the Hilbert matrix 1/(i + j + 1)
     for (int i = 0; i < 3; i++)
-        for (int j = 0; j < 3; j++) rat_set_si(&MAT_AT(H, i, j), 1, i + j + 1);
-    show("H =", matrix_to_string(H));
-    Rational d;
-    rat_init(&d);
-    matrix_det(&d, H);
-    show("det H =", rat_to_string(&d));
-    Matrix* Hi = matrix_inverse(H);
-    show("H^-1 =", matrix_to_string(Hi));
+        for (int j = 0; j < 3; j++) ps_rat_set_si(&PS_MAT_AT(H, i, j), 1, i + j + 1);
+    show("H =", ps_matrix_to_string(H));
+    ps_rational d;
+    ps_rat_init(&d);
+    ps_matrix_det(&d, H);
+    show("det H =", ps_rat_to_string(&d));
+    ps_matrix* Hi = ps_matrix_inverse(H);
+    show("H^-1 =", ps_matrix_to_string(Hi));
 
-    Matrix* A = matrix_parse("[[1, 2, 3], [4, 5, 6], [7, 8, 10]]");
-    Vector* b = vector_parse("[1, 0.5, 1/3]");
-    LinSysResult* x = linsys_solve(A, b);
-    show("A x = b:", linsys_result_to_string(x));
-    Matrix* S = matrix_parse("[[1, 2, 3], [2, 4, 6], [1, 0, 1]]");
-    printf("%-10s %d\n", "rank S =", matrix_rank(S));
-    Matrix* R = matrix_rref(S);
-    show("rref S =", matrix_to_string(R));
+    ps_matrix* A = ps_matrix_parse("[[1, 2, 3], [4, 5, 6], [7, 8, 10]]");
+    ps_vector* b = ps_vector_parse("[1, 0.5, 1/3]");
+    ps_linsys_result* x = ps_linsys_solve(A, b);
+    show("A x = b:", ps_linsys_to_string(x));
+    ps_matrix* S = ps_matrix_parse("[[1, 2, 3], [2, 4, 6], [1, 0, 1]]");
+    printf("%-10s %d\n", "rank S =", ps_matrix_rank(S));
+    ps_matrix* R = ps_matrix_rref(S);
+    show("rref S =", ps_matrix_to_string(R));
 
-    rat_clear(&d);
-    matrix_free(H); matrix_free(Hi); matrix_free(A); matrix_free(S); matrix_free(R);
-    vector_free(b); linsys_result_free(x);
+    ps_rat_clear(&d);
+    ps_matrix_free(H); ps_matrix_free(Hi); ps_matrix_free(A); ps_matrix_free(S); ps_matrix_free(R);
+    ps_vector_free(b); ps_linsys_free(x);
     return 0;
 }
 ```
@@ -1085,46 +1103,46 @@ rref S =   [[1, 0, 1]
 #include <stdio.h>
 #include <stdlib.h>
 
-static Expr* simplified(const char* text) {
-    Expr* raw = parse_input(text);
-    Expr* e = canonicalize(raw);
-    free_expr(raw);
+static ps_expr* simplified(const char* text) {
+    ps_expr* raw = ps_parse(text);
+    ps_expr* e = ps_canonicalize(raw);
+    ps_expr_free(raw);
     return e;
 }
 
 int main(void) {
     // (x - 10^30)(x + 2^100): both roots come back exactly
-    Expr* p = simplified("(x - 1000000000000000000000000000000)(x + 1267650600228229401496703205376)");
-    char* ps = expr_to_string(p);
+    ps_expr* p = simplified("(x - 1000000000000000000000000000000)(x + 1267650600228229401496703205376)");
+    char* ps = ps_expr_to_string(p);
     printf("p        = %s\n", ps);
-    Factorization* f = factorize(p->poly);
-    char* fs = factorization_to_string(f);
+    ps_factorization* f = ps_factorize(ps_expr_poly(p));
+    char* fs = ps_factorization_to_string(f);
     printf("factor p = %s\n", fs);
-    Solutions* sol = solve_polynomial(p->poly);
-    char* ss = solutions_to_string(sol);
+    ps_solutions* sol = ps_solve(ps_expr_poly(p));
+    char* ss = ps_solutions_to_string(sol);
     printf("solve p  = %s\n", ss);
 
-    Expr* q = simplified("(x + 1)^60");           // binomial coefficients up to C(60, 30)
-    char* qs = expr_to_string(q);
+    ps_expr* q = simplified("(x + 1)^60");           // binomial coefficients up to C(60, 30)
+    char* qs = ps_expr_to_string(q);
     printf("(x+1)^60 = %.120s...\n", qs);
 
-    Expr* r = parse_input("1/(x^2 + 123456789012345678901234567890)");
-    Expr* R = integrate(r, "x");
-    char* Rs = expr_to_string(R);
+    ps_expr* r = ps_parse("1/(x^2 + 123456789012345678901234567890)");
+    ps_expr* R = ps_integrate(r, "x");
+    char* Rs = ps_expr_to_string(R);
     printf("∫ 1/(x^2 + 123456789012345678901234567890) = %s\n", Rs);
 
-    Matrix* m = matrix_parse("[[1e40, 3], [7, 1/99999999999999999999]]");
-    Rational d;
-    rat_init(&d);
-    matrix_det(&d, m);
-    char* ds = rat_to_string(&d);
+    ps_matrix* m = ps_matrix_parse("[[1e40, 3], [7, 1/99999999999999999999]]");
+    ps_rational d;
+    ps_rat_init(&d);
+    ps_matrix_det(&d, m);
+    char* ds = ps_rat_to_string(&d);
     printf("det      = %s\n", ds);
 
     free(ps); free(fs); free(ss); free(qs); free(Rs); free(ds);
-    rat_clear(&d);
-    matrix_free(m);
-    free_factorization(f); free_solutions(sol);
-    free_expr(p); free_expr(q); free_expr(r); free_expr(R);
+    ps_rat_clear(&d);
+    ps_matrix_free(m);
+    ps_factorization_free(f); ps_solutions_free(sol);
+    ps_expr_free(p); ps_expr_free(q); ps_expr_free(r); ps_expr_free(R);
     return 0;
 }
 ```
@@ -1197,12 +1215,12 @@ make && ./test_symbolic_solver
 
   Set `POLY_SEED=<n>` to try other seeds.
 
-`make check` is the quick lane after a change, a few seconds in all. It runs the suite, which prints its CPU time, and then replays `golden.jsonl`: about 1,900 CLI calls taken from the SymPy cross-check's generators, each of which must give exactly the recorded output. `POLY_TIME=1` prints the CPU time of each regression and property test.
+`make check` is the quick lane after a change, a few seconds in all. It checks that the libraries define only `ps_`/`psi_` symbols and that a program reusing internal names (`tests/clash.c`) links against both, runs the suite, which prints its CPU time, and then replays `tools/golden.jsonl`: about 1,900 CLI calls taken from the SymPy cross-check's generators, each of which must give exactly the recorded output. `POLY_TIME=1` prints the CPU time of each regression and property test.
 
 A differential check against SymPy is also available. It is optional and needs `pip install sympy`:
 
 ```bash
-make cli && python3 crosscheck_sympy.py --trials 40   # a few minutes; --seed N for others
+make cli && python3 tools/crosscheck_sympy.py --trials 40   # a few minutes; --seed N for others
 ```
 
 It confirms each factorization multiplies back, each root and root count (every exactly printed root is substituted back at 50 digits), each antiderivative by differentiating it, and each definite integral against `mpmath.quad` at 40 digits. A separate stream uses infinite bounds and also checks that divergence is reported exactly when there is a real pole in range or the degree gap is below 2. Answers containing `RootSum`, radicals or trig constants are checked at 60 significant digits, including on a separate stream of binomial and cyclotomic denominators. The Risch streams compare every verdict with SymPy's `risch_integrate`.
@@ -1217,13 +1235,14 @@ It confirms each factorization multiplies back, each root and root count (every 
 6. **Factoring** (`factor.c`, `zx_factor.c`, `modgcd.c`): Yun square-free decomposition (modular gcds, exactly checked) + Berlekamp–Zassenhaus
 7. **Roots and solver** (`roots.c`, `solver.c`): Descartes/VCA isolation, exact refinement, radicals
 8. **Integration** (`integrate.c`, `logpart.c`, `subres.c`, `rootform.c`, `surd.c`, `partial_frac.c`): Hermite reduction, log/atan terms, Lazard–Rioboo–Trager, radical forms, partial fractions
-9. **Square roots** (`algsqrt.c`, `sqrtdef.c`): Q(x)(sqrt(U)) arithmetic, Euler and rational-point parametrizations, the reduction for conics without a rational point, back-substitution, and definite integrals with limits at the ends and tanh-sinh quadrature
+9. **Square roots** (`algsqrt.c`, `sqrtlog.c`, `sqrtdef.c`): Q(x)(sqrt(U)) arithmetic, Euler and rational-point parametrizations, the reduction for conics without a rational point, back-substitution, and definite integrals with limits at the ends and tanh-sinh quadrature
 10. **Risch** (`expfield.c`, `risch.c`, `kpoly.c`, `residue.c`, `logpair_tmpl.h`, `rootsum_tmpl.h`, `cfield.c`, `expsum.c`, `tanfield.c`, `risch2.c`, `k2poly.c`): exp/ln towers, residues, exponential sums, tan(x) and tan(x/2), two levels
 11. **Definite integrals** (`definite.c`, `deftower.c`, `constfold.c`): pole detection, exact evaluation with atan jump corrections, constant folding with Q(√m) arithmetic (`qsurd.c`), quadrature check
 12. **Linear algebra** (`matrix.c`): Gaussian elimination over exact rationals
+13. **Public API** (`include/polysolver.h`, `src/api.c`, `src/namespace.h`): the one public header defines every public type; the internal headers alias them (`typedef ps_rational Rational;`), and the generated `namespace.h`, force-included in every library file, renames each global to its `ps_` name or to `psi_`
 
 See [INTERNALS.md](INTERNALS.md) for how each algorithm works.
 
 ## License
 
-MIT
+MIT; see [LICENSE](LICENSE).

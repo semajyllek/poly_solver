@@ -9,18 +9,33 @@ make              # Build test binary (test_symbolic_solver)
 make cli          # Build CLI binary (polysolver)
 make clean        # Remove object files and binaries
 make sanitize     # Rebuild the tests with AddressSanitizer + UBSan
-make check        # fast lane after a change (seconds): the suite with its CPU time + golden CLI corpus
-make lib          # libpolysolver.a (LIB_SRCS); polysolver.h is the umbrella header for library users
-make examples     # build and run examples/*.c against the library (the README's C examples and their output)
+make check        # fast lane after a change (seconds): version + symbols + clash test, the suite with its CPU time, golden CLI corpus
+                  # (CFLAGS defaults to -Wall -Wextra -g -O2; make CFLAGS=... replaces only that, GMP and -MMD stay)
+make lib          # build/libpolysolver.a and the shared library (every src/*.c but token_list.c, token_stack.c)
+make examples     # build and run examples/*.c against the library and include/polysolver.h only (the README's C examples)
+make namespace    # regenerate src/namespace.h after adding, removing or renaming a global (symcheck says when)
+make install      # PREFIX=/usr/local DESTDIR=...: header, both libraries, CLI, polysolver.pc; make dist: source tarball
+cmake -S . -B build-cmake && cmake --build build-cmake && ctest --test-dir build-cmake   # the CMake build
 POLY_SEED=7 ./test_symbolic_solver          # property tests with another seed
 POLY_TIME=1 ./test_symbolic_solver          # CPU time of each regression/property test, on stderr
 POLY_ONLY=test_prop_k2poly ./test_symbolic_solver  # one property/regression test alone (its random inputs differ)
-python3 golden.py                           # replay golden.jsonl: exact CLI outputs (no sympy; make cli first)
-python3 golden.py --record                  # re-record it, only for an intended output change (needs sympy)
-python3 crosscheck_sympy.py --trials 40     # optional differential test vs SymPy (needs sympy, make cli)
+python3 tools/golden.py                     # replay tools/golden.jsonl: exact CLI outputs (no sympy; make cli first)
+python3 tools/golden.py --cli PATH          # replay against another binary (CI: the CMake -O3 build)
+python3 tools/golden.py --record            # re-record it, only for an intended output change (needs sympy)
+python3 tools/crosscheck_sympy.py --trials 40   # optional differential test vs SymPy (needs sympy, make cli)
 ./test_symbolic_solver  # Run all tests (assert-based, exits on first failure)
-                        # unit tests: test_symbolic_solver.c; regression + property tests: test_properties.c
+                        # unit tests: tests/test_symbolic_solver.c; regression + property tests: tests/test_properties.c
 ```
+
+Layout and names: the library is `src/` (objects in `build/`), the CLI `cli/main.c`, the tests `tests/`, the
+Python tools `tools/`; `./polysolver` and `./test_symbolic_solver` are built at the top. `include/polysolver.h`
+is the public API and the only definition of every public type (internal headers alias them:
+`typedef ps_rational Rational;`, `struct ps_expr`, `#define RISCH_OK PS_RISCH_OK`). Internal code keeps its
+names; `src/namespace.h` (generated, force-included with `-include` in every library, test and CLI file)
+renames each global to its public name from `tools/public_api.txt` or to `psi_<name>`, and the library builds
+with `-fvisibility=hidden` so the shared one exports only `ps_` (`PS_API` in the header). A new global needs
+`make namespace` (`make check` fails in symcheck until then); a new public function needs a line in
+`tools/public_api.txt` and a `PS_API` prototype in the header, which the compiler checks against the internal one.
 
 CLI usage:
 ```bash

@@ -91,7 +91,7 @@ expression.c/h            ← Expr tree, canonicalization, printing, numeric eva
     │
 token.c, parser.c         ← lexer (exact literal text) and shunting-yard parser
 matrix.c/h                ← exact Gaussian elimination (rational_num, strbuf)
-main.c                    ← CLI wiring
+cli/main.c                ← CLI wiring (the library sources are in src/)
 ```
 
 ---
@@ -1473,7 +1473,7 @@ The derivative is `D(a + b·y) = a' + (b' + b·U'/(2U))·y`.
 
 ## 12. CLI Pipeline
 
-The `main.c` entry point ties everything together:
+The `cli/main.c` entry point ties everything together:
 
 ```
 ./polysolver <action> "<expression>"

@@ -4,45 +4,45 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-static Expr* simplified(const char* text) {
-    Expr* raw = parse_input(text);
-    Expr* e = canonicalize(raw);
-    free_expr(raw);
+static ps_expr* simplified(const char* text) {
+    ps_expr* raw = ps_parse(text);
+    ps_expr* e = ps_canonicalize(raw);
+    ps_expr_free(raw);
     return e;
 }
 
 int main(void) {
     // (x - 10^30)(x + 2^100): both roots come back exactly
-    Expr* p = simplified("(x - 1000000000000000000000000000000)(x + 1267650600228229401496703205376)");
-    char* ps = expr_to_string(p);
+    ps_expr* p = simplified("(x - 1000000000000000000000000000000)(x + 1267650600228229401496703205376)");
+    char* ps = ps_expr_to_string(p);
     printf("p        = %s\n", ps);
-    Factorization* f = factorize(p->poly);
-    char* fs = factorization_to_string(f);
+    ps_factorization* f = ps_factorize(ps_expr_poly(p));
+    char* fs = ps_factorization_to_string(f);
     printf("factor p = %s\n", fs);
-    Solutions* sol = solve_polynomial(p->poly);
-    char* ss = solutions_to_string(sol);
+    ps_solutions* sol = ps_solve(ps_expr_poly(p));
+    char* ss = ps_solutions_to_string(sol);
     printf("solve p  = %s\n", ss);
 
-    Expr* q = simplified("(x + 1)^60");           // binomial coefficients up to C(60, 30)
-    char* qs = expr_to_string(q);
+    ps_expr* q = simplified("(x + 1)^60");           // binomial coefficients up to C(60, 30)
+    char* qs = ps_expr_to_string(q);
     printf("(x+1)^60 = %.120s...\n", qs);
 
-    Expr* r = parse_input("1/(x^2 + 123456789012345678901234567890)");
-    Expr* R = integrate(r, "x");
-    char* Rs = expr_to_string(R);
+    ps_expr* r = ps_parse("1/(x^2 + 123456789012345678901234567890)");
+    ps_expr* R = ps_integrate(r, "x");
+    char* Rs = ps_expr_to_string(R);
     printf("∫ 1/(x^2 + 123456789012345678901234567890) = %s\n", Rs);
 
-    Matrix* m = matrix_parse("[[1e40, 3], [7, 1/99999999999999999999]]");
-    Rational d;
-    rat_init(&d);
-    matrix_det(&d, m);
-    char* ds = rat_to_string(&d);
+    ps_matrix* m = ps_matrix_parse("[[1e40, 3], [7, 1/99999999999999999999]]");
+    ps_rational d;
+    ps_rat_init(&d);
+    ps_matrix_det(&d, m);
+    char* ds = ps_rat_to_string(&d);
     printf("det      = %s\n", ds);
 
     free(ps); free(fs); free(ss); free(qs); free(Rs); free(ds);
-    rat_clear(&d);
-    matrix_free(m);
-    free_factorization(f); free_solutions(sol);
-    free_expr(p); free_expr(q); free_expr(r); free_expr(R);
+    ps_rat_clear(&d);
+    ps_matrix_free(m);
+    ps_factorization_free(f); ps_solutions_free(sol);
+    ps_expr_free(p); ps_expr_free(q); ps_expr_free(r); ps_expr_free(R);
     return 0;
 }

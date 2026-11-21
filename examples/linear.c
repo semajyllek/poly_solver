@@ -9,28 +9,28 @@ static void show(const char* label, char* s) {
 }
 
 int main(void) {
-    Matrix* H = matrix_create(3, 3);              // the Hilbert matrix 1/(i + j + 1)
+    ps_matrix* H = ps_matrix_new(3, 3);              // the Hilbert matrix 1/(i + j + 1)
     for (int i = 0; i < 3; i++)
-        for (int j = 0; j < 3; j++) rat_set_si(&MAT_AT(H, i, j), 1, i + j + 1);
-    show("H =", matrix_to_string(H));
-    Rational d;
-    rat_init(&d);
-    matrix_det(&d, H);
-    show("det H =", rat_to_string(&d));
-    Matrix* Hi = matrix_inverse(H);
-    show("H^-1 =", matrix_to_string(Hi));
+        for (int j = 0; j < 3; j++) ps_rat_set_si(&PS_MAT_AT(H, i, j), 1, i + j + 1);
+    show("H =", ps_matrix_to_string(H));
+    ps_rational d;
+    ps_rat_init(&d);
+    ps_matrix_det(&d, H);
+    show("det H =", ps_rat_to_string(&d));
+    ps_matrix* Hi = ps_matrix_inverse(H);
+    show("H^-1 =", ps_matrix_to_string(Hi));
 
-    Matrix* A = matrix_parse("[[1, 2, 3], [4, 5, 6], [7, 8, 10]]");
-    Vector* b = vector_parse("[1, 0.5, 1/3]");
-    LinSysResult* x = linsys_solve(A, b);
-    show("A x = b:", linsys_result_to_string(x));
-    Matrix* S = matrix_parse("[[1, 2, 3], [2, 4, 6], [1, 0, 1]]");
-    printf("%-10s %d\n", "rank S =", matrix_rank(S));
-    Matrix* R = matrix_rref(S);
-    show("rref S =", matrix_to_string(R));
+    ps_matrix* A = ps_matrix_parse("[[1, 2, 3], [4, 5, 6], [7, 8, 10]]");
+    ps_vector* b = ps_vector_parse("[1, 0.5, 1/3]");
+    ps_linsys_result* x = ps_linsys_solve(A, b);
+    show("A x = b:", ps_linsys_to_string(x));
+    ps_matrix* S = ps_matrix_parse("[[1, 2, 3], [2, 4, 6], [1, 0, 1]]");
+    printf("%-10s %d\n", "rank S =", ps_matrix_rank(S));
+    ps_matrix* R = ps_matrix_rref(S);
+    show("rref S =", ps_matrix_to_string(R));
 
-    rat_clear(&d);
-    matrix_free(H); matrix_free(Hi); matrix_free(A); matrix_free(S); matrix_free(R);
-    vector_free(b); linsys_result_free(x);
+    ps_rat_clear(&d);
+    ps_matrix_free(H); ps_matrix_free(Hi); ps_matrix_free(A); ps_matrix_free(S); ps_matrix_free(R);
+    ps_vector_free(b); ps_linsys_free(x);
     return 0;
 }

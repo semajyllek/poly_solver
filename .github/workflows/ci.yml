@@ -1,0 +1,73 @@
+# Build and test on Linux and macOS: the Makefile lane (suite, golden corpus, symbol and clash
+# checks, examples, a staged install used through pkg-config) and the CMake lane (build, ctest,
+# install, a find_package consumer). It runs only on demand (Actions > CI > Run workflow), to spend
+# no Actions minutes on pushes; the sanitizer job is an extra checkbox there.
+name: CI
+on:
+  workflow_dispatch:
+    inputs:
+      sanitize:
+        description: "Also run the ASan/UBSan suite"
+        type: boolean
+        default: false
+
+jobs:
+  make:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: GMP
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then sudo apt-get update && sudo apt-get install -y libgmp-dev pkg-config
+          else brew install gmp pkg-config; fi
+      - name: make check
+        run: make -j4 check
+      - name: make examples
+        run: make examples
+      - name: install and build against it
+        run: |
+          make install DESTDIR="$PWD/stage" PREFIX=/usr/local
+          export PKG_CONFIG_PATH="$PWD/stage/usr/local/lib/pkgconfig"
+          cc examples/integrate.c $(pkg-config --cflags polysolver) -I"$PWD/stage/usr/local/include" \
+             "$PWD/stage/usr/local/lib/libpolysolver.a" $(pkg-config --libs gmp) -lm -o integrate_static
+          ./integrate_static | head -3
+
+  cmake:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: GMP
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then sudo apt-get update && sudo apt-get install -y libgmp-dev pkg-config
+          else brew install gmp pkg-config; fi
+      - name: build and test
+        run: |
+          cmake -S . -B build-cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$PWD/prefix"
+          cmake --build build-cmake -j4
+          ctest --test-dir build-cmake --output-on-failure
+          python3 tools/golden.py --cli build-cmake/polysolver   # the -O3 CLI gives the recorded outputs too
+          cmake --install build-cmake
+      - name: find_package consumer
+        run: |
+          mkdir consumer && cp examples/definite.c consumer/main.c
+          printf 'cmake_minimum_required(VERSION 3.16)\nproject(consumer C)\nfind_package(polysolver 0.1 REQUIRED)\nadd_executable(consumer main.c)\ntarget_link_libraries(consumer PRIVATE polysolver::polysolver)\n' > consumer/CMakeLists.txt
+          cmake -S consumer -B consumer/build -DCMAKE_PREFIX_PATH="$PWD/prefix"
+          cmake --build consumer/build
+          LD_LIBRARY_PATH="$PWD/prefix/lib" ./consumer/build/consumer | head -3
+
+  sanitize:
+    if: github.event_name == 'workflow_dispatch' && inputs.sanitize
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y libgmp-dev pkg-config
+      - name: ASan + UBSan suite
+        run: make sanitize && ASAN_OPTIONS=detect_leaks=1 ./test_symbolic_solver | tail -1

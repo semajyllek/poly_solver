@@ -4,28 +4,16 @@
 #include "rational_num.h"
 #include <stdbool.h>
 
-typedef struct {
-    Rational* data; // row-major: element (r,c) at data[r * cols + c]
-    int rows;
-    int cols;
-} Matrix;
+typedef ps_matrix Matrix;
 
-typedef struct {
-    Rational* data;
-    int n;
-} Vector;
+typedef ps_vector Vector;
 
-typedef enum {
-    LINSYS_UNIQUE,
-    LINSYS_INCONSISTENT,
-    LINSYS_INFINITE
-} LinSysStatus;
+typedef ps_linsys_status LinSysStatus;
+#define LINSYS_UNIQUE PS_LINSYS_UNIQUE
+#define LINSYS_INCONSISTENT PS_LINSYS_INCONSISTENT
+#define LINSYS_INFINITE PS_LINSYS_INFINITE
 
-typedef struct {
-    LinSysStatus status;
-    Vector* solution; // NULL if inconsistent
-    int rank;
-} LinSysResult;
+typedef ps_linsys_result LinSysResult;
 
 #define MAT_AT(m, r, c) ((m)->data[(r) * (m)->cols + (c)])
 

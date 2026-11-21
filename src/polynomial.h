@@ -11,14 +11,12 @@ typedef struct Term {
     struct Term* next;
 } Term;
 
-typedef struct Polynomial {
+struct ps_poly {
     Term* head;
-} Polynomial;
+};
+typedef struct ps_poly Polynomial;
 
-typedef struct {
-    Polynomial* quotient;
-    Polynomial* remainder;
-} PolyDivResult;
+typedef ps_divmod_result PolyDivResult;
 
 // roots of a quadratic: p ± r·sqrt(m) (real) or p ± r·sqrt(m)·i (complex), m square-free-ish
 typedef struct {
@@ -28,11 +26,7 @@ typedef struct {
 } QuadRoots;
 
 // s*a + t*b == g with g = gcd(a, b) monic
-typedef struct {
-    Polynomial* s;
-    Polynomial* t;
-    Polynomial* g;
-} PolyBezout;
+typedef ps_bezout PolyBezout;
 
 // construction
 Polynomial* create_polynomial(void);

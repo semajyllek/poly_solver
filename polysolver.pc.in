@@ -1,0 +1,11 @@
+prefix=@PREFIX@
+libdir=${prefix}/lib
+includedir=${prefix}/include
+
+Name: polysolver
+Description: Exact symbolic algebra over the rationals: factoring, solving, integration (Risch), linear algebra
+Version: @VERSION@
+Requires.private: gmp
+Libs: -L${libdir} -lpolysolver
+Libs.private: -lm
+Cflags: -I${includedir}

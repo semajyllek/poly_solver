@@ -1,0 +1,28 @@
+# On a version tag (v0.1.0): check that it matches VERSION, run the suite, and publish a GitHub
+# release with the source tarball and the CHANGELOG section for that version.
+name: Release
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: tag matches VERSION
+        run: test "${GITHUB_REF_NAME#v}" = "$(cat VERSION)"
+      - run: sudo apt-get update && sudo apt-get install -y libgmp-dev pkg-config
+      - name: make check
+        run: make -j4 check
+      - name: tarball and notes
+        run: |
+          make dist
+          awk -v v="$(cat VERSION)" '$0 ~ "^## " {p = index($0, v) > 0; next} p' CHANGELOG.md > notes.md
+      - name: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" "build/polysolver-$(cat VERSION).tar.gz" --title "polysolver $(cat VERSION)" --notes-file notes.md

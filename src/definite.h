@@ -5,24 +5,12 @@
 
 // ∫_a^b f dx for a rational function f, or an exponential sum (exp, sin, cos with rational
 // coefficients, no sum in a denominator); a and b may be ±∞ or rational multiples of π
-typedef struct {
-    Expr* exact;       // exact value, or NULL when only the numeric value is available
-    double approx;     // adaptive quadrature, independent of the antiderivative
-    const char* error; // set when there is no value at all (a pole in [a, b], not rational)
-    const char* note;  // set when exact is NULL but approx is valid: the reason (or, with exact, why
-                       // approx could not be compared: a value beyond double precision)
-} DefiniteResult;
+typedef ps_definite_result DefiniteResult;
 
 // a bound: the rational x (x·π when pi, x ≠ 0), or ±∞ when inf = ±1 (x is then unused)
-typedef struct {
-    const Rational* x;
-    int inf;
-    bool pi;
-} Endpoint;
+typedef ps_endpoint Endpoint;
 
-typedef struct {
-    Endpoint a, b;
-} Bounds;
+typedef ps_bounds Bounds;
 
 DefiniteResult integrate_definite(Expr* f, const Bounds* ab);
 

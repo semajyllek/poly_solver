@@ -4,53 +4,53 @@
 #include <stdlib.h>
 
 // text -> polynomial (NULL if the text is not a polynomial)
-static Polynomial* poly_of(const char* text) {
-    Expr* raw = parse_input(text);
-    Expr* e = raw ? canonicalize(raw) : NULL;
-    Polynomial* p = e && e->type == EXPR_POLY ? poly_copy(e->poly) : NULL;
-    free_expr(raw); free_expr(e);
+static ps_poly* poly_of(const char* text) {
+    ps_expr* raw = ps_parse(text);
+    ps_expr* e = raw ? ps_canonicalize(raw) : NULL;
+    ps_poly* p = ps_expr_poly(e) ? ps_poly_copy(ps_expr_poly(e)) : NULL;
+    ps_expr_free(raw); ps_expr_free(e);
     return p;
 }
 
-static void show(const char* label, const Polynomial* p) {
-    char* s = poly_to_string(p);
+static void show(const char* label, const ps_poly* p) {
+    char* s = ps_poly_to_string(p);
     printf("%-16s %s\n", label, s);
     free(s);
 }
 
 int main(void) {
-    Polynomial* a = poly_of("(x - 1)^2 * (x + 2)");
-    Polynomial* b = create_polynomial();          // x^2 - 1, term by term
-    Rational one = rat_from_int(1), minus_one = rat_from_int(-1);
-    add_term(b, &one, 2);
-    add_term(b, &minus_one, 0);
+    ps_poly* a = poly_of("(x - 1)^2 * (x + 2)");
+    ps_poly* b = ps_poly_new();          // x^2 - 1, term by term
+    ps_rational one = ps_rat_from_int(1), minus_one = ps_rat_from_int(-1);
+    ps_poly_add_term(b, &one, 2);
+    ps_poly_add_term(b, &minus_one, 0);
 
     show("a =", a);
     show("b =", b);
-    Polynomial* prod = poly_multiply(a, b);
+    ps_poly* prod = ps_poly_mul(a, b);
     show("a * b =", prod);
-    PolyDivResult qr = poly_divmod(a, b);
+    ps_divmod_result qr = ps_poly_divmod(a, b);
     show("a div b =", qr.quotient);
     show("a mod b =", qr.remainder);
-    Polynomial* g = poly_gcd(a, b);
+    ps_poly* g = ps_poly_gcd(a, b);
     show("gcd(a, b) =", g);
-    PolyBezout bz = poly_xgcd(a, b);               // s·a + t·b = gcd
+    ps_bezout bz = ps_poly_xgcd(a, b);               // s·a + t·b = gcd
     show("Bezout s =", bz.s);
     show("Bezout t =", bz.t);
-    Polynomial* da = poly_derivative(a);
+    ps_poly* da = ps_poly_derivative(a);
     show("a' =", da);
 
-    Rational x0, v;                                // exact evaluation at x = 1/2
-    rat_init(&x0); rat_init(&v);
-    rat_set_si(&x0, 1, 2);
-    poly_eval_rat(&v, a, &x0);
-    char* vs = rat_to_string(&v);
+    ps_rational x0, v;                                // exact evaluation at x = 1/2
+    ps_rat_init(&x0); ps_rat_init(&v);
+    ps_rat_set_si(&x0, 1, 2);
+    ps_poly_eval(&v, a, &x0);
+    char* vs = ps_rat_to_string(&v);
     printf("%-16s %s\n", "a(1/2) =", vs);
     free(vs);
 
-    rat_clear(&one); rat_clear(&minus_one); rat_clear(&x0); rat_clear(&v);
-    free_bezout(&bz);
-    free_polynomial(a); free_polynomial(b); free_polynomial(prod); free_polynomial(g); free_polynomial(da);
-    free_polynomial(qr.quotient); free_polynomial(qr.remainder);
+    ps_rat_clear(&one); ps_rat_clear(&minus_one); ps_rat_clear(&x0); ps_rat_clear(&v);
+    ps_bezout_free(&bz);
+    ps_poly_free(a); ps_poly_free(b); ps_poly_free(prod); ps_poly_free(g); ps_poly_free(da);
+    ps_poly_free(qr.quotient); ps_poly_free(qr.remainder);
     return 0;
 }

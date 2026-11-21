@@ -5,14 +5,9 @@
 
 // An isolating interval: exactly one real root lies in the open interval (lo, hi),
 // or the root is exactly lo when lo == hi. Endpoints are exact rationals.
-typedef struct {
-    Rational lo, hi;
-} RootInterval;
+typedef ps_root_interval RootInterval;
 
-typedef struct {
-    RootInterval* items; // sorted ascending
-    int count;
-} RootIntervalList;
+typedef ps_root_list RootIntervalList;
 
 // Isolate all real roots of a square-free polynomial with the Descartes rule of
 // signs and bisection (Vincent–Collins–Akritas). Exact arithmetic throughout.

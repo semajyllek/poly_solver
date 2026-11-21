@@ -1,0 +1,7 @@
+# find_package(polysolver): the imported target polysolver::polysolver (with GMP::GMP)
+@PACKAGE_INIT@
+include(CMakeFindDependencyMacro)
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}")
+find_dependency(GMP)
+include("${CMAKE_CURRENT_LIST_DIR}/polysolverTargets.cmake")
+check_required_components(polysolver)

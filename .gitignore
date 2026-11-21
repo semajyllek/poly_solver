@@ -6,3 +6,5 @@ __pycache__/
 libpolysolver.a
 examples/*
 !examples/*.c
+build/
+build-*/

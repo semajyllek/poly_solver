@@ -3,25 +3,25 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-static void show(const char* label, const Rational* r) {
-    char* s = rat_to_string(r);
+static void show(const char* label, const ps_rational* r) {
+    char* s = ps_rat_to_string(r);
     printf("%-22s %s\n", label, s);
     free(s);
 }
 
 int main(void) {
-    Rational a, b, sum, big;
-    rat_init(&a); rat_init(&b); rat_init(&sum); rat_init(&big);
-    rat_parse_literal(&a, "0.1");                  // exactly 1/10
-    rat_set_si(&b, 1, 3);
-    rat_add(&sum, &a, &b);
+    ps_rational a, b, sum, big;
+    ps_rat_init(&a); ps_rat_init(&b); ps_rat_init(&sum); ps_rat_init(&big);
+    ps_rat_parse(&a, "0.1");                  // exactly 1/10
+    ps_rat_set_si(&b, 1, 3);
+    ps_rat_add(&sum, &a, &b);
     show("0.1 + 1/3 =", &sum);                     // 13/30
-    rat_parse_literal(&big, "2.5e30");
-    rat_mul(&big, &big, &big);
+    ps_rat_parse(&big, "2.5e30");
+    ps_rat_mul(&big, &big, &big);
     show("(2.5e30)^2 =", &big);                    // every digit kept
-    char* dec = rat_to_decimal(&b, 20);
+    char* dec = ps_rat_to_decimal(&b, 20);
     printf("%-22s %s\n", "1/3 to 20 places:", dec);
     free(dec);
-    rat_clear(&a); rat_clear(&b); rat_clear(&sum); rat_clear(&big);
+    ps_rat_clear(&a); ps_rat_clear(&b); ps_rat_clear(&sum); ps_rat_clear(&big);
     return 0;
 }
