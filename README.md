@@ -20,7 +20,7 @@ no elementary antiderivative: the part exp(x^2) (Risch: y' + k·v'·y = a has no
 - [Command-line cookbook](#command-line-cookbook)
 - [Using the C library](#using-the-c-library)
 - [Expression syntax](#expression-syntax)
-- [Limits](#limits)
+- [Limits](#limits) (and the [roadmap](ROADMAP.md))
 - [Tests](#tests)
 - [Architecture](#architecture)
 
@@ -1172,6 +1172,8 @@ det      = 9999999999999999997900000000000000000021/99999999999999999999
 - The variable is `x`. Any other name is an error that names it: `y`, `pi` inside an expression, or a misspelt function.
 
 ## Limits
+
+What is planned for each of these is in [ROADMAP.md](ROADMAP.md).
 
 - When a logarithm's coefficient is an algebraic number of degree 3 or more, the answer is an exact `RootSum(q(t), t -> t * ln(S(t, x)))`: the sum of `t·ln(S(t, x))` over the roots of `q`. For rational functions this happens only when the roots aren't known in closed form. Over exp, ln or tan (and an outer ln) the RootSum is always kept, with S a polynomial in the tower written as `Σ t^i·(…)`; definite integrals over it give the numeric value.
 - Square roots: one radicand per expression, integrated for degree 2 or less. These are reported as not supported:
